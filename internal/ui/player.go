@@ -57,22 +57,49 @@ func (a *App) PlayerPage(c *ui.Context) {
 		shell.Children(func() {
 			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
+				// 悬浮 chrome 的自动隐藏：先按指针位置和空闲时长算出这一帧
+				// 的显隐，拖窗条和 chrome 都跟着它走。
+				a.syncChromeIdle(c, stage)
+				chromeOff := a.ChromeHidden
+				if chromeOff {
+					// baseline 的 .stageIdle：控件让位之后连光标一起藏掉
+					stage.Cursor(ui.CursorNone)
+				}
 				stage.Children(func() {
 					a.stageFrame(c)
-					// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域。
-					// 只铺顶部一条：整块铺满会把画面下方的双击也吃掉。
-					if a.WinFull {
-						ui.Box(c).Absolute().Top(0).Left(0).Right(0).Height(44).DragWindow()
-					}
 					a.danmuLayer(c)
 					// 状态层压在画面和弹幕之上、chrome 之下：baseline 的
 					// .overlay 是 z-index 15，控制条和顶栏是 20。
 					a.stageOverlay(c)
 					a.bufferingPill(c)
+					// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域
+					// （baseline 的 .dragRegion：navbar 高度 64，压在视频之上、
+					// chrome 之下）。只铺顶部一条，整块铺满会把画面下方的
+					// 双击也吃掉。
+					//
+					// 位置必须排在这里：MyGo 的命中链只取最上层的那个元素和
+					// 它的祖先，不会穿过兄弟往下找。原来它画在 stageFrame 之前，
+					// 于是视频、状态层、顶栏、顶栏里那根弹性空 Box 每一层都能
+					// 把它挡掉，实际只剩 14px 高的一条能拖。
+					//
+					// chrome 淡出时这层必须撤掉：它在原生侧就是标题栏，鼠标一
+					// 进去页面就收不到 move，控制条再也唤不回来（baseline 的
+					// 注释就是为这个写的）。
+					if a.WinFull && !chromeOff {
+						ui.Box(c).Absolute().Top(0).Left(0).Right(0).
+							Height(theme.NavbarHeight).DragWindow()
+					}
 					a.playerTopbar(c)
 					a.playerControls(c)
 					a.playerCaption(c)
 				})
+				// 双击画面切换窗口全屏（baseline 的 onStageDoubleClick）。
+				// 按钮、下拉、头像这些命中目标自带点击身份，在命中链里排在
+				// stage 前面，双击落在它们身上时这里收不到——控制条上连点
+				// 不会误切全屏。
+				if stage.DoubleClicked() {
+					a.WinFull = !a.WinFull
+				}
 				// 右侧弹幕列表（baseline 的 panelSlot）。
 				// baseline 是 {!isFullscreen && <panelSlot>}：两种全屏下整个
 				// 面板连同边缘把手都不出现，画面独占整块空间。
@@ -82,6 +109,93 @@ func (a *App) PlayerPage(c *ui.Context) {
 			})
 		})
 	})
+}
+
+// 悬浮 chrome 的自动隐藏参数，照抄 baseline 的 CHROME_IDLE_MS 与 --dur-3。
+const (
+	chromeIdleAfter = 2800 * time.Millisecond
+	chromeFadeDur   = 280 * time.Millisecond
+)
+
+// 指针落在这两条带里就算「手在 chrome 上」：顶栏（top 14 + 44 高）和
+// 控制条（bottom 12 + 44 高），各自留一点余量，贴着边走也别让它跑掉。
+const (
+	chromeTopBand    = 70
+	chromeBottomBand = 76
+)
+
+// syncChromeIdle 决定这一帧悬浮 chrome（顶栏 / 控制条 / 窗口按钮）要不要淡出。
+//
+// 时序照抄 baseline：指针静止 2800ms 之后淡出，一动立刻回来；暂停、信息岛
+// 展开、任一下拉或面板开着时一律常显——那几种状态人正在操作，按钮不能自己
+// 跑掉。进出全屏也先把 chrome 亮出来，别让人切回来的那一刻对着空画面找按钮。
+//
+// 指针活动靠 stage 的 PointerPosition 读：它会顺手把 stage 标成
+// flagTrackPointer，于是指针在画面上移动时 MyGo 一定来一帧，哪怕停的是
+// 没有控件的空白处（hover 链没变也一样）。
+func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
+	now := c.Now()
+	stay := func() {
+		a.ChromeHidden = false
+		a.chromeIdleAt = now
+	}
+
+	if !a.Playing || a.InfoOpen || a.QualityOpen || a.LineOpen ||
+		a.DanmuSettingsOpen || a.ShortcutsOpen {
+		stay()
+		return
+	}
+	if full := a.playerFullscreen(); full != a.chromeFull {
+		a.chromeFull = full
+		stay()
+		return
+	}
+
+	_, winH := c.Size()
+	stageH := winH
+	if !a.playerFullscreen() {
+		stageH -= theme.NavbarHeight
+	}
+	x, y, over := stage.PointerPosition()
+	if over != a.chromePtrOver || x != a.chromePtrX || y != a.chromePtrY {
+		a.chromePtrOver, a.chromePtrX, a.chromePtrY = over, x, y
+		stay()
+		return
+	}
+	if over && (y <= chromeTopBand || y >= stageH-chromeBottomBand) {
+		stay()
+		return
+	}
+
+	if a.chromeIdleAt.IsZero() {
+		a.chromeIdleAt = now
+	}
+	idle := now.Sub(a.chromeIdleAt)
+	if idle >= chromeIdleAfter {
+		a.ChromeHidden = true
+		return
+	}
+	// 画面完全静止（没视频帧、没弹幕）时不会有别的帧，靠这一帧收尾。
+	// 基准固定在 chromeIdleAt 上，每帧重排也不会把到点时刻往后推。
+	c.After(chromeIdleAfter - idle)
+}
+
+// chromeFade 让一块 chrome 跟着自动隐藏淡出，返回当前透明度。
+//
+// baseline 是 opacity + visibility 过渡；这边 opacity 走 AnimateTo，隐藏态
+// 再补一个 PassThrough——不穿透的话，淡到 0 的顶栏和控制条仍然占着命中
+// 矩形，画面上的双击和点击播放会被它们吃掉。
+func (a *App) chromeFade(e ui.Element) float32 {
+	target := float32(1)
+	if a.ChromeHidden {
+		target = 0
+	}
+	op := e.AnimateTo("chrome-fade", target, theme.EaseOut(chromeFadeDur))
+	e.Opacity(op)
+	if a.ChromeHidden {
+		e.PassThrough()
+	}
+	return op
 }
 
 // playerFullscreen 报告播放页是否处于任意一种全屏：应用内的窗口全屏
@@ -256,7 +370,12 @@ func (a *App) playerTopbar(c *ui.Context) {
 	s := a.current()
 	winW, _ := c.Size()
 
-	ui.Row(c).Absolute().Top(14).Left(14).Right(14).Gap(10).Children(func() {
+	// 这条 Row 只是布局容器，自己不该吃指针：窗口全屏时它整条压在画面
+	// 顶部的拖窗条上，不穿透的话这条 44 高的带子会被它连同下面那根弹性
+	// 空 Box 一起挡死。按钮和信息岛是子元素，照常命中。
+	row := ui.Row(c).Absolute().Top(14).Left(14).Right(14).Gap(10).PassThrough()
+	a.chromeFade(row)
+	row.Children(func() {
 		// ------------------------------ 返回：44 圆钮
 		back := ui.Box(c).Size(44, 44).Radius(999).
 			Background(ui.RGBA(10, 10, 12, 0.62)).
@@ -413,7 +532,9 @@ func (a *App) playerTopbar(c *ui.Context) {
 			})
 		})
 
-		ui.Box(c).Grow(1)
+		// 弹性空白也穿透：它占了顶栏右侧整段，不穿透就等于把拖窗条
+		// 右边那一大半又盖回去。
+		ui.Box(c).Grow(1).PassThrough()
 	})
 }
 
@@ -424,7 +545,10 @@ func (a *App) playerTopbar(c *ui.Context) {
 // 只在 hover 时变白、激活时变强调色——之前给每个按钮加方块底是错的。
 func (a *App) playerControls(c *ui.Context) {
 	m := metricsFor(c)
-	ui.Box(c).Absolute().Left(14).Right(14).Bottom(12).Children(func() {
+	dock := ui.Box(c).Absolute().Left(14).Right(14).Bottom(12)
+	// baseline 的 .controlsHidden：淡出的同时往下让 10px
+	dock.Translate(0, (1-a.chromeFade(dock))*10)
+	dock.Children(func() {
 		bar := ui.Row(c).Height(44).Padding(7, 14, 7, 14).Radius(16).FillWidth().
 			Background(playerBarBg).Border(1, playerBarBorder).
 			AlignItems(ui.Center)
