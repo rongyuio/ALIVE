@@ -22,6 +22,10 @@ const (
 	biliListTTL    = 15 * time.Second
 	biliSearchWait = 400 * time.Millisecond
 	biliCoverWidth = 480
+
+	// biliAvatarSize 是头像请求的边长。头像最大画到 40 DIP（关注列表），
+	// 高 DPI 下 2 倍也只有 80 像素；120 留余量，同时避开上游默认的 480 宽。
+	biliAvatarSize = 120
 )
 
 type bilibiliProvider struct {
@@ -30,7 +34,10 @@ type bilibiliProvider struct {
 	sc    *bilibiliSearch.Client
 	areas *cache[[]CategoryGroup]
 	rooms *cache[Page]
-	lim   *limiter
+	// uids 缓存「房间号 → 主播 uid」。刷新关注列表时每个房间都要先 get_info
+	// 换 uid，而 uid 基本不会变：缓存住能把整轮刷新的请求数砍掉一半。
+	uids *cache[biliRoomRef]
+	lim  *limiter
 	// auth 是扫码登录；它和取流共用上面这个 api 会话。
 	auth *qrAuth
 }
@@ -45,8 +52,12 @@ func newBilibili() *bilibiliProvider {
 		sc:    bilibiliSearch.New(biblib.New()),
 		areas: newCache[[]CategoryGroup](),
 		rooms: newCache[Page](),
-		// 匿名接口，2 并发足够；B 站对高频比较敏感。
-		lim: newLimiter(2, 120*time.Millisecond),
+		uids:  newCache[biliRoomRef](),
+		// 对齐 baseline 的关注刷新并发（前台 6 个 worker、后端不限流）：
+		// 平台限流器开到 6 并发，刷新时 6 个 worker 不会互相卡住。
+		// 60ms 只用来避免同一瞬间把 6 个请求一起打出去；真被风控时
+		// block() 仍会把整个平台冷下来。
+		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
 	p.auth = newBiliAuth(p)
 	return p
@@ -142,7 +153,7 @@ func (p *bilibiliProvider) Rooms(ctx context.Context, areaID string, page, size 
 				Title:    strings.TrimSpace(r.Title),
 				Nickname: strings.TrimSpace(r.Uname),
 				Cover:    biliImage(firstNonEmpty(r.Cover, r.UserCover, r.SystemCover)),
-				Avatar:   httpsURL(r.Face),
+				Avatar:   biliAvatar(r.Face),
 				Viewers:  int64(r.Online),
 				Area:     firstNonEmpty(r.AreaV2Name, r.AreaName, r.ParentName),
 				Live:     true, // 该接口只返回在播房间
@@ -211,7 +222,7 @@ func (p *bilibiliProvider) Search(ctx context.Context, keyword string) ([]Room, 
 			Title:    stripTags(item.Title),
 			Nickname: stripTags(item.Uname),
 			Cover:    biliImage(firstNonEmpty(item.Cover, item.UserCover)),
-			Avatar:   httpsURL(item.Uface),
+			Avatar:   biliAvatar(item.Uface),
 			Viewers:  int64(item.Online),
 			Area:     item.CateName,
 			Live:     item.LiveStatus == 1,
@@ -293,4 +304,21 @@ func biliImage(raw string) string {
 		return u
 	}
 	return fmt.Sprintf("%s@%dw.webp", u, biliCoverWidth)
+}
+
+// biliAvatar 把头像地址改写成一枚静态小图。
+//
+// 上游的 face 自带 `@480w.webp`。源图是 GIF 的头像（B 站允许动图头像）会因为
+// 这个参数被 CDN 转成动画 WebP，而 Go 的 webp 解码器只认单帧 VP8/VP8L，
+// 整张图直接解不出来——界面上就是永远停在字母占位。换成 `.jpg` 取的是首帧
+// 静态图，顺带把 480 宽降到头像真正需要的尺寸。
+func biliAvatar(raw string) string {
+	u := httpsURL(raw)
+	if u == "" {
+		return ""
+	}
+	if i := strings.IndexByte(u, '@'); i >= 0 {
+		u = u[:i]
+	}
+	return fmt.Sprintf("%s@%dw_%dh.jpg", u, biliAvatarSize, biliAvatarSize)
 }
