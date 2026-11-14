@@ -28,7 +28,7 @@ func (a *App) Island(c *ui.Context) {
 
 	island := ui.Box(c).Key("island").Label("灵动岛").Absolute().Top(theme.IslandGap).
 		Width(theme.IslandW).Height(theme.IslandH).Radius(theme.RadiusFull).
-		Left((winW - theme.IslandW) / 2).
+		Left((winW-theme.IslandW)/2).
 		// baseline 的 .sidebar 有 1px 描边，光环正压在这条描边上
 		Border(1, theme.Border)
 

@@ -1,0 +1,53 @@
+# 提交/PR 的全量校验：gofmt + build + vet + mygo vet + test。
+#
+# 为什么用 windows-latest 而不是 ubuntu：这个项目的运行时就是 Windows
+# （relay 走 ffmpeg + job 对象，界面是 MyGo 的 D3D 后端），在 Linux 上
+# 能过只能说明代码能编译，说明不了它能不能跑。CI 跟开发机保持同一平台，
+# 本地 `make check` 过了 CI 就该过。
+#
+# 为什么不用 make：GitHub 的 Windows 镜像不保证装 make，而这几步本来就
+# 是四条命令。命令和 Makefile 里的 check 目标一一对应，改 Makefile 时
+# 记得同步这里。
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 单独一条 sh 脚本：需要判断 gofmt 的输出是否为空，pwsh 下写起来更难读。
+      - name: gofmt
+        shell: bash
+        run: |
+          bad=$(gofmt -l .)
+          if [ -n "$bad" ]; then
+            echo "needs gofmt:"
+            echo "$bad"
+            echo "本地跑 make fmt 后重新提交"
+            exit 1
+          fi
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: mygo vet
+        run: go tool mygo vet .
+
+      - name: test
+        run: go test ./... -count=1
