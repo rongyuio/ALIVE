@@ -198,6 +198,15 @@ type App struct {
 	lastFullscreenExit time.Time
 	ShortcutsOpen      bool
 
+	// 播放页悬浮 chrome（顶栏 / 控制条 / 窗口按钮）的自动隐藏，
+	// baseline 的 chromeHidden：指针静止 2.8 秒后淡出，一动就回来。
+	ChromeHidden  bool
+	chromeIdleAt  time.Time // 空闲计时的起点：指针最后一次活动的时刻
+	chromePtrX    float32
+	chromePtrY    float32
+	chromePtrOver bool // 指针是否还停在画面上
+	chromeFull    bool // 上一帧是否处于全屏：进出全屏要先把 chrome 亮出来
+
 	// 启动层：冷启动到首屏数据就绪之间盖一层（baseline 的 #dtv-splash）
 	Splash       bool
 	splashFading bool
