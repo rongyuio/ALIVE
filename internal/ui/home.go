@@ -198,6 +198,14 @@ type App struct {
 	lastFullscreenExit time.Time
 	ShortcutsOpen      bool
 
+	// 顶栏「数据同步」面板：导出 / 导入两个页签。
+	// SyncBusy 期间按钮不响应，SyncNotice / SyncError 是上一次动作的反馈。
+	SyncOpen   bool
+	SyncTab    string // "export" / "import"
+	SyncBusy   bool
+	SyncNotice string
+	SyncError  string
+
 	// 启动层：冷启动到首屏数据就绪之间盖一层（baseline 的 #dtv-splash）
 	Splash       bool
 	splashFading bool
@@ -418,7 +426,10 @@ func (a *App) Shell(c *ui.Context) {
 			// 灵动岛最后画，浮在内容之上
 			a.Island(c)
 		}
-		// Toast 永远在最上层
+		// Toast 永远在最上层（数据同步面板是模态，压在它下面一次即可）
+		if a.SyncOpen {
+			a.syncOverlay(c)
+		}
 		if a.ToastText != "" {
 			a.toastView(c)
 		}
@@ -795,7 +806,7 @@ func (a *App) Navbar(c *ui.Context) {
 				if a.activeTab() != "subscribe" {
 					a.searchButton(c)
 				}
-				a.iconButton(c, iconMonitorSmartphone, "数据同步")
+				a.iconButton(c, iconMonitorSmartphone, "数据同步", a.openSyncPanel)
 				a.paletteButton(c)
 				// 登录头像和上面三颗在同一个胶囊里：顶栏右侧本来就是一组
 				// 工具，单独拎出去会多出一层视觉噪音。
@@ -1033,16 +1044,19 @@ func (a *App) platformTabs(c *ui.Context) {
 }
 
 // iconButton 是工具组里的一枚图标按钮：38×38 圆形（≤1240 时 34×34），图标 18。
-func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string) {
+func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string, on func()) {
 	size := float32(38)
 	if a.narrow(c) {
 		size = 34
 	}
 	btn := ui.Box(c).Size(size, size).Radius(theme.RadiusFull).
-		Center().Cursor(ui.CursorPointer)
+		Center().Cursor(ui.CursorPointer).Label(label)
 	hovered := btn.Hovered()
 	if hovered {
 		btn.Background(theme.FillTertiary)
+	}
+	if btn.Clicked() {
+		on()
 	}
 	btn.Children(func() {
 		col := theme.TextSecondary
