@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -19,8 +18,8 @@ const (
 
 // Island 是顶部居中的「灵动岛」。
 //
-// 它只报状态，不承载面板：一双会眨的眼睛（9×11 的青柠色椭圆、间隔 11），
-// hover 时眼睛淡出、换成「N个直播」——常态不显示数字，更安静。
+// 它只报状态，不承载面板：一双会眨的眼睛（9×11 的青柠色椭圆、间隔 11）。
+// hover 不换内容、也不显示数字——岛只做呼吸，不抢注意力。
 //
 // 全部关注面板的入口在顶栏的星标格子上（见 follows_panel.go），
 // 点岛不再放大成面板。
@@ -58,58 +57,28 @@ func (a *App) Island(c *ui.Context) {
 		body.ClipInset(0, 0, 0, 0, theme.RadiusFull-islandBodyInset)
 
 		body.Children(func() {
-			a.islandPill(c, body)
+			a.islandPill(c)
 		})
 	})
 }
 
-// islandPill 是收起态：一双眼睛，hover 换成数字。
-func (a *App) islandPill(c *ui.Context, body ui.Element) {
-	hovered := body.Hovered()
-
-	faceTarget, countTarget := float32(1), float32(0)
-	if hovered {
-		faceTarget, countTarget = 0, 1
-	}
-
-	// ---- 眼睛
-	face := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0)
-	faceOp := face.AnimateTo("pill-face", faceTarget, theme.EaseOut(150*time.Millisecond))
-	face.Opacity(faceOp)
-	face.Children(func() {
-		ui.Row(c).Fill().Center().Gap(11).Children(func() {
-			// baseline 的 eye-blink：4.6s ease-in-out 循环，94% 时 scaleY 0.12。
-			// transform-origin 默认居中；reduced motion 下框架直接停在最终值 1。
-			eye := func() {
-				e := ui.Box(c).Width(9).Height(11).Radius(theme.RadiusFull).
-					Background(theme.AccentInk)
-				// 用 Loop 而不是 Keyframes：这版 MyGo 的 RepeatForever 播完
-				// 一次就停，眼睛只会眨一下。reduced motion 下不眨眼。
-				if !c.Preferences().ReduceMotion {
-					sy := blinkScale(e.Loop("blink", 4600*time.Millisecond, ui.Linear))
-					e.Scale(1, sy)
-				}
+// islandPill 是收起态：只有一双眨着的眼睛，hover 不改变任何内容。
+func (a *App) islandPill(c *ui.Context) {
+	ui.Row(c).Fill().Center().Gap(11).Children(func() {
+		// baseline 的 eye-blink：4.6s ease-in-out 循环，94% 时 scaleY 0.12。
+		// transform-origin 默认居中；reduced motion 下框架直接停在最终值 1。
+		eye := func() {
+			e := ui.Box(c).Width(9).Height(11).Radius(theme.RadiusFull).
+				Background(theme.AccentInk)
+			// 用 Loop 而不是 Keyframes：这版 MyGo 的 RepeatForever 播完
+			// 一次就停，眼睛只会眨一下。reduced motion 下不眨眼。
+			if !c.Preferences().ReduceMotion {
+				sy := blinkScale(e.Loop("blink", 4600*time.Millisecond, ui.Linear))
+				e.Scale(1, sy)
 			}
-			eye()
-			eye()
-		})
-	})
-
-	// ---- 数字：从下方 2px 淡入
-	count := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0)
-	countOp := count.AnimateTo("pill-count", countTarget, theme.EaseOut(220*time.Millisecond))
-	count.Opacity(countOp)
-	count.Translate(0, (1-countOp)*2)
-	count.Children(func() {
-		// 有关注才报「N个直播」，一个都没有就只写「关注」
-		label := "关注"
-		if n := len(a.followStreamers()); n > 0 {
-			label = fmt.Sprintf("%d个直播", a.liveCount())
 		}
-		ui.Box(c).Fill().Center().Children(func() {
-			ui.Text(c, label).FontSize(theme.TextSM).FontWeight(600).
-				TextColor(theme.TextPrimary).SingleLine()
-		})
+		eye()
+		eye()
 	})
 }
 
