@@ -19,6 +19,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/media"
+	"alive/internal/relay"
 	appui "alive/internal/ui"
 )
 
@@ -112,6 +113,11 @@ func main() {
 		}
 		// 图片解码必须回到主线程，缓存拿窗口来触发重绘
 		media.Default.SetWindow(win)
+
+		// 硬件编码器探测只在进程内做一次，要起一个 ffmpeg 真编 0.2 秒
+		// （约 1 秒）。放启动画面期间后台跑掉，用户看不到；否则第一次
+		// 进转码房间时要为它多等一秒。
+		relay.WarmUpEncoder()
 
 		// 关注列表的在线状态：等首屏起来再刷新一次，
 		// 别跟首屏那批分区/列表请求抢带宽（baseline 也是 1.2s 后自动刷）。

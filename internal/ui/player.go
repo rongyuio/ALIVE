@@ -1,0 +1,795 @@
+package ui
+
+import (
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+
+	"alive/internal/media"
+	"alive/internal/theme"
+)
+
+// 播放页里常用的半透明底色。baseline 的控制条和顶栏胶囊都是
+// 「深色半透明 + 1px 白色 12% 描边」，叠在画面上才压得住。
+var (
+	playerBarBg     = ui.RGBA(9, 10, 12, 0.55)
+	playerBarBorder = ui.RGBA(255, 255, 255, 0.09)
+	playerIcon      = ui.RGBA(255, 255, 255, 0.88)
+	playerIconOn    = ui.Hex("#ffffff")
+	playerTextDim   = ui.RGBA(244, 244, 239, 0.58)
+)
+
+// PlayerPage 是播放页。
+//
+// 结构对齐 baseline 的 PlayerPage：
+//
+//	playerShell（圆角 16 的整块）
+//	└─ stage（黑底画面，铺满）
+//	   ├─ 画面
+//	   └─ chrome（顶栏 + 底部控制台，浮在画面上）
+//
+// 直播流最后再接，现在画面先用当前直播间的封面顶着——版式、圆角、
+// 压暗、chrome 对比度都能照常验证。
+func (a *App) PlayerPage(c *ui.Context) {
+	a.ensureDanmuLoop()
+	// 接真实流：房间变了才重新取流 + 连弹幕
+	a.ensureMedia(c)
+	a.syncPlayer()
+	// 左右 14（窄屏 10）、底部不留：baseline 的 appBodyPlayer 就是这样，
+	// 播放页整块一直铺到窗口下沿。窗口全屏时四边都不留（shellFull 是 inset:0）。
+	full := a.WinFull
+	pad := a.bodyPadX(c)
+	if full {
+		pad = 0
+	}
+	ui.Box(c).Grow(1).Padding(0, pad, 0, pad).Children(func() {
+		shell := ui.Column(c).Fill().
+			Border(1, theme.Border).Background(theme.BgSecondary)
+		if full {
+			// .shellFull { border: none; border-radius: 0 }
+			shell.Border(0, ui.Transparent).ClipInset(0, 0, 0, 0, 0)
+		} else {
+			shell.Radius(theme.RadiusXL).ClipInset(0, 0, 0, 0, theme.RadiusXL)
+		}
+
+		shell.Children(func() {
+			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
+				stage.Children(func() {
+					a.stageFrame(c)
+					// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域。
+					// 只铺顶部一条：整块铺满会把画面下方的双击也吃掉。
+					if a.WinFull {
+						ui.Box(c).Absolute().Top(0).Left(0).Right(0).Height(44).DragWindow()
+					}
+					a.danmuLayer(c)
+					// 状态层压在画面和弹幕之上、chrome 之下：baseline 的
+					// .overlay 是 z-index 15，控制条和顶栏是 20。
+					a.stageOverlay(c)
+					a.bufferingPill(c)
+					a.playerTopbar(c)
+					a.playerControls(c)
+					a.playerCaption(c)
+				})
+				// 右侧弹幕列表（baseline 的 panelSlot）。
+				// baseline 是 {!isFullscreen && <panelSlot>}：两种全屏下整个
+				// 面板连同边缘把手都不出现，画面独占整块空间。
+				if !a.playerFullscreen() {
+					a.danmuPanel(c)
+				}
+			})
+		})
+	})
+}
+
+// playerFullscreen 报告播放页是否处于任意一种全屏：应用内的窗口全屏
+// （WinFull）或系统原生全屏。两者都会让顶栏让位给画面。
+func (a *App) playerFullscreen() bool {
+	if a.Router == nil || a.Router.Path() != routePlayer {
+		return false
+	}
+	return a.WinFull || (a.Win != nil && a.Win.IsFullScreen())
+}
+
+// stageFrame 是画面本身。
+//
+// 有播放器就画真流，没有（还在转封装、或者房间没开播）就先用封面顶着，
+// 这样版式不会跳。
+func (a *App) stageFrame(c *ui.Context) {
+	// 四边贴死：只写 Fill 的话元素会按自己的比例排，容器比 16:9 高时
+	// 底下就空出一条黑边（控制条会浮在那条黑边上）。
+	// contain 是 baseline 的选择：宁可留黑边也不裁、不拉伸，
+	// 弹幕层再盖到黑边上去（PlayerPage.module.css:83）。
+	p := a.media.player
+	if p != nil {
+		// Video 元素必须一直在：视频只有在被显示时才会往下走，藏起来
+		// 或干脆不画，MF 就不解码，首帧永远等不到。
+		ui.Video(c, p).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
+		if p.Ready() {
+			return
+		}
+		// 播放器已经开出来了，但首帧还没到——此时 Video 是一块纯黑。
+		// 拿封面盖住，看起来是「正在起播」而不是「播坏了」。
+	}
+	w, _ := c.Size()
+	if bmp := media.Default.Bitmap(a.currentCover(), w); bmp != nil {
+		ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
+	}
+	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+		Background(ui.RGBA(0, 0, 0, 0.22))
+}
+
+// stageOverlay 是画面上的状态层。baseline 一共有五种：拉流中、断流重连、
+// 缓冲中、未开播、取流失败。这里先做三种——断流自动重连还没做（需要
+// ffmpeg 退出的信号），其余三种的状态都已经在 media 上。
+func (a *App) stageOverlay(c *ui.Context) {
+	m := &a.media
+	if m.roomKey == "" {
+		return
+	}
+
+	switch {
+	// 转封装就绪不等于画面就绪。播放器开出来之后，Media Foundation 还要
+	// 下首片、建解码器，实测 2~4 秒才出第一帧。原来 loading 一撤覆盖层就
+	// 没了，而 Video 还是黑的——观感就是「loading → 黑屏几秒 → 突然有画面」。
+	// 所以这里把加载态延到播放器真的 Ready 为止。
+	case m.loading || (m.player != nil && !m.player.Ready() && m.player.Err() == nil):
+		a.overlayLayer(c, func() {
+			spinner(c, 30)
+			a.overlayText(c, "正在拉取直播流…")
+		})
+
+	case m.err != "":
+		a.overlayLayer(c, func() {
+			a.overlayText(c, m.err)
+			// 多线路平台失败过才提示，单线路说了也没用
+			if len(m.stream.Lines) > 1 {
+				ui.Text(c, "已尝试自动切换线路，仍失败可手动换线").
+					FontSize(theme.TextXS).TextColor(ui.RGBA(255, 255, 255, 0.6)).
+					TextAlign(ui.Center).LineHeight(1.7)
+			}
+			a.overlayButton(c, "重试", a.retryStream)
+		})
+
+	// 播放器开出来了但解码失败（首片坏、编码不支持）。这种时候它永远
+	// Ready 不了，不单独列一个分支就会一直卡在加载层上。
+	case m.player != nil && m.player.Err() != nil:
+		a.overlayLayer(c, func() {
+			a.overlayText(c, "播放失败："+m.player.Err().Error())
+			a.overlayButton(c, "重试", a.retryStream)
+		})
+
+	case m.stream.RoomID != "" && !m.stream.Live:
+		a.overlayLayer(c, func() {
+			// 58 圆底 + 26 图标：baseline 的 .offlineIcon
+			icon := ui.Box(c).Size(58, 58).Radius(29).Margin(0, 0, 4, 0).
+				Background(ui.RGBA(255, 255, 255, 0.08)).
+				Border(1, ui.RGBA(255, 255, 255, 0.10)).Center()
+			icon.Children(func() {
+				ui.Icon(c, iconMonitorOff).FontSize(26).
+					TextColor(ui.RGBA(255, 255, 255, 0.68))
+			})
+			ui.Text(c, "主播暂时没有开播").FontSize(theme.TextLG).FontWeight(600).
+				TextColor(ui.RGBA(255, 255, 255, 0.94))
+			a.overlayText(c, "开播后会自动加载，也可以手动刷新试试")
+			a.overlayButton(c, "立即刷新", a.retryStream)
+		})
+	}
+}
+
+// overlayLayer 是状态层的底板：铺满 stage 的深色半透明 + 居中的一列。
+//
+// baseline 的 .overlay 是 pointer-events: none（只有按钮重新开启命中），
+// 为的是样式全屏时窗口拖拽还能穿透。这边控制在它之后画，所以直接把
+// 底板做实——状态层出现时本来也没有别的东西要点。
+func (a *App) overlayLayer(c *ui.Context, fn func()) {
+	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+		Background(ui.RGBA(6, 7, 9, 0.82)).Children(func() {
+		ui.Column(c).Fill().Center().Gap(14).Children(fn)
+	})
+}
+
+// overlayText 是状态层的说明文字：13px / 白 86% / 居中 / 行高 1.7，
+// 最大宽度取窗口的 70%（baseline 的 .overlayText）。
+func (a *App) overlayText(c *ui.Context, text string) {
+	w, _ := c.Size()
+	ui.Text(c, text).FontSize(theme.TextSM).
+		TextColor(ui.RGBA(255, 255, 255, 0.86)).
+		LineHeight(1.7).TextAlign(ui.Center).MaxWidth(w * 0.7)
+}
+
+// overlayButton 是状态层上的主按钮（baseline 的 .primaryBtn）：
+// 40 高、左右 24、纯白胶囊、深色字。
+func (a *App) overlayButton(c *ui.Context, label string, on func()) {
+	btn := ui.Row(c).Height(40).Padding(0, 24, 0, 24).Radius(theme.RadiusFull).
+		Background(ui.Hex("#ffffff")).Center().Cursor(ui.CursorPointer).Label(label)
+	if btn.Hovered() {
+		btn.Background(ui.Hex("#f1f1f1"))
+	}
+	if btn.Clicked() {
+		on()
+	}
+	btn.Children(func() {
+		ui.Icon(c, iconSync).FontSize(13).TextColor(ui.Hex("#0b0c08"))
+		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(600).
+			TextColor(ui.Hex("#0b0c08"))
+	})
+}
+
+// bufferingPill 是左下角的「缓冲中…」小胶囊（baseline 的 .buffering）：
+// left 16 / bottom 76 / 30 高 / 胶囊底，压在控制条下面。
+//
+// 判定看的是「画面有没有在动」，不是 VideoPlayer.Buffering() ——
+// 后者在直播 HLS 上会永久卡在 true（原因见 playerMedia.stalled）。
+func (a *App) bufferingPill(c *ui.Context) {
+	p := a.media.player
+	if p == nil || a.media.loading || !a.media.stalled(p) {
+		return
+	}
+	ui.Row(c).Absolute().Left(16).Bottom(76).Height(30).
+		Padding(0, 12, 0, 12).Gap(7).Radius(theme.RadiusFull).
+		AlignItems(ui.Center).
+		Background(playerBarBg).Border(1, playerBarBorder).Children(func() {
+		spinner(c, 14)
+		ui.Text(c, "缓冲中…").FontSize(theme.TextXS).TextColor(playerIcon)
+	})
+}
+
+// currentCover 返回当前播放项对应卡片的封面。
+func (a *App) currentCover() string { return a.current().CoverURL }
+
+// current 返回当前播放的主播。
+func (a *App) current() Streamer {
+	if a.Player.Name != "" {
+		return a.Player
+	}
+	if a.PlayerIndex >= 0 && a.PlayerIndex < len(a.Streamers) {
+		return a.Streamers[a.PlayerIndex]
+	}
+	return Streamer{Name: "未选择直播间", Title: "", Category: ""}
+}
+
+// playerTopbar 是画面顶部那条：返回 + 直播间信息岛。
+func (a *App) playerTopbar(c *ui.Context) {
+	s := a.current()
+	winW, _ := c.Size()
+
+	ui.Row(c).Absolute().Top(14).Left(14).Right(14).Gap(10).Children(func() {
+		// ------------------------------ 返回：44 圆钮
+		back := ui.Box(c).Size(44, 44).Radius(999).
+			Background(ui.RGBA(10, 10, 12, 0.62)).
+			Border(1, ui.RGBA(255, 255, 255, 0.18)).
+			Center().Cursor(ui.CursorPointer)
+		if back.Hovered() {
+			back.Background(ui.RGBA(10, 10, 12, 0.72)).
+				BorderColor(ui.RGBA(255, 255, 255, 0.24))
+		}
+		if back.Clicked() {
+			a.Router.Back()
+		}
+		back.Children(func() {
+			// baseline 用的是 X（关闭），不是返回箭头
+			ui.Icon(c, iconPlayerBack).FontSize(19).TextColor(ui.RGBA(255, 255, 255, 0.92))
+		})
+
+		// ------------------------------ 信息岛
+		//
+		// 收起是一枚 44px 的头像圆胶囊，点开头像才展开成整条：
+		// 高度固定、宽度做弹性过渡，内容跟着一起长出来（baseline 的 infoIsland）。
+		open := a.InfoOpen
+		targetW := float32(44)
+		targetR := float32(999)
+		var padT, padR, padB, padL float32 = 3, 3, 3, 3
+		if open {
+			targetW = 520
+			if limit := winW * 0.6; limit < targetW {
+				targetW = limit
+			}
+			targetR = 24
+			padT, padR, padB, padL = 4, 14, 4, 4
+		}
+
+		island := ui.Row(c).Height(44).Padding(padT, padR, padB, padL).Gap(10).
+			AlignItems(ui.Center).Clip()
+		island.Width(island.AnimateTo("info-w", targetW,
+			theme.EaseOut(240*time.Millisecond)))
+		island.Radius(island.AnimateTo("info-r", targetR,
+			theme.EaseOut(240*time.Millisecond)))
+		bg := ui.RGBA(10, 10, 12, 0.52)
+		if open {
+			bg = ui.RGBA(10, 10, 12, 0.66)
+		}
+		island.Background(bg)
+		border := ui.RGBA(255, 255, 255, 0.14)
+		if island.Hovered() {
+			border = ui.RGBA(255, 255, 255, 0.26)
+		}
+		island.Border(1, border)
+
+		island.Children(func() {
+			// 头像触发钮：36 圆，展开时才带上右下角的直播点
+			trigger := ui.Box(c).Size(36, 36).Shrink(0).Cursor(ui.CursorPointer).
+				Label("主播信息")
+			if trigger.Clicked() {
+				a.InfoOpen = !a.InfoOpen
+			}
+			trigger.Children(func() {
+				if bmp := media.Default.Bitmap(s.AvatarURL, 36); bmp != nil {
+					ui.Image(c, bmp).Size(36, 36).Radius(18).Fit(ui.Cover)
+				} else {
+					ui.Box(c).Size(36, 36).Radius(18).
+						Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().Children(func() {
+						ui.Text(c, initial(s.Name)).FontSize(13).FontWeight(600).
+							TextColor(ui.RGBA(255, 255, 255, 0.88))
+					})
+				}
+				if s.Live {
+					// 10px 绿点压在头像右下角，带 2px 深色描边。
+					// 用 Left/Top 而不是 Right/Bottom：MyGo 里 Right 的基准
+					// 在缩小后的祖先上会偏出去，Left/Top 从 padding box 左上角
+					// 算起，36 的盒子里 27 就是右下角那一格。
+					ui.Box(c).Absolute().Left(27).Top(27).Size(10, 10).Radius(5).
+						Background(theme.StatusOnline).
+						Border(2, ui.RGBA(12, 13, 16, 0.9))
+				}
+			})
+
+			if !open {
+				return
+			}
+
+			// 展开内容：淡入 + 从左侧 8px 处滑进来
+			panel := ui.Row(c).Gap(10).AlignItems(ui.Center)
+			op := panel.AnimateTo("info-panel", 1, theme.EaseOut(150*time.Millisecond))
+			panel.Opacity(op)
+			panel.Translate((1-op)*-8, 0)
+
+			panel.Children(func() {
+				// 标题 + 平台·昵称·ID
+				ui.Column(c).Gap(2).Grow(1).Children(func() {
+					ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
+						TextColor(ui.RGBA(244, 244, 239, 0.95)).SingleLine().LineHeight(1.3)
+					ui.Text(c, fmt.Sprintf("%s · %s · ID:%s",
+						platformLabel(s.Platform), s.Name, s.RoomID)).
+						FontSize(theme.Text2XS).TextColor(playerTextDim).SingleLine().LineHeight(1.3)
+				})
+
+				// 状态胶囊：在播绿、未开播灰
+				statusBg := ui.RGBA(34, 197, 94, 0.16)
+				statusBorder := ui.RGBA(34, 197, 94, 0.34)
+				statusText := ui.RGBA(219, 255, 235, 0.95)
+				label := "直播中"
+				if !s.Live {
+					statusBg = ui.RGBA(148, 163, 184, 0.14)
+					statusBorder = ui.RGBA(148, 163, 184, 0.28)
+					statusText = ui.RGBA(226, 232, 240, 0.88)
+					label = "未开播"
+				}
+				ui.Box(c).Height(22).Padding(4, 10, 4, 10).Radius(999).
+					Background(statusBg).Border(1, statusBorder).Center().Children(func() {
+					ui.Text(c, label).FontSize(theme.Text2XS).FontWeight(700).
+						LetterSpacing(0.02).TextColor(statusText)
+				})
+
+				// 关注按钮
+				followed := a.isFollowed(s)
+				btn := ui.Row(c).Height(30).Padding(8, 12, 8, 12).Gap(5).Radius(999).
+					AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				if followed {
+					btn.Background(ui.RGBA(34, 197, 94, 0.16)).
+						Border(1, ui.RGBA(34, 197, 94, 0.34))
+				} else {
+					btn.Background(ui.RGBA(10, 10, 12, 0.44)).
+						Border(1, ui.RGBA(255, 255, 255, 0.14))
+					if btn.Hovered() {
+						btn.Background(ui.RGBA(10, 10, 12, 0.56)).
+							BorderColor(ui.RGBA(255, 255, 255, 0.22))
+					}
+				}
+				if btn.Clicked() {
+					a.toggleFollow(s)
+				}
+				col := ui.RGBA(255, 255, 255, 0.92)
+				if followed {
+					col = ui.RGBA(219, 255, 235, 0.95)
+				}
+				btn.Children(func() {
+					ico := iconStar
+					if followed {
+						ico = iconStarFilled
+					}
+					ui.Icon(c, ico).FontSize(14).TextColor(col)
+					text := "关注"
+					if followed {
+						text = "已关注"
+					}
+					ui.Text(c, text).FontSize(theme.TextXS).FontWeight(700).
+						LetterSpacing(0.01).TextColor(col)
+				})
+
+				// 登录入口在顶栏头像上，播放页这条信息岛只放关注。
+			})
+		})
+
+		ui.Box(c).Grow(1)
+	})
+}
+
+// playerControls 是底部控制台。
+//
+// 对齐 baseline 的 PlayerControls：一条半透明毛玻璃长条，左边播放/刷新/音量，
+// 右边弹幕组 + 清晰度 + 线路 + 两种全屏。按钮本身没有底色和圆角，
+// 只在 hover 时变白、激活时变强调色——之前给每个按钮加方块底是错的。
+func (a *App) playerControls(c *ui.Context) {
+	m := metricsFor(c)
+	ui.Box(c).Absolute().Left(14).Right(14).Bottom(12).Children(func() {
+		bar := ui.Row(c).Height(44).Padding(7, 14, 7, 14).Radius(16).FillWidth().
+			Background(playerBarBg).Border(1, playerBarBorder).
+			AlignItems(ui.Center)
+		bar.Shadow(0, 18, 44, -20, ui.RGBA(0, 0, 0, 0.7)).
+			InsetShadow(0, 0, 0, 1, theme.TopLight)
+
+		bar.Children(func() {
+			// ------------------------------ 左：播放 / 刷新 / 音量
+			ui.Row(c).Gap(m.leftGap).AlignItems(ui.Center).Children(func() {
+				playIcon, playSize := iconPlay, float32(22)
+				if a.Playing {
+					playIcon = iconPause
+				}
+				playLabel := "播放"
+				if a.Playing {
+					playLabel = "暂停"
+				}
+				a.playerIconBtn(c, playIcon, playSize, false, playLabel, func() {
+					a.Playing = !a.Playing
+					a.markDirty()
+					a.invalidateWindows()
+				})
+				a.playerIconBtn(c, iconSync, 19, false, "重新加载", func() {})
+
+				a.volumeControl(c, m)
+			})
+
+			ui.Box(c).Grow(1)
+
+			// ------------------------------ 右：弹幕组 / 清晰度 / 线路 / 小窗 / 两种全屏
+			ui.Row(c).Gap(m.rightGap).AlignItems(ui.Center).Children(func() {
+				// 弹幕组：开关 / 设置 / 屏蔽词，组内 gap 10（baseline 的 danmuGroup），
+				// 和右边几个下拉之间才是 12（窄屏 8）。
+				ui.Row(c).Gap(m.danmuGap).AlignItems(ui.Center).Children(func() {
+					danmuIcon := iconDanmuOff
+					if a.DanmuOn {
+						danmuIcon = iconDanmu
+					}
+					danmuLabel := "开启弹幕"
+					if a.DanmuOn {
+						danmuLabel = "关闭弹幕"
+					}
+					a.playerIconBtn(c, danmuIcon, 18, a.DanmuOn, danmuLabel, func() {
+						a.DanmuOn = !a.DanmuOn
+						a.markDirty()
+					})
+					a.danmuSettingsButton(c)
+					a.playerIconBtn(c, iconFilter, 16, false, "弹幕屏蔽", func() {})
+				})
+
+				// 清晰度 / 线路：选项全部来自平台返回值，还没取到流时整块
+				// 不出现。摆一个本平台根本不存在的档位，只是先骗一下眼睛。
+				if qOpts := a.qualityOptions(); len(qOpts) > 0 {
+					a.playerDropdown(c, "清晰度", qOpts,
+						&a.Quality, &a.QualityOpen, &a.QualityHover, a.pickQuality)
+				}
+				// 线路只列平台真实给出的节点：抖音这类没有多线路概念的平台
+				// 整块不出现——网页端也没有「自动线路」这一项。
+				if lineOpts := a.lineOptions(); len(lineOpts) > 0 {
+					a.playerDropdown(c, "线路", lineOpts,
+						&a.Line, &a.LineOpen, &a.LineHover, a.pickLine)
+				}
+
+				// 小窗播放：真开一个独立的置顶小窗，不是换张图标了事
+				pipLabel := "小窗播放"
+				if a.miniOpen() {
+					pipLabel = "退出小窗"
+				}
+				a.playerIconBtn(c, iconPip, 18, a.miniOpen(), pipLabel, a.togglePip)
+
+				// 窗口全屏：铺满应用窗口、任务栏仍可见（baseline 的 cssFullscreen）。
+				// 这和右边的系统全屏是两件事，别混。
+				winFullIcon := iconWinFull
+				if a.WinFull {
+					winFullIcon = iconMinimize2
+				}
+				winFullLabel := "窗口全屏"
+				if a.WinFull {
+					winFullLabel = "退出窗口全屏"
+				}
+				a.playerIconBtn(c, winFullIcon, 18, a.WinFull, winFullLabel, func() {
+					a.WinFull = !a.WinFull
+				})
+
+				isFull := a.Win != nil && a.Win.IsFullScreen()
+				fullIcon := iconFullscreen
+				if isFull {
+					fullIcon = iconMinimize2
+				}
+				fullLabel := "全屏"
+				if isFull {
+					fullLabel = "退出全屏"
+				}
+				a.playerIconBtn(c, fullIcon, 18, isFull, fullLabel, a.toggleFullscreen)
+			})
+		})
+	})
+}
+
+// controlMetrics 是控制条在当前窗口宽度下的尺寸。
+//
+// baseline 用 @media (max-width: 1100px) / (max-width: 980px) 两档：
+// 窄一档间距 12/10 收到 8/8、滑条 96 收 90；再窄一档滑条 72，
+// 并且百分比整个让位，免得控制条被挤到换行。
+type controlMetrics struct {
+	leftGap, rightGap, danmuGap float32
+	volumeW                     float32
+	showPercent                 bool
+}
+
+func metricsFor(c *ui.Context) controlMetrics {
+	m := controlMetrics{leftGap: 12, rightGap: 12, danmuGap: 10, volumeW: 96, showPercent: true}
+	winW, _ := c.Size()
+	switch {
+	case winW <= 980:
+		m.leftGap, m.rightGap, m.danmuGap = 8, 8, 8
+		m.volumeW, m.showPercent = 72, false
+	case winW <= 1100:
+		m.leftGap, m.rightGap, m.danmuGap = 8, 8, 8
+		m.volumeW = 90
+	}
+	return m
+}
+
+// volumeControl 是「静音键 + 滑条 + 百分比」这一组。
+//
+// 滑条没有拖动手柄：整条 18 高的热区都能按，按下即跳到该位置并开始拖动。
+// 关键在于拖动不能靠 Pressed 判断——它要求指针仍在热区矩形内，一拖出去就断。
+// Dragged 是 press 级的状态，指针离开元素后仍然为 true，用它判断「还按着」。
+func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(0, 0, 0, 6).Children(func() {
+		muteIcon := iconVolumeLow
+		switch {
+		case a.Volume <= 0:
+			muteIcon = iconVolumeMute
+		case a.Volume > 0.5:
+			muteIcon = iconVolumeHigh
+		}
+		muteLabel := "静音"
+		if a.Volume <= 0 {
+			muteLabel = "取消静音"
+		}
+		a.playerIconBtnBox(c, muteIcon, 24, 19, false, muteLabel, a.toggleMute)
+
+		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().Cursor(ui.CursorPointer)
+		// PointerPosition 的 x 是相对热区的，除以热区宽度就是音量比例
+		x, _, _ := hot.PointerPosition()
+		_, _, held := hot.Dragged()
+		pressed := hot.Pressed()
+		if pressed {
+			a.volumeDragging = true
+		}
+		if a.volumeDragging {
+			if !pressed && !held {
+				// 松开、或系统取消了这次按压
+				a.volumeDragging = false
+			} else {
+				// baseline 取整到 1%：既不抖，百分比数字也稳
+				v := min(1, max(0, x/m.volumeW))
+				v = float32(math.Round(float64(v)*100)) / 100
+				if v != a.Volume {
+					a.Volume = v
+					a.markDirty()
+				}
+			}
+		}
+
+		// .slider.active .rail：hover 或拖动时轨道 4 → 6、底色 18% → 26%
+		active := a.volumeDragging || hot.Hovered()
+		hot.Children(func() {
+			track := ui.Box(c).Width(m.volumeW).Height(4).Radius(999).
+				Background(ui.RGBA(255, 255, 255, 0.18))
+			if active {
+				track.Height(6).Background(ui.RGBA(255, 255, 255, 0.26))
+			}
+			track.Children(func() {
+				ui.Box(c).Absolute().Left(0).Top(0).Bottom(0).
+					Width(m.volumeW * a.Volume).Radius(999).Background(theme.Accent)
+			})
+		})
+
+		if m.showPercent {
+			ui.Text(c, fmt.Sprintf("%d%%", int(a.Volume*100+0.5))).
+				FontSize(theme.TextXS).TextColor(theme.Accent).
+				FontFeatures("tnum").Width(36).TextAlign(ui.End)
+		}
+	})
+}
+
+// playerDropdown 是控制台里的清晰度 / 线路下拉。
+//
+// baseline 的 ControlsDropdown：触发条 30 高，菜单在按钮**上方**（bottom 44），
+// 圆角 14、玻璃底 rgba(16,19,28,.82)、1px 白 12% 描边，
+// 选项 8×12 padding、13px，选中项 accent 字 + accent 24% 底 + 勾。
+// hoverClose 是 hover 触发浮层的关门计时。
+//
+// baseline 的 ControlsDropdown 和设置面板都是 onMouseEnter 打开、
+// onMouseLeave 排一个 220ms 的定时器关闭，指针从按钮移到面板上会 cancelClose。
+// MyGo 没有可取消的定时器，就记「最后一次确认离开」的时刻：按钮和面板
+// 都不 hover 时开始计时，到点后的第一帧关门。
+//
+// suppress 处理「点一下关掉」：指针还停在按钮上时，每帧的 hover 会立刻
+// 又把它打开，所以关掉之后要等指针先离开才允许 hover 再开。
+type hoverClose struct {
+	leftAt   time.Time
+	suppress bool
+}
+
+// baseline 的 scheduleClose：window.setTimeout(..., 220)。
+const hoverCloseDelay = 220 * time.Millisecond
+
+// hover 收一次悬停状态：true 取消计时并打开，false 开始计时，
+// 到点的第一帧把 open 置 false 并请求那一帧。
+//
+// 顺序很关键：先判 hovering 再判 open。反过来写就成了「只有已经打开
+// 的人才取消计时」，hover 永远打不开任何东西。
+func (h *hoverClose) hover(c *ui.Context, hovering bool, open *bool) {
+	if hovering {
+		h.leftAt = time.Time{}
+		if !h.suppress {
+			*open = true
+		}
+		return
+	}
+	// 指针离开按钮就解除点击后的抑制
+	h.suppress = false
+	if !*open {
+		h.leftAt = time.Time{}
+		return
+	}
+	now := c.Now()
+	if h.leftAt.IsZero() {
+		h.leftAt = now
+		c.After(hoverCloseDelay)
+		return
+	}
+	if now.Sub(h.leftAt) >= hoverCloseDelay {
+		*open = false
+		h.leftAt = time.Time{}
+	}
+}
+
+// clicked 是浮层触发条被点下的处理：开着就关（并压住 hover 重开），
+// 关着就开。baseline 的 onClick 也是 toggle。
+func (h *hoverClose) clicked(open *bool) {
+	if *open {
+		*open = false
+		h.suppress = true
+		return
+	}
+	*open = true
+}
+
+// playerDropdown 是控制条上的清晰度 / 线路下拉。
+//
+// onPick 在选中一项之后调用：值和菜单的关闭在本函数里完成，但「选中之后
+// 要做什么」是调用方的事（换清晰度要重起一路流，换线路要重新取流）。
+func (a *App) playerDropdown(c *ui.Context, label string, options []string, value *string, open *bool, h *hoverClose, onPick func(string)) {
+	// baseline 的 .controlItem：gap 6、左右各 6 的 padding、12px 白字，
+	// 没有底色也没有圆角，hover / 展开时只是把字提亮到纯白。
+	btn := ui.Row(c).Height(30).Padding(0, 6, 0, 6).Gap(6).
+		AlignItems(ui.Center).Cursor(ui.CursorPointer).Label(label)
+	if btn.Clicked() {
+		h.clicked(open)
+	}
+	// .menuWrap 的 onMouseEnter={() => { cancelClose(); setOpen(true) }}
+	h.hover(c, btn.Hovered(), open)
+	// lit 必须在 hover 之后读：同一次构建里 hover 可能刚把 open 打开，
+	// 提前算会让文字慢一帧才提亮。
+	lit := *open || btn.Hovered()
+	btn.Children(func() {
+		col := playerIcon
+		if lit {
+			col = playerIconOn
+		}
+		ui.Text(c, *value).FontSize(theme.TextXS).TextColor(col)
+		caret := btn.AnimateTo("dd-"+label, caretAngle(*open), theme.EaseOut(190*time.Millisecond))
+		ui.Icon(c, iconChevron).FontSize(12).TextColor(col).Rotate(caret)
+	})
+
+	ui.PopoverBase(c, btn, open, func(panel ui.Element) {
+		// baseline 是 min-width: 130px，不是固定宽：档位名带「1080P 原画」
+		// 这种前缀，写死 130 会把「自动（720P 超清）」挤成两行。
+		panel.MinWidth(130).Padding(10, 12, 10, 12).Radius(14).
+			Background(ui.RGBA(16, 19, 28, 0.82)).
+			Border(1, ui.RGBA(255, 255, 255, 0.12)).
+			Shadow(0, 18, 36, 0, ui.RGBA(0, 0, 0, 0.35)).
+			Margin(0, 0, 8, 0).
+			AttachTo(btn, ui.AnchorTopRight, ui.AnchorBottomRight)
+		// 指针从按钮滑进面板时要取消关闭计时（baseline 面板自己也有
+		// onMouseEnter={cancelClose}），否则菜单会从手底下消失。
+		h.hover(c, panel.Hovered(), open)
+		panel.Children(func() {
+			ui.Column(c).Gap(6).Children(func() {
+				for _, opt := range options {
+					a.playerDropdownItem(c, opt, value, open, onPick)
+				}
+			})
+		})
+	})
+}
+
+func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open *bool, onPick func(string)) {
+	active := opt == *value
+	// --player-accent-strong = color-mix(in srgb, accent 24%, transparent)
+	// 注意用 Alpha 而不是 Mix(Transparent)：后者逐通道插值，会把 RGB 一起
+	// 压到 24%，选中底色变成一块发黑的东西。
+	strong := theme.Accent.Alpha(0.24)
+
+	row := ui.Row(c).FillWidth().Padding(8, 12, 8, 12).Gap(12).Radius(8).
+		AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if active {
+		row.Background(strong)
+	} else if row.Hovered() {
+		row.Background(strong)
+	}
+	if row.Clicked() {
+		*value = opt
+		*open = false
+		a.markDirty()
+		if onPick != nil {
+			onPick(opt)
+		}
+	}
+	row.Children(func() {
+		col := ui.RGBA(255, 255, 255, 0.85)
+		if active {
+			col = theme.Accent
+		}
+		ui.Text(c, opt).FontSize(theme.TextSM).TextColor(col).NoWrap()
+		// 弹性空间交给空 Box，不能让文本自己 Grow：MyGo 的 Grow 从 0
+		// 尺寸起步、允许缩到内容宽度以下，最宽的那项（「自动（720P 超清）」）
+		// 会被压成两行。
+		ui.Box(c).Grow(1)
+		if active {
+			ui.Icon(c, iconCheck).FontSize(12).TextColor(theme.Accent)
+		}
+	})
+}
+
+// playerIconBtn 是控制台里的一枚图标按钮。
+//
+// label 对应 baseline 的 aria-label：既是无障碍名，也让自动化能按名字点到
+// 这颗按钮——自绘 Box 不进无障碍树，没有 Label 就只能靠坐标猜。
+func (a *App) playerIconBtn(c *ui.Context, ico *ui.SVG, size float32, active bool, label string, on func()) {
+	a.playerIconBtnBox(c, ico, 30, size, active, label, on)
+}
+
+// playerIconBtnBox 是同一种按钮，但外框可以不是 30——音量那颗图标按钮
+// baseline 用的是 24×24（.volumeIcon），其它才是 30×30（.iconControl）。
+func (a *App) playerIconBtnBox(c *ui.Context, ico *ui.SVG, box, size float32, active bool, label string, on func()) {
+	// baseline 的 .iconControl：30×30，没有底色也没有圆角，
+	// 只靠颜色变化表达 hover / 激活——加方块底会让控制条看起来碎。
+	btn := ui.Box(c).Size(box, box).Center().Cursor(ui.CursorPointer).Label(label)
+	if btn.Clicked() {
+		on()
+	}
+	col := playerIcon
+	switch {
+	case active:
+		col = theme.Accent
+	case btn.Hovered():
+		col = playerIconOn
+	}
+	btn.Children(func() {
+		ui.Icon(c, ico).FontSize(size).TextColor(col)
+	})
+}
