@@ -27,11 +27,14 @@ package media
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +50,8 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
+	// x/image/webp 只解单帧 VP8/VP8L。动画 WebP（VP8X + ANIM）会直接报错，
+	// 这条限制决定了下面 staticVariant 的存在：动图头像不能按 .webp 取。
 	_ "golang.org/x/image/webp"
 
 	"github.com/egoist/mygo"
@@ -95,6 +100,10 @@ const (
 
 	// sweepEvery 是后台回收的间隔。
 	sweepEvery = 30 * time.Second
+
+	// staticFallbackWidth 是「按原图解码」时静态兜底图的上限宽度。
+	// 那种场景只出现在整屏播放页封面，480 已经够画满一屏。
+	staticFallbackWidth = 480
 )
 
 // releaseNote 记录一个必须记住的框架行为：
@@ -140,12 +149,17 @@ type Cache struct {
 	textures map[string]*texture
 	raw      map[string]*rawImage
 	rawBytes int64
-	loading  map[string]bool
-	failed   map[string]time.Time
-	bytes    int64
-	win      *mygo.Window
-	scale    float64 // 设备像素 / DIP，决定解码尺寸
-	client   *http.Client
+	// loading 和 failed 都按 URL 记，不带目标宽度。
+	//
+	// 同一张头像会同时被 32（卡片）、36（播放页）、40（关注列表）三种尺寸
+	// 请求；按 (URL, 宽度) 记的话这三次都会各自走一遍网络，同一张死链图
+	// 也会各自失败一次。按 URL 记就是一图一次下载、一次失败冷却。
+	loading map[string]bool
+	failed  map[string]time.Time
+	bytes   int64
+	win     *mygo.Window
+	scale   float64 // 设备像素 / DIP，决定解码尺寸
+	client  *http.Client
 
 	download chan struct{}
 	decode   chan struct{}
@@ -203,15 +217,15 @@ func (c *Cache) Bitmap(url string, width float32) *ui.Bitmap {
 		c.mu.Unlock()
 		return t.bmp
 	}
-	if c.loading[key] {
+	if c.loading[url] {
 		c.mu.Unlock()
 		return nil
 	}
-	if at, ok := c.failed[key]; ok && now.Sub(at) < retryAfter {
+	if at, ok := c.failed[url]; ok && now.Sub(at) < retryAfter {
 		c.mu.Unlock()
 		return nil
 	}
-	c.loading[key] = true
+	c.loading[url] = true
 
 	// L2 命中：拿现成的字节去解码，不用再走网络
 	var raw []byte
@@ -256,13 +270,26 @@ const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 	"(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
 func (c *Cache) fetch(key, url string, target int) {
+	data, err := c.get(url)
+	if err != nil {
+		c.fail(url)
+		return
+	}
+	c.putRaw(url, data)
+	c.decodeRaw(key, url, target, data)
+}
+
+// get 下载一张图的原始字节。
+//
+// 下载并发槽只包住这一段：解码是另一类 CPU 活，有它自己的槽，
+// 犯不着在解码期间继续占着下载名额。
+func (c *Cache) get(url string) ([]byte, error) {
 	c.download <- struct{}{}
 	defer func() { <-c.download }()
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		c.fail(key)
-		return
+		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	// 平台 CDN 有防盗链，缺 Referer 会拿到 403 或一张提示图
@@ -270,24 +297,45 @@ func (c *Cache) fetch(key, url string, target int) {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.fail(key)
-		return
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		c.fail(key)
-		return
+		return nil, fmt.Errorf("media: %s 返回 %d", url, resp.StatusCode)
 	}
 
 	// 直播封面一般 200KB 以内，8MB 已经是很宽的上限，防止异常响应吃内存
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil || len(data) == 0 {
-		c.fail(key)
-		return
+	if err != nil {
+		return nil, err
 	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("media: %s 返回空响应", url)
+	}
+	return data, nil
+}
 
-	c.putRaw(url, data)
-	c.decodeRaw(key, url, target, data)
+// staticVariant 给 B 站图床的图换一个静态 JPEG 变体地址。
+//
+// 源图是 GIF 时，CDN 的 `.webp` 处理会输出动画 WebP（VP8X + ANIM + ANMF），
+// 而 x/image/webp 只解单帧，整张图直接解不出来——动图头像就这样永远停在
+// 字母占位上。换成 `.jpg` 拿的是首帧静态图，尺寸也跟着要的宽度走。
+//
+// 只认 hdslb.com：`@宽w_高h.jpg` 是 B 站图床的私有语法，别的 CDN 加了只会 404。
+func staticVariant(rawURL string, target int) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || !strings.HasSuffix(u.Host, "hdslb.com") {
+		return ""
+	}
+	base, _, ok := strings.Cut(u.Path, "@")
+	if !ok {
+		return ""
+	}
+	if target <= 0 {
+		target = staticFallbackWidth
+	}
+	u.Path = fmt.Sprintf("%s@%dw.jpg", base, target)
+	return u.String()
 }
 
 // putRaw 把原始字节放进 L2，超限时按最久没用过的淘汰。
@@ -319,18 +367,54 @@ func (c *Cache) evictRawLocked() {
 
 // decodeRaw 把字节解码、缩放到目标宽度，然后排队等上屏。
 func (c *Cache) decodeRaw(key, url string, target int, data []byte) {
-	// 解码与缩放都留在后台：这是 CPU 密集的一段，绝不能搬到渲染线程上。
-	c.decode <- struct{}{}
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err == nil && target > 0 {
-		img = scaleTo(img, target)
-	}
-	<-c.decode
+	img, err := c.decodeBytes(target, data)
 	if err != nil {
-		c.fail(key)
+		// 解不出来多数是动图：GIF 源被 CDN 转成了动画 WebP。
+		// 换静态 JPEG 变体再试一次，比直接判死多一条活路。
+		if alt := staticVariant(url, target); alt != "" {
+			go c.fetchStatic(key, url, alt, target)
+			return
+		}
+		c.fail(url)
 		return
 	}
 	c.enqueue(key, url, img)
+}
+
+// fetchStatic 取静态变体，成功后把它当作这张 URL 的字节。
+//
+// 覆盖 L2 里那份解不出来的动画字节：同一张头像接下来被别的尺寸请求时
+// 直接从缓存解码，不用再走一次网络。这里不再兜底，避免来回打转。
+func (c *Cache) fetchStatic(key, url, alt string, target int) {
+	data, err := c.get(alt)
+	if err != nil {
+		c.fail(url)
+		return
+	}
+	c.putRaw(url, data)
+	img, err := c.decodeBytes(target, data)
+	if err != nil {
+		c.fail(url)
+		return
+	}
+	c.enqueue(key, url, img)
+}
+
+// decodeBytes 解码并缩放到目标宽度。
+//
+// 解码与缩放都留在后台：这是 CPU 密集的一段，绝不能搬到渲染线程上。
+func (c *Cache) decodeBytes(target int, data []byte) (image.Image, error) {
+	c.decode <- struct{}{}
+	defer func() { <-c.decode }()
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if target > 0 {
+		img = scaleTo(img, target)
+	}
+	return img, nil
 }
 
 // scaleTo 把图缩到 width 宽，等比。
@@ -381,7 +465,7 @@ func (c *Cache) flush() {
 	c.mu.Unlock()
 	if win == nil {
 		for _, p := range batch {
-			c.fail(p.key)
+			c.fail(p.url)
 		}
 		return
 	}
@@ -407,8 +491,8 @@ func (c *Cache) flush() {
 func (c *Cache) done(key, url string, bmp *ui.Bitmap) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.loading[key] = false
-	delete(c.failed, key)
+	c.loading[url] = false
+	delete(c.failed, url)
 	if _, ok := c.textures[key]; ok {
 		return
 	}
@@ -421,10 +505,10 @@ func (c *Cache) done(key, url string, bmp *ui.Bitmap) {
 }
 
 // fail 记一次失败，冷却期内不再重试。
-func (c *Cache) fail(key string) {
+func (c *Cache) fail(url string) {
 	c.mu.Lock()
-	c.loading[key] = false
-	c.failed[key] = time.Now()
+	c.loading[url] = false
+	c.failed[url] = time.Now()
 	c.mu.Unlock()
 }
 
@@ -526,7 +610,7 @@ func (c *Cache) Ready(url string, width float32) bool {
 	if _, ok := c.textures[key]; ok {
 		return true
 	}
-	_, failed := c.failed[key]
+	_, failed := c.failed[url]
 	return failed
 }
 
