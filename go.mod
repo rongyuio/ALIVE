@@ -7,7 +7,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/dop251/goja v0.0.0-20261110204830-f493a2b600d6
 	github.com/egoist/mygo v0.9.0
-	github.com/rongyuio/bilibili v0.0.0-00010101000000-000000000000
+	github.com/rongyuio/bilibili v0.14.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/image v0.46.0
 )
@@ -42,5 +42,3 @@ require (
 )
 
 tool github.com/egoist/mygo/cmd/mygo
-
-replace github.com/rongyuio/bilibili => ../bilibili
