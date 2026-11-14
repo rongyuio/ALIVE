@@ -5,6 +5,7 @@ import (
 
 	"alive/internal/live"
 )
+
 // 刷新结束的提示文案要和 baseline 的 handleRefresh 一致：
 // 全成功报数、部分失败报两边、全军覆没报失败。色调也要对上——它决定图标。
 func TestRefreshSummary(t *testing.T) {
