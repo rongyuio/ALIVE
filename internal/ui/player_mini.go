@@ -204,7 +204,9 @@ func (a *App) playerCaption(c *ui.Context) {
 	}
 	maximized := a.Win.IsMaximized()
 
-	ui.Row(c).Absolute().Top(0).Right(0).Height(32).Children(func() {
+	row := ui.Row(c).Absolute().Top(0).Right(0).Height(32)
+	a.chromeFade(row)
+	row.Children(func() {
 		a.captionBtn(c, captionMin, false, func() { a.Win.Minimize() })
 		icon := captionMax
 		if maximized {

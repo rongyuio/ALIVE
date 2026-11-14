@@ -195,6 +195,23 @@ type App struct {
 	lastFullscreenExit time.Time
 	ShortcutsOpen      bool
 
+	// 顶栏「数据同步」面板：导出 / 导入两个页签。
+	// SyncBusy 期间按钮不响应，SyncNotice / SyncError 是上一次动作的反馈。
+	SyncOpen   bool
+	SyncTab    string // "export" / "import"
+	SyncBusy   bool
+	SyncNotice string
+	SyncError  string
+
+	// 播放页悬浮 chrome（顶栏 / 控制条 / 窗口按钮）的自动隐藏，
+	// baseline 的 chromeHidden：指针静止 2.8 秒后淡出，一动就回来。
+	ChromeHidden  bool
+	chromeIdleAt  time.Time // 空闲计时的起点：指针最后一次活动的时刻
+	chromePtrX    float32
+	chromePtrY    float32
+	chromePtrOver bool // 指针是否还停在画面上
+	chromeFull    bool // 上一帧是否处于全屏：进出全屏要先把 chrome 亮出来
+
 	// 启动层：冷启动到首屏数据就绪之间盖一层（baseline 的 #dtv-splash）
 	Splash       bool
 	splashFading bool
@@ -243,7 +260,7 @@ type CategoryGroup struct {
 // 数据。这样生产路径在结构上就够不着 mock——不是「造完再逐项清空」，那种
 // 写法每加一个数据字段就要多记一次清理，漏一次就漏进真实界面。
 func newApp() *App {
-	return &App{
+	a := &App{
 		Platform:      "douyu",
 		PlatformOrder: normalizePlatformOrder(nil),
 		Follows:       []FollowRecord{},
@@ -278,6 +295,11 @@ func newApp() *App {
 		feedCache:        map[string]feedEntry{},
 		subCategories:    map[string][]string{},
 	}
+	// 顶栏这些 tab 是同一层级的横向页面，没有谁是「进入谁的下一层」。
+	// Router 按路径层级决定往哪边滑，在这套结构上只会滑出三种不一样的结果，
+	// 所以干脆关掉页面过渡：切过去就是切过去，动的只有那颗滑块。
+	a.Router.Transition = ui.TransitionNone
+	return a
 }
 
 // NewApp 是应用本体：分区与直播列表都来自 internal/live。
@@ -381,7 +403,8 @@ func (a *App) Shell(c *ui.Context) {
 	c.SetTheme(theme.Theme())
 
 	// baseline：Ctrl/Cmd + K 唤起搜索；输入框里打字时不抢
-	if !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyK) {
+	// 没有平台上下文的页面连搜索入口都没有，快捷键也不该把它打开。
+	if a.searchAvailable() && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyK) {
 		a.SearchOpen = true
 	}
 
@@ -417,7 +440,10 @@ func (a *App) Shell(c *ui.Context) {
 			// 灵动岛浮在内容之上，只报状态（点击不再展开任何东西）
 			a.Island(c)
 		}
-		// Toast 永远在最上层
+		// Toast 永远在最上层（数据同步面板是模态，压在它下面一次即可）
+		if a.SyncOpen {
+			a.syncOverlay(c)
+		}
 		if a.ToastText != "" {
 			a.toastView(c)
 		}
@@ -788,13 +814,14 @@ func (a *App) Navbar(c *ui.Context) {
 
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			// baseline 的 toolGroup：搜索、同步、配色三颗按钮在同一个胶囊里；
-			// 订阅页没有平台上下文，搜索按钮不出现。
+			// 值得搜索的只有某个平台的直播列表：订阅页、全部关注页都没有平台上下文，
+			// 全部关注页自带页内搜索，那里不摆搜索按钮。
 			ui.Row(c).Gap(4).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
 				Background(theme.FillQuaternary).Children(func() {
-				if a.activeTab() != "subscribe" {
+				if a.searchAvailable() {
 					a.searchButton(c)
 				}
-				a.iconButton(c, iconMonitorSmartphone, "数据同步")
+				a.iconButton(c, iconMonitorSmartphone, "数据同步", a.openSyncPanel)
 				a.paletteButton(c)
 				// 登录头像和上面三颗在同一个胶囊里：顶栏右侧本来就是一组
 				// 工具，单独拎出去会多出一层视觉噪音。
@@ -910,6 +937,13 @@ func (a *App) activeTab() string {
 		return "follows"
 	case routeSubscribe:
 		return "subscribe"
+	case routePlayer:
+		// 播放页看的是某一个具体主播，顶栏必须跟着主播所属平台走。
+		// 读 a.Platform 会停在进播放页之前那个列表的平台：从订阅页点开
+		// 别家主播、或者从搜索里跳进来时，高亮就留在上一家。
+		if p := a.current().Platform; p != "" {
+			return p
+		}
 	}
 	return a.Platform
 }
@@ -1054,16 +1088,19 @@ func (a *App) platformTabs(c *ui.Context) {
 }
 
 // iconButton 是工具组里的一枚图标按钮：38×38 圆形（≤1240 时 34×34），图标 18。
-func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string) {
+func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string, on func()) {
 	size := float32(38)
 	if a.narrow(c) {
 		size = 34
 	}
 	btn := ui.Box(c).Size(size, size).Radius(theme.RadiusFull).
-		Center().Cursor(ui.CursorPointer)
+		Center().Cursor(ui.CursorPointer).Label(label)
 	hovered := btn.Hovered()
 	if hovered {
 		btn.Background(theme.FillTertiary)
+	}
+	if btn.Clicked() {
+		on()
 	}
 	btn.Children(func() {
 		col := theme.TextSecondary

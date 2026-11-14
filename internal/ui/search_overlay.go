@@ -43,6 +43,19 @@ type searchHit struct {
 	S      Streamer
 }
 
+// searchAvailable 报告当前页面有没有可搜索的平台上下文。
+//
+// 搜索是按单个平台走的：订阅页、全部关注页不属于任何平台
+// （关注页自带页内搜索），在这些页面摆一颗只能搜出空
+// 结果的按钮没有意义。
+func (a *App) searchAvailable() bool {
+	switch a.activeTab() {
+	case "follows", "subscribe":
+		return false
+	}
+	return true
+}
+
 // searchButton 是顶栏右侧那颗搜索图标按钮，同时是浮层的锚点。
 //
 // baseline 不在顶栏常驻输入框——常驻输入框会把宽度撑开、顶到中间的灵动岛。

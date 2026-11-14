@@ -1,0 +1,16 @@
+# 全仓库统一 LF：提交与检出都不做换行转换，Windows 上也不例外。
+# 已有的 core.autocrlf=true 会被这里覆盖（attributes 优先于 config）。
+* text=auto eol=lf
+
+# 二进制资源不做换行与 diff 转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.zip binary
+*.syso binary

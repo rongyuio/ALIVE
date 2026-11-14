@@ -99,7 +99,7 @@ func (d *biliAuthDriver) navUser(ctx context.Context) (authUser, error) {
 	return authUser{
 		UID:    strconv.FormatInt(nav.Mid, 10),
 		Name:   nav.Uname,
-		Avatar: httpsURL(nav.Face),
+		Avatar: biliAvatar(nav.Face),
 	}, nil
 }
 

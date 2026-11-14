@@ -465,21 +465,3 @@ func (a *App) followsList() []Streamer {
 	}
 	return out
 }
-
-// liveCount 数一下关注里正在直播的数量（灵动岛 hover 时显示的那个数）。
-func (a *App) liveCount() int {
-	if a.LiveMode {
-		return liveCountOf(a.followStreamers())
-	}
-	return liveCountOf(a.Streamers)
-}
-
-func liveCountOf(list []Streamer) int {
-	n := 0
-	for _, s := range list {
-		if s.Live {
-			n++
-		}
-	}
-	return n
-}
