@@ -75,11 +75,6 @@ func (a *App) handleEscape() {
 		a.ShortcutsOpen = false
 		return
 	}
-	if a.IslandOpen {
-		a.IslandOpen = false
-		a.IslandQuery = ""
-		return
-	}
 	if a.Router.Path() != routePlayer {
 		return
 	}
