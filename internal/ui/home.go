@@ -935,6 +935,13 @@ func (a *App) activeTab() string {
 		return "follows"
 	case routeSubscribe:
 		return "subscribe"
+	case routePlayer:
+		// 播放页看的是某一个具体主播，顶栏必须跟着主播所属平台走。
+		// 读 a.Platform 会停在进播放页之前那个列表的平台：从订阅页点开
+		// 别家主播、或者从搜索里跳进来时，高亮就留在上一家。
+		if p := a.current().Platform; p != "" {
+			return p
+		}
 	}
 	return a.Platform
 }
