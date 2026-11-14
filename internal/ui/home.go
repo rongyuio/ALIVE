@@ -260,7 +260,7 @@ type CategoryGroup struct {
 // 数据。这样生产路径在结构上就够不着 mock——不是「造完再逐项清空」，那种
 // 写法每加一个数据字段就要多记一次清理，漏一次就漏进真实界面。
 func newApp() *App {
-	return &App{
+	a := &App{
 		Platform:      "douyu",
 		PlatformOrder: normalizePlatformOrder(nil),
 		Follows:       []FollowRecord{},
@@ -295,6 +295,11 @@ func newApp() *App {
 		feedCache:        map[string]feedEntry{},
 		subCategories:    map[string][]string{},
 	}
+	// 顶栏这些 tab 是同一层级的横向页面，没有谁是「进入谁的下一层」。
+	// Router 按路径层级决定往哪边滑，在这套结构上只会滑出三种不一样的结果，
+	// 所以干脆关掉页面过渡：切过去就是切过去，动的只有那颗滑块。
+	a.Router.Transition = ui.TransitionNone
+	return a
 }
 
 // NewApp 是应用本体：分区与直播列表都来自 internal/live。
