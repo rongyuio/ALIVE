@@ -217,8 +217,11 @@ type App struct {
 	// 关注状态刷新的闸门：自动刷新和手动刷新共用，避免两轮请求叠在一起
 	followsBusy bool
 
-	// Toast：右下角一条短提示，2.6s 后自动消失（baseline 的 ToastProvider）
+	// Toast：右下角一条短提示，3.2s 后自动消失（baseline 的 ToastProvider）。
+	// Tone 决定左侧图标与颜色；Seq 每条自增，用来换代播入场动画。
 	ToastText string
+	ToastTone string
+	ToastSeq  int
 
 	// 列表加载态：数据层接上之前由 main.go 的拉取结果驱动
 	Loading bool
@@ -806,14 +809,20 @@ func (a *App) Navbar(c *ui.Context) {
 	})
 }
 
-// toast 弹一条右下角提示，2.6 秒后由后台清掉。
-func (a *App) toast(msg string) {
+// toast 弹一条右下角提示（baseline 的默认色调是 info），3.2 秒后由后台清掉。
+func (a *App) toast(msg string) { a.toastTone(msg, toastInfo) }
+
+// toastTone 是带色调的 toast：success / info / error 决定图标和图标颜色。
+func (a *App) toastTone(msg, tone string) {
 	a.ToastText = msg
+	a.ToastTone = tone
+	// 每条新提示换一次序号，入场动画的 key 跟着换代，才会重新播
+	a.ToastSeq++
 	if a.Win == nil {
 		return
 	}
 	win := a.Win
-	time.AfterFunc(2600*time.Millisecond, func() {
+	time.AfterFunc(3200*time.Millisecond, func() {
 		win.Update(func() {
 			if a.ToastText == msg {
 				a.ToastText = ""
@@ -822,20 +831,67 @@ func (a *App) toast(msg string) {
 	})
 }
 
+// toast 的三种色调，取值与 baseline 的 ToastTone 一致。
+const (
+	toastSuccess = "success"
+	toastInfo    = "info"
+	toastError   = "error"
+)
+
+// toastIcon 是每种色调左侧的那枚图标，对应 baseline 的 TONE_ICON。
+func toastIcon(tone string) *ui.SVG {
+	switch tone {
+	case toastSuccess:
+		return iconCheck
+	case toastError:
+		return iconTriangleAlert
+	}
+	return iconAlert
+}
+
+// toastIconColor 是图标颜色：success / danger / text-tertiary，
+// 和 baseline ToastProvider.module.css 里 .icon 的三条规则一致。
+func toastIconColor(tone string) ui.Color {
+	switch tone {
+	case toastSuccess:
+		return theme.Success
+	case toastError:
+		return theme.Danger
+	}
+	return theme.TextTertiary
+}
+
 // toastView 是右下角那条提示。
-// baseline：right/bottom 18、min-height 38、padding 7 8 7 12、圆角 12、bg-elevated + 描边 + popover 阴影。
+//
+// baseline ToastProvider：right/bottom 18、min-height 38、padding 7 8 7 12、
+// 圆角 12、bg-elevated + 描边 + popover 阴影；左侧 15px 图标，间距 9；
+// 入场是 opacity 0→1、translateY 8→0，220ms ease-out（reduced motion 下不播）。
 func (a *App) toastView(c *ui.Context) {
 	w, _ := c.Size()
 	maxW := w - 36
 	if maxW > 420 {
 		maxW = 420
 	}
-	ui.Box(c).Absolute().Right(18).Bottom(18).MaxWidth(maxW).
-		Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
+	box := ui.Box(c).Absolute().Right(18).Bottom(18).MaxWidth(maxW).
+		MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
 		Background(theme.BgElevated).Border(1, theme.Border).
-		Shadow(0, 22, 56, -22, theme.ShadowPopover).Children(func() {
-		ui.Text(c, a.ToastText).FontSize(theme.TextSM).
-			TextColor(theme.TextPrimary).SingleLine()
+		Shadow(0, 22, 56, -22, theme.ShadowPopover)
+
+	if !c.Preferences().ReduceMotion {
+		in := box.Keyframes(fmt.Sprintf("toast-in-%d", a.ToastSeq), []ui.Keyframe{
+			{Value: 0},
+			{At: 220 * time.Millisecond, Value: 1, Ease: ui.EaseOut},
+		}, ui.KeyframeOptions{})
+		box.Opacity(in).Translate(0, (1-in)*8)
+	}
+
+	box.Children(func() {
+		ui.Row(c).Gap(9).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, toastIcon(a.ToastTone)).FontSize(15).
+				TextColor(toastIconColor(a.ToastTone))
+			ui.Text(c, a.ToastText).FontSize(theme.TextSM).
+				TextColor(theme.TextPrimary).SingleLine()
+		})
 	})
 }
 
