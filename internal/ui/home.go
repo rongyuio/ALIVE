@@ -403,7 +403,8 @@ func (a *App) Shell(c *ui.Context) {
 	c.SetTheme(theme.Theme())
 
 	// baseline：Ctrl/Cmd + K 唤起搜索；输入框里打字时不抢
-	if !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyK) {
+	// 没有平台上下文的页面连搜索入口都没有，快捷键也不该把它打开。
+	if a.searchAvailable() && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyK) {
 		a.SearchOpen = true
 	}
 
@@ -813,10 +814,11 @@ func (a *App) Navbar(c *ui.Context) {
 
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			// baseline 的 toolGroup：搜索、同步、配色三颗按钮在同一个胶囊里；
-			// 订阅页没有平台上下文，搜索按钮不出现。
+			// 值得搜索的只有某个平台的直播列表：订阅页、全部关注页都没有平台上下文，
+			// 全部关注页自带页内搜索，那里不摆搜索按钮。
 			ui.Row(c).Gap(4).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
 				Background(theme.FillQuaternary).Children(func() {
-				if a.activeTab() != "subscribe" {
+				if a.searchAvailable() {
 					a.searchButton(c)
 				}
 				a.iconButton(c, iconMonitorSmartphone, "数据同步", a.openSyncPanel)

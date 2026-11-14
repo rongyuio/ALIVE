@@ -148,3 +148,30 @@ func TestFollowsListFiltersByPlatform(t *testing.T) {
 		t.Errorf("斗鱼提示是 %q", tip)
 	}
 }
+
+// 订阅页、全部关注页没有平台上下文，顶栏不该出现搜索入口。
+func TestSearchAvailableOnlyOnPlatformPages(t *testing.T) {
+	app := NewMockApp()
+	cases := []struct {
+		name  string
+		route string
+		want  bool
+	}{
+		{"首页", routeHome, true},
+		{"全部关注", routeFollows, false},
+		{"订阅", routeSubscribe, false},
+	}
+	for _, tc := range cases {
+		app.Router = ui.NewRouter(tc.route)
+		if got := app.searchAvailable(); got != tc.want {
+			t.Errorf("%s：searchAvailable = %v，期望 %v", tc.name, got, tc.want)
+		}
+	}
+
+	// 播放页有主播，就有平台上下文：搜索入口要留着。
+	app.Router = ui.NewRouter(routePlayer)
+	app.Player = Streamer{Platform: "bilibili", RoomID: "1", Name: "某主播"}
+	if !app.searchAvailable() {
+		t.Error("播放页应该有搜索入口")
+	}
+}
