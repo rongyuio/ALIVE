@@ -5,9 +5,24 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	bilibiliLive "github.com/rongyuio/bilibili/live"
 )
+
+// biliRoomRef 是刷新链路要记住的稳定映射：房间号 → 主播 uid。
+//
+// get_info 是唯一能拿到 uid 的匿名接口，而 uid 属于主播、不会随开播状态变化。
+// 缓存住它，刷新关注列表时每个房间就少一次请求——46 个关注原本 92 次请求，
+// 变成 46 次。
+type biliRoomRef struct {
+	UID int64
+	// Title 来自 get_info，详情接口缺字段时用它兜底
+	Title string
+}
+
+// biliUIDTTL 取得很长：uid 不会变，只有房间被转手这种极端情况才会过期。
+const biliUIDTTL = 6 * time.Hour
 
 // B 站房间信息：房间号 → 卡片要的全部字段。
 //
@@ -23,37 +38,42 @@ func (p *bilibiliProvider) RoomInfo(ctx context.Context, roomID string) (Room, e
 		}
 	}
 
+	ref, err := p.uids.load(strconv.Itoa(id), biliUIDTTL, func() (biliRoomRef, error) {
+		release, err := p.lim.acquire(ctx)
+		if err != nil {
+			return biliRoomRef{}, err
+		}
+		info, err := p.lc.GetLiveRoomInfo(ctx, bilibiliLive.GetLiveRoomInfoParam{RoomID: id})
+		release()
+		if err != nil {
+			return biliRoomRef{}, p.wrap("房间信息", err)
+		}
+		if info.UID <= 0 {
+			return biliRoomRef{}, &UpstreamError{
+				Platform: Bilibili, Op: "房间信息", Message: "上游没有返回主播 uid",
+			}
+		}
+		return biliRoomRef{UID: int64(info.UID), Title: info.Title}, nil
+	})
+	if err != nil {
+		return Room{}, err
+	}
+
 	release, err := p.lim.acquire(ctx)
 	if err != nil {
 		return Room{}, err
 	}
-	info, err := p.lc.GetLiveRoomInfo(ctx, bilibiliLive.GetLiveRoomInfoParam{RoomID: id})
-	release()
-	if err != nil {
-		return Room{}, p.wrap("房间信息", err)
-	}
-	if info.UID <= 0 {
-		return Room{}, &UpstreamError{
-			Platform: Bilibili, Op: "房间信息", Message: "上游没有返回主播 uid",
-		}
-	}
-
-	release, err = p.lim.acquire(ctx)
-	if err != nil {
-		return Room{}, err
-	}
-	uid := int64(info.UID)
 	status, err := p.lc.GetRoomStatusInfoByUIDs(ctx,
-		bilibiliLive.GetRoomStatusInfoByUIDsParam{UIDs: []int64{uid}})
+		bilibiliLive.GetRoomStatusInfoByUIDsParam{UIDs: []int64{ref.UID}})
 	release()
 	if err != nil {
 		return Room{}, p.wrap("房间详情", err)
 	}
-	item, ok := status[strconv.FormatInt(uid, 10)]
+	item, ok := status[strconv.FormatInt(ref.UID, 10)]
 	if !ok {
 		return Room{}, &UpstreamError{
 			Platform: Bilibili, Op: "房间详情",
-			Message: fmt.Sprintf("上游没有返回 uid=%d 的房间信息", uid),
+			Message: fmt.Sprintf("上游没有返回 uid=%d 的房间信息", ref.UID),
 		}
 	}
 
@@ -64,10 +84,10 @@ func (p *bilibiliProvider) RoomInfo(ctx context.Context, roomID string) (Room, e
 	return Room{
 		Platform: Bilibili,
 		RoomID:   realID,
-		Title:    firstNonEmpty(item.Title, info.Title),
+		Title:    firstNonEmpty(item.Title, ref.Title),
 		Nickname: item.Uname,
 		Cover:    biliImage(firstNonEmpty(item.CoverFromUser, item.Keyframe)),
-		Avatar:   biliImage(item.Face),
+		Avatar:   biliAvatar(item.Face),
 		Viewers:  item.Online,
 		Area:     firstNonEmpty(item.AreaV2Name, item.AreaName),
 		// 只有 live_status==1 才算直播中；2 是轮播，界面按未开播处理
