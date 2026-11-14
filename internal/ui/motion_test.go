@@ -11,12 +11,12 @@ import (
 func TestReducedMotionRenders(t *testing.T) {
 	for _, reduce := range []bool{false, true} {
 		app := NewMockApp()
-		app.IslandOpen = true
+		app.switchTab("follows")
 		tt := ui.NewTesterWith(app.Shell, 1440, 900, ui.TesterOptions{
 			Preferences: ui.Preferences{ReduceMotion: reduce},
 		})
-		if !tt.HasText("全部关注") {
-			t.Fatalf("reduce=%v：关注面板没有渲染", reduce)
+		if _, ok := tt.Find("搜索已关注的主播"); !ok {
+			t.Fatalf("reduce=%v：关注页没有渲染", reduce)
 		}
 	}
 }
