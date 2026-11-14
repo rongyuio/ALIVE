@@ -62,8 +62,10 @@ func newDouyin() *douyinProvider {
 		areas: newCache[[]CategoryGroup](),
 		rooms: newCache[Page](),
 		ids:   newCache[douyinRoomRef](),
-		// 抖音风控最严：单并发、请求间隔 400ms。
-		lim: newLimiter(1, 400*time.Millisecond),
+		// 对齐 baseline 的关注刷新并发（前台 6、后端不限流）。
+		// 抖音的单房间是两次请求（房间页 + reflow），6 并发是最激进的；
+		// 一旦拿到验证页，wrap 里的 block() 会把整个平台冷下来兜住。
+		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
 }
 
