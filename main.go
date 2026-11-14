@@ -55,6 +55,10 @@ func main() {
 	case "danmu":
 		// 播放页弹幕设置面板展开
 		app.DanmuSettingsOpen = true
+	case "sync":
+		// 顶栏数据同步面板打开，用于截图验收
+		app.SyncOpen = true
+		app.SyncTab = "export"
 	case "splash":
 		// 启动层常驻，用于截图验收
 		app.SplashHold = true

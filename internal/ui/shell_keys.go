@@ -71,6 +71,10 @@ func (a *App) shellKeys(c *ui.Context) {
 // 浮层（PopoverBase）比这里更早拿到 Esc——它们在构建时就消费了，
 // 所以能走到这里说明浮层已经关掉或不在了。
 func (a *App) handleEscape() {
+	if a.SyncOpen {
+		a.SyncOpen = false
+		return
+	}
 	if a.ShortcutsOpen {
 		a.ShortcutsOpen = false
 		return
