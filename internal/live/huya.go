@@ -51,7 +51,9 @@ func newHuya() *huyaProvider {
 		areas:  newCache[[]CategoryGroup](),
 		rooms:  newCache[Page](),
 		search: newCache[[]Room](),
-		lim:    newLimiter(2, 150*time.Millisecond),
+		// 对齐 baseline 的关注刷新并发：6 并发，6 个 worker 不会互相卡住。
+		// 60ms 间隔只防同一瞬间齐发，风控冷却机制照常生效。
+		lim:    newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
 }
 

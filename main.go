@@ -45,7 +45,8 @@ func main() {
 	case "palette":
 		app.PaletteOpen = true
 	case "island":
-		app.IslandOpen = true
+		// 全部关注页（原灵动岛展开的面板），用于截图验收
+		app.Router = ui.NewRouter("/follows")
 	case "search":
 		app.SearchOpen = true
 	case "quality":
@@ -105,10 +106,10 @@ func main() {
 				})
 			}
 		}
-		// 截图验收：启动 700ms 后展开灵动岛，能截到展开过程中的一帧
+		// 截图验收：启动 700ms 后切到全部关注页
 		if os.Getenv("ALIVE_UI") == "island-anim" {
 			time.AfterFunc(700*time.Millisecond, func() {
-				win.Update(func() { app.IslandOpen = true })
+				win.Update(func() { app.Router.Push("/follows") })
 			})
 		}
 		// 图片解码必须回到主线程，缓存拿窗口来触发重绘

@@ -151,15 +151,12 @@ type App struct {
 	authQR    map[string]*ui.Bitmap
 	authQRSeq map[string]int
 
-	// 灵动岛是否展开成关注面板
-	IslandOpen bool
-	// 展开代次：每展开一次 +1，内容淡入的 Keyframes 用它从头播
-	IslandSeq int
-	// 面板内的主播名搜索（岛收起时清空）
-	IslandQuery  string
-	IslandSearch ui.Handle
-	// 关注面板里的平台筛选：空串 = 全部，否则是平台 id
-	IslandPlatform string
+	// 「全部关注」页是一等页面（顶栏 tab 组第一格），和首页 / 订阅页同级。
+	// 这三个字段是它自己的筛选状态，切走再回来还留着。
+	FollowsQuery  string
+	FollowsSearch ui.Handle
+	// 关注页里的平台筛选：空串 = 全部，否则是平台 id
+	FollowsPlatform string
 
 	// 顶栏搜索浮层：输入、远端结果与请求状态
 	SearchOpen     bool
@@ -216,9 +213,16 @@ type App struct {
 	Follows []FollowRecord
 	// 关注状态刷新的闸门：自动刷新和手动刷新共用，避免两轮请求叠在一起
 	followsBusy bool
+	// 刷新进度：面板按钮上的圆环按 done/total 画弧（baseline 的 refreshProgress）。
+	// 每查完一条就推进一格，所以环是连续往前走的，不是等整批结束才跳。
+	followRefreshDone  int
+	followRefreshTotal int
 
-	// Toast：右下角一条短提示，2.6s 后自动消失（baseline 的 ToastProvider）
+	// Toast：右下角一条短提示，3.2s 后自动消失（baseline 的 ToastProvider）。
+	// Tone 决定左侧图标与颜色；Seq 每条自增，用来换代播入场动画。
 	ToastText string
+	ToastTone string
+	ToastSeq  int
 
 	// 列表加载态：数据层接上之前由 main.go 的拉取结果驱动
 	Loading bool
@@ -393,6 +397,8 @@ func (a *App) Shell(c *ui.Context) {
 			}
 			a.Router.View(c, func(r *ui.Route) {
 				switch {
+				case r.Match(routeFollows):
+					a.FollowsPage(c)
 				case r.Match(routeSubscribe):
 					a.SubscribePage(c)
 				case r.Match(routePlayer):
@@ -408,11 +414,7 @@ func (a *App) Shell(c *ui.Context) {
 			}
 		})
 		if !fullscreen {
-			// 关注面板展开时，先在页面上铺一层透明层：点空白处收起
-			if a.IslandOpen {
-				a.islandBackdrop(c)
-			}
-			// 灵动岛最后画，浮在内容之上
+			// 灵动岛浮在内容之上，只报状态（点击不再展开任何东西）
 			a.Island(c)
 		}
 		// Toast 永远在最上层
@@ -806,14 +808,20 @@ func (a *App) Navbar(c *ui.Context) {
 	})
 }
 
-// toast 弹一条右下角提示，2.6 秒后由后台清掉。
-func (a *App) toast(msg string) {
+// toast 弹一条右下角提示（baseline 的默认色调是 info），3.2 秒后由后台清掉。
+func (a *App) toast(msg string) { a.toastTone(msg, toastInfo) }
+
+// toastTone 是带色调的 toast：success / info / error 决定图标和图标颜色。
+func (a *App) toastTone(msg, tone string) {
 	a.ToastText = msg
+	a.ToastTone = tone
+	// 每条新提示换一次序号，入场动画的 key 跟着换代，才会重新播
+	a.ToastSeq++
 	if a.Win == nil {
 		return
 	}
 	win := a.Win
-	time.AfterFunc(2600*time.Millisecond, func() {
+	time.AfterFunc(3200*time.Millisecond, func() {
 		win.Update(func() {
 			if a.ToastText == msg {
 				a.ToastText = ""
@@ -822,20 +830,67 @@ func (a *App) toast(msg string) {
 	})
 }
 
+// toast 的三种色调，取值与 baseline 的 ToastTone 一致。
+const (
+	toastSuccess = "success"
+	toastInfo    = "info"
+	toastError   = "error"
+)
+
+// toastIcon 是每种色调左侧的那枚图标，对应 baseline 的 TONE_ICON。
+func toastIcon(tone string) *ui.SVG {
+	switch tone {
+	case toastSuccess:
+		return iconCheck
+	case toastError:
+		return iconTriangleAlert
+	}
+	return iconAlert
+}
+
+// toastIconColor 是图标颜色：success / danger / text-tertiary，
+// 和 baseline ToastProvider.module.css 里 .icon 的三条规则一致。
+func toastIconColor(tone string) ui.Color {
+	switch tone {
+	case toastSuccess:
+		return theme.Success
+	case toastError:
+		return theme.Danger
+	}
+	return theme.TextTertiary
+}
+
 // toastView 是右下角那条提示。
-// baseline：right/bottom 18、min-height 38、padding 7 8 7 12、圆角 12、bg-elevated + 描边 + popover 阴影。
+//
+// baseline ToastProvider：right/bottom 18、min-height 38、padding 7 8 7 12、
+// 圆角 12、bg-elevated + 描边 + popover 阴影；左侧 15px 图标，间距 9；
+// 入场是 opacity 0→1、translateY 8→0，220ms ease-out（reduced motion 下不播）。
 func (a *App) toastView(c *ui.Context) {
 	w, _ := c.Size()
 	maxW := w - 36
 	if maxW > 420 {
 		maxW = 420
 	}
-	ui.Box(c).Absolute().Right(18).Bottom(18).MaxWidth(maxW).
-		Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
+	box := ui.Box(c).Absolute().Right(18).Bottom(18).MaxWidth(maxW).
+		MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
 		Background(theme.BgElevated).Border(1, theme.Border).
-		Shadow(0, 22, 56, -22, theme.ShadowPopover).Children(func() {
-		ui.Text(c, a.ToastText).FontSize(theme.TextSM).
-			TextColor(theme.TextPrimary).SingleLine()
+		Shadow(0, 22, 56, -22, theme.ShadowPopover)
+
+	if !c.Preferences().ReduceMotion {
+		in := box.Keyframes(fmt.Sprintf("toast-in-%d", a.ToastSeq), []ui.Keyframe{
+			{Value: 0},
+			{At: 220 * time.Millisecond, Value: 1, Ease: ui.EaseOut},
+		}, ui.KeyframeOptions{})
+		box.Opacity(in).Translate(0, (1-in)*8)
+	}
+
+	box.Children(func() {
+		ui.Row(c).Gap(9).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, toastIcon(a.ToastTone)).FontSize(15).
+				TextColor(toastIconColor(a.ToastTone))
+			ui.Text(c, a.ToastText).FontSize(theme.TextSM).
+				TextColor(theme.TextPrimary).SingleLine()
+		})
 	})
 }
 
@@ -847,9 +902,13 @@ func (a *App) narrow(c *ui.Context) bool {
 
 // activeTab 返回顶栏该高亮的 tab。
 //
-// 「订阅」不是平台，但和平台同级：在订阅页时高亮它，其余按当前平台。
+// 「订阅」和「全部关注」不是平台，但和平台同级：在对应页面时高亮它们，
+// 其余按当前平台。
 func (a *App) activeTab() string {
-	if a.Router.Path() == routeSubscribe {
+	switch a.Router.Path() {
+	case routeFollows:
+		return "follows"
+	case routeSubscribe:
 		return "subscribe"
 	}
 	return a.Platform
@@ -857,7 +916,11 @@ func (a *App) activeTab() string {
 
 // switchTab 处理 tab 点击。
 func (a *App) switchTab(id string) {
-	if id == "subscribe" {
+	switch id {
+	case "follows":
+		a.Router.Push(routeFollows)
+		return
+	case "subscribe":
 		a.resetCards()
 		a.Router.Push(routeSubscribe)
 		return
@@ -879,17 +942,17 @@ func (a *App) switchTab(id string) {
 	a.onPlatformChanged()
 }
 
-// platformTabs 是顶栏左侧的 tablist：订阅 + 四个平台。
+// platformTabs 是顶栏左侧的 tablist：关注 + 订阅 + 四个平台。
 //
 // baseline 用一条**绝对定位的 accent 滑块**在 tab 之间滑过去（220ms），
 // 而不是给选中的 tab 换底色——切换时是「光块移动」，不是「色块跳变」。
 // tab 等宽（每列至少 64px，中文两字 + 28 padding 正好 64），
 // 所以滑块位置直接按序号乘宽度算，不用量 DOM。
 func (a *App) platformTabs(c *ui.Context) {
-	// 顺序读 a.PlatformOrder：baseline 的 tab 顺序可拖拽重排并持久化，
-	// 「订阅」永远排在最前。
+	// 顺序读 a.PlatformOrder：baseline 的 tab 顺序可拖拽重排并持久化。
+	// 前两格固定：「全部关注」和「订阅」——它们不是平台，但和平台同级。
 	type tabItem struct{ id, label string }
-	tabs := []tabItem{{"subscribe", ""}}
+	tabs := []tabItem{{"follows", ""}, {"subscribe", ""}}
 	for _, id := range a.PlatformOrder {
 		tabs = append(tabs, tabItem{id, platformLabel(id)})
 	}
@@ -901,8 +964,9 @@ func (a *App) platformTabs(c *ui.Context) {
 		tabW, tabH = 56, 36
 	}
 
-	active := a.activeTab()
+	// 滑块跟着当前页面（关注 / 订阅 / 平台）走。
 	selected := 0
+	active := a.activeTab()
 	for i, t := range tabs {
 		if t.id == active {
 			selected = i
@@ -932,14 +996,18 @@ func (a *App) platformTabs(c *ui.Context) {
 				for i, t := range tabs {
 					t, idx := t, i
 
+					// 「全部关注」和其他 tab 一样是页面入口，点了切路由
 					tab := ui.Box(c).Width(tabW).Height(tabH).Radius(theme.RadiusFull).
 						Center().Cursor(ui.CursorPointer)
+					if t.id == "follows" {
+						tab.Label("全部关注")
+					}
 					if tab.Clicked() {
 						a.switchTab(t.id)
 					}
-					// baseline：平台 tab 可拖拽重排（订阅 tab 不参与）。
+					// baseline：平台 tab 可拖拽重排（关注与订阅不参与）。
 					// 拖起来的那枚 dim 到 0.35，经过的目标描一圈 accent 65% 的内阴影。
-					if t.id != "subscribe" {
+					if t.id != "subscribe" && t.id != "follows" {
 						tab.Drag(t.id)
 						if _, over := ui.DragOver[string](tab); over {
 							tab.InsetShadow(0, 0, 0, 1, theme.Accent.Mix(ui.Transparent, 0.35))
@@ -959,7 +1027,16 @@ func (a *App) platformTabs(c *ui.Context) {
 							col = theme.TextPrimary
 						}
 
-						if t.id == "subscribe" {
+						switch t.id {
+						case "follows":
+							// 选中时实心星，和滑块一起构成「这里是关注页」
+							ico := iconStar
+							if idx == selected {
+								ico = iconStarFilled
+							}
+							ui.Icon(c, ico).FontSize(14).TextColor(col)
+							return
+						case "subscribe":
 							ui.Icon(c, iconBookmark).FontSize(14).TextColor(col)
 							return
 						}
