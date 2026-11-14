@@ -187,3 +187,31 @@ func TestPickVariantDefaultsToTop(t *testing.T) {
 		t.Errorf("按标签选档位应命中 high，得到 %q", v.ID)
 	}
 }
+
+// 播放页顶栏高亮跟着主播所属平台走，而不是进播放页之前那个列表的平台。
+//
+// 从订阅页点开别家主播最容易撞上：a.Platform 还是订阅页原来那个平台的，
+// 顶栏却应该显示主播自己的平台。
+func TestPlayerTabFollowsStreamerPlatform(t *testing.T) {
+	app := NewMockApp()
+	app.Platform = "douyin"
+	app.Player = Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"}
+	app.Router.Push(routePlayer)
+
+	if got := app.activeTab(); got != "bilibili" {
+		t.Fatalf("顶栏高亮的是 %q，期望 %q", got, "bilibili")
+	}
+}
+
+// 没有主播上下文时回落到当前平台，不能把顶栏高亮清空。
+func TestPlayerTabFallsBackToPlatform(t *testing.T) {
+	app := NewMockApp()
+	app.Platform = "huya"
+	app.Player = Streamer{}
+	app.PlayerIndex = -1
+	app.Router.Push(routePlayer)
+
+	if got := app.activeTab(); got != "huya" {
+		t.Fatalf("顶栏高亮的是 %q，期望 %q", got, "huya")
+	}
+}
