@@ -9,6 +9,7 @@ import (
 // 路由路径。和 baseline 的 ROUTES 保持同一套形状，方便对照。
 const (
 	routeHome      = "/"
+	routeFollows   = "/follows"
 	routeSubscribe = "/subscribe"
 	routePlayer    = "/player"
 )

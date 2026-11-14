@@ -88,6 +88,14 @@ var (
 	iconLogOut  = iconSVG(`<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>`)
 	// iconX 是 2px 描边的关闭叉号（baseline 输入框的清除键、订阅 chip 的删除键都用它）
 	iconX = iconSVG(`<path d="M18 6 6 18"/><path d="m6 6 12 12"/>`)
+	// 数据同步：导出 / 导入按钮，以及导入结果的成功提示
+	iconUpload   = iconSVG(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>`)
+	iconDownload = iconSVG(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>`)
+	iconOkCircle = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="m8.5 12 2.5 2.5 4.5-5"/>`)
+	// AlertCircle：toast 的 info 色调（baseline ToastProvider 的 TONE_ICON.info）
+	iconAlert = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="M12 7v6"/><path d="M12 16.5v.5"/>`)
+	// TriangleAlert：toast 的 error 色调（baseline ToastProvider 的 TONE_ICON.error）
+	iconTriangleAlert = iconSVG(`<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>`)
 
 	// 播放页 chrome
 	iconBack = iconSVG(`<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>`)

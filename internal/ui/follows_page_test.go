@@ -1,0 +1,150 @@
+package ui
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+)
+
+// 「全部关注」是顶栏第一个 tab 对应的页面：切过去铺满正文区，
+// 不是浮层，也不需要点空白处收起。
+func TestFollowsTabOpensPage(t *testing.T) {
+	app := NewMockApp()
+	tt := ui.NewTester(app.Shell, 1440, 900)
+
+	app.switchTab("follows")
+	tt.Frame()
+
+	if got := app.Router.Path(); got != routeFollows {
+		t.Fatalf("路由是 %s，期望 %s", got, routeFollows)
+	}
+	// 关注页独有的元素：页内搜索框。首页没有这个 label。
+	if _, ok := tt.Find("搜索已关注的主播"); !ok {
+		t.Fatal("关注页没有渲染")
+	}
+}
+
+// 从关注页切回平台后，页面内容应该换回列表。
+func TestFollowsTabSwitchesBack(t *testing.T) {
+	app := NewMockApp()
+	tt := ui.NewTester(app.Shell, 1440, 900)
+
+	app.switchTab("follows")
+	tt.Frame()
+	if _, ok := tt.Find("搜索已关注的主播"); !ok {
+		t.Fatal("关注页没有渲染")
+	}
+
+	app.switchTab("douyu")
+	tt.Frame()
+	if got := app.Router.Path(); got != routeHome {
+		t.Fatalf("路由是 %s，期望首页", got)
+	}
+	if _, ok := tt.Find("搜索已关注的主播"); ok {
+		t.Error("切回平台后关注页还在")
+	}
+}
+
+// 刷新中：按钮按 baseline 的 :disabled 降透明度，进度环按 done/total 画弧。
+// 环是自绘的，这条测试保证 Draw 的弧线路径在测试器里也跑得通。
+func TestFollowsRefreshBusyRenders(t *testing.T) {
+	app := NewMockApp()
+	app.switchTab("follows")
+	app.followsBusy = true
+	app.followRefreshTotal = 4
+	app.followRefreshDone = 1
+
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	if _, ok := tt.Find("正在刷新 1/4"); !ok {
+		t.Fatal("刷新中关注页没有渲染进度按钮")
+	}
+	if got := app.followRingProgress(); got != 0.25 {
+		t.Errorf("进度 %.2f，期望 0.25", got)
+	}
+}
+
+// 页内搜索：按昵称包含匹配，清空后恢复；提示文案跟着切到「N 位匹配」。
+func TestFollowsPageSearch(t *testing.T) {
+	app := NewMockApp()
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+
+	before := len(app.followsList())
+	plainTip := app.followsChipTip("")
+	if err := tt.Click("搜索已关注的主播"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("PDD")
+
+	got := app.followsList()
+	t.Logf("before=%d after=%d", before, len(got))
+	if len(got) == 0 || len(got) >= before {
+		t.Fatalf("搜索 PDD 后列表 %d 条（之前 %d）", len(got), before)
+	}
+	for _, s := range got {
+		if !strings.Contains(s.Name, "PDD") {
+			t.Errorf("列表里混入不匹配的主播 %q", s.Name)
+		}
+	}
+	if tip := app.followsChipTip(""); !strings.Contains(tip, "位匹配") {
+		t.Errorf("搜索时提示是 %q，期望「N 位匹配」", tip)
+	}
+
+	app.FollowsQuery = ""
+	if len(app.followsList()) != before {
+		t.Error("清空搜索后没有恢复全量列表")
+	}
+	if tip := app.followsChipTip(""); tip != plainTip && !strings.Contains(tip, "位主播") {
+		t.Errorf("清空后提示是 %q，期望回到「N 位主播 · N 正在直播」", tip)
+	}
+}
+
+// 计数不再常驻：常态只有胶囊，指针停住后才以提示浮出。
+func TestFollowsChipCountShowsOnHover(t *testing.T) {
+	app := NewMockApp()
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	if tt.HasText("位主播") {
+		t.Fatal("计数又常驻在胶囊条里了")
+	}
+
+	r, ok := tt.Find("全部")
+	if !ok {
+		t.Fatal("找不到「全部」胶囊")
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	// 提示要等主题的 TooltipDelay，tester 的时钟不会自己走
+	tt.Advance(time.Second)
+
+	if !tt.HasText("位主播") {
+		t.Fatal("悬停后没有出现计数提示")
+	}
+	if !tt.HasText(app.followsChipTip("")) {
+		t.Errorf("提示文案不是 %q", app.followsChipTip(""))
+	}
+}
+
+// 平台筛选只留该平台的主播，提示也只数这个平台。
+func TestFollowsListFiltersByPlatform(t *testing.T) {
+	app := NewMockApp()
+	app.FollowsPlatform = "douyu"
+
+	list := app.followsList()
+	if len(list) == 0 {
+		t.Fatal("按斗鱼筛选后列表为空")
+	}
+	for _, s := range list {
+		if s.Platform != "douyu" {
+			t.Fatalf("平台筛选混进 %s", s.Platform)
+		}
+	}
+	if tip := app.followsChipTip("douyu"); !strings.Contains(tip, "位主播") {
+		t.Errorf("斗鱼提示是 %q", tip)
+	}
+}
