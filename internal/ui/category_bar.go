@@ -159,7 +159,7 @@ func (a *App) toggleSubscribe() {
 		if a.SubIndex >= len(a.Subs) {
 			a.SubIndex = max(0, len(a.Subs)-1)
 		}
-		a.toast("已取消订阅该分区")
+		a.toastTone("已取消订阅该分区", toastSuccess)
 		a.markDirty()
 		return
 	}
@@ -170,7 +170,7 @@ func (a *App) toggleSubscribe() {
 		Name:       category,
 		CategoryID: a.currentCategoryID(),
 	})
-	a.toast("已订阅该分区")
+	a.toastTone("已订阅该分区", toastSuccess)
 	a.markDirty()
 }
 
