@@ -77,21 +77,54 @@ func TestPalettePanelShowsOneSide(t *testing.T) {
 	if !tt.HasText("青柠·夜") || tt.HasText("青柠·日") {
 		t.Fatalf("夜间面板列出的配色不对：%v", tt.Texts())
 	}
-	for _, label := range []string{"配色模式 日", "配色模式 夜", "配色模式 跟随系统"} {
-		if _, ok := tt.Find(label); !ok {
-			t.Fatalf("缺少切换按钮 %q", label)
+	// 只有一个圆形按钮，状态写在无障碍名里：夜 → 跟随系统 → 日。
+	if _, ok := tt.Find("配色模式 夜"); !ok {
+		t.Fatalf("缺少切换按钮，文本：%v", tt.Texts())
+	}
+	for _, gone := range []string{"配色模式 日", "配色模式 跟随系统"} {
+		if _, ok := tt.Find(gone); ok {
+			t.Fatalf("三个状态不该各占一个按钮（找到了 %q）", gone)
 		}
 	}
 
-	// 点「日」：面板当场换到浅色侧。
-	if err := tt.Click("配色模式 日"); err != nil {
+	// 按一次：跟随系统；再按一次：日，面板当场换到浅色侧。
+	if err := tt.Click("配色模式 夜"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
+	if app.ThemeMode != themeModeSystem {
+		t.Fatalf("第一次点击后模式 = %q，期望跟随系统", app.ThemeMode)
+	}
+	if _, ok := tt.Find("配色模式 跟随系统"); !ok {
+		t.Fatal("按钮图标/文案没跟上模式")
+	}
+	if err := tt.Click("配色模式 跟随系统"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.ThemeMode != themeModeLight {
+		t.Fatalf("第二次点击后模式 = %q，期望日", app.ThemeMode)
+	}
 	if cur := theme.Find(app.PaletteID); cur == nil || cur.Dark {
 		t.Fatalf("切到日间后配色 = %q", app.PaletteID)
 	}
 	if !tt.HasText("青柠·日") || tt.HasText("青柠·夜") {
 		t.Fatalf("切到日间后面板仍是：%v", tt.Texts())
+	}
+}
+
+// 循环顺序固定：日 → 夜 → 跟随系统 → 日，不能跳步也不能停在某个状态。
+func TestThemeModeCycles(t *testing.T) {
+	if got := themeModeNext(themeModeLight); got != themeModeDark {
+		t.Fatalf("日 → %q", got)
+	}
+	if got := themeModeNext(themeModeDark); got != themeModeSystem {
+		t.Fatalf("夜 → %q", got)
+	}
+	if got := themeModeNext(themeModeSystem); got != themeModeLight {
+		t.Fatalf("跟随系统 → %q", got)
+	}
+	if got := themeModeNext(""); got != themeModeLight {
+		t.Fatalf("空值 → %q", got)
 	}
 }
