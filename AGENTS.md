@@ -29,10 +29,13 @@ go.mod             MyGo CLI 作为 tool：go tool mygo
 internal/ui/       界面：Shell、顶栏、分区栏、卡片、订阅页、播放页、搜索浮层、配色面板、灵动岛
 internal/theme/    设计令牌与配色表
 internal/media/    图片下载、解码与缓存
+internal/ffmpeg/   播放组件（FFmpeg / ffprobe）的定位与自动准备，应用自给，不依赖 PATH
 internal/live/     各平台数据层：分区、列表、搜索、取流、弹幕，归一化成同一套类型
-internal/relay/    ffmpeg 转封装成本地 HLS。画面和声音都由 MyGo 的 ui/video
-                   （Media Foundation）输出，relay 不进播放链路
+internal/relay/    按容器、编码与系统能力选择 HLS 透明代理、转封装或转码；
+                   提供本地 HLS，画面和声音由 MyGo ui/video（Media Foundation）输出
 ```
+
+播放分层、路径决策、超时与验收矩阵见 `internal/relay/README.md`。
 
 不新增顶层目录。新功能按职责落到 `internal/<领域>`；界面代码只写在 `internal/ui`，协议代码不进 `internal/ui`。
 
