@@ -40,6 +40,12 @@ func main() {
 	if p := os.Getenv("ALIVE_PLATFORM"); p != "" {
 		app.Platform = p
 	}
+	// 截图验收用：预置观看时长（ALIVE_WATCH=2h），验小时级的岛收起态
+	if v := os.Getenv("ALIVE_WATCH"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			app.SetWatchForCapture(d)
+		}
+	}
 	// 截图验收用：启动即展开某个浮层
 	switch os.Getenv("ALIVE_UI") {
 	case "palette":

@@ -23,6 +23,30 @@ func TestIslandClickDoesNothing(t *testing.T) {
 	}
 }
 
+// 观看时长要一直写到小时级：100 宽的岛留给数字只有 46px，13px 的 mm:ss
+// 实宽 34px、12px 的 h:mm:ss 实宽 35.9px。格式一旦多出一段就不只是「挤
+// 一点」，整行会被裁——所以两个档位的边界必须钉住。
+func TestFormatWatch(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "00:00"},
+		{9 * time.Second, "00:09"},
+		{61 * time.Second, "01:01"},
+		{59*time.Minute + 59*time.Second, "59:59"},
+		{time.Hour, "1:00:00"},
+		{time.Hour + time.Minute + time.Second, "1:01:01"},
+		{12*time.Hour + 5*time.Minute + 21*time.Second, "12:05:21"},
+		{24 * time.Hour, "24:00:00"},
+	}
+	for _, c := range cases {
+		if got := formatWatch(c.d); got != c.want {
+			t.Errorf("formatWatch(%v) = %q，想要 %q", c.d, got, c.want)
+		}
+	}
+}
+
 // 播放页的岛接的是主播信息：进直播间自动展开，指针不在岛上、闲置 4 秒
 // 之后收成小胶囊，点一下再展开；指针停在岛上时一直亮着，不计时。
 func TestPlayerIslandAutoCollapses(t *testing.T) {

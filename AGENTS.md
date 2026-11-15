@@ -56,7 +56,7 @@ $env:ALIVE_CAPTURE="D:\tmp\alive.png"; $env:ALIVE_CAPTURE_DELAY="2s"
 go run .
 ```
 
-`ALIVE_ROUTE` 取 `home` / `subscribe` / `player`；`ALIVE_UI` 取 `palette` / `island` / `search` / `quality` / `danmu` / `sync` / `splash` / `nocover`；`ALIVE_CAPTURE_KEEP=1` 截完不退出。
+`ALIVE_ROUTE` 取 `home` / `subscribe` / `player`；`ALIVE_UI` 取 `palette` / `island` / `search` / `quality` / `danmu` / `sync` / `splash` / `nocover`；`ALIVE_WATCH=2h` 预置播放页的观看时长（验小时级的岛收起态）；`ALIVE_CAPTURE_KEEP=1` 截完不退出。
 
 ## MyGo 生命周期（写 UI 必须遵守）
 
