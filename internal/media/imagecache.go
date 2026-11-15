@@ -156,10 +156,16 @@ type Cache struct {
 	// 也会各自失败一次。按 URL 记就是一图一次下载、一次失败冷却。
 	loading map[string]bool
 	failed  map[string]time.Time
-	bytes   int64
-	win     *mygo.Window
-	scale   float64 // 设备像素 / DIP，决定解码尺寸
-	client  *http.Client
+	// last 是每张图最近一次成功上屏的纹理，不带目标宽度。
+	//
+	// 窗口在拖动时宽度连续变化，目标宽度每过一个 8 像素档位就是新 key；
+	// 新纹理解码完成前如果返回 nil，整片封面会退回占位色，看起来就是闪。
+	// 用上一张纹理顶着（Fit 会等比缩放到新尺寸），画面连续，解码完再换新图。
+	last   map[string]*ui.Bitmap
+	bytes  int64
+	win    *mygo.Window
+	scale  float64 // 设备像素 / DIP，决定解码尺寸
+	client *http.Client
 
 	download chan struct{}
 	decode   chan struct{}
@@ -178,6 +184,7 @@ var Default = &Cache{
 	raw:      map[string]*rawImage{},
 	loading:  map[string]bool{},
 	failed:   map[string]time.Time{},
+	last:     map[string]*ui.Bitmap{},
 	scale:    1,
 	client:   &http.Client{Timeout: 20 * time.Second},
 	download: make(chan struct{}, maxDownloads),
@@ -214,16 +221,19 @@ func (c *Cache) Bitmap(url string, width float32) *ui.Bitmap {
 		// 命中就刷新使用时间：闲置回收和 LRU 都看这个值，
 		// 正在屏幕上的图因此不可能被清掉。
 		t.used = now
+		c.last[url] = t.bmp
 		c.mu.Unlock()
 		return t.bmp
 	}
+	stale := c.last[url]
 	if c.loading[url] {
 		c.mu.Unlock()
-		return nil
+		// 正在解同 URL 的另一个尺寸：先把旧纹理交出去，别让封面空一帧。
+		return stale
 	}
 	if at, ok := c.failed[url]; ok && now.Sub(at) < retryAfter {
 		c.mu.Unlock()
-		return nil
+		return stale
 	}
 	c.loading[url] = true
 
@@ -240,7 +250,8 @@ func (c *Cache) Bitmap(url string, width float32) *ui.Bitmap {
 	} else {
 		go c.fetch(key, url, target)
 	}
-	return nil
+	// 新图在路上：这一帧交给上一张纹理，避免拖动窗口时封面反复闪成占位色。
+	return stale
 }
 
 // targetPixels 把显示宽度换算成解码宽度，取整到 8 的倍数：
@@ -500,6 +511,8 @@ func (c *Cache) done(key, url string, bmp *ui.Bitmap) {
 	w, h := ui.ImageSize(bmp)
 	size := int64(w) * int64(h) * 4
 	c.textures[key] = &texture{bmp: bmp, url: url, used: time.Now(), bytes: size}
+	// 记住这张图最新的纹理：同 URL 换尺寸时先用它顶着，画面才不会闪。
+	c.last[url] = bmp
 	c.bytes += size
 	c.evictTextureLocked()
 }
@@ -529,8 +542,13 @@ func (c *Cache) evictTextureLocked() {
 		if oldest == "" {
 			return // 剩下的都还在屏幕上，超限就超限
 		}
-		c.bytes -= c.textures[oldest].bytes
+		t := c.textures[oldest]
+		c.bytes -= t.bytes
 		delete(c.textures, oldest)
+		// last 指向的正是这张就一起删；指向同 URL 的更新纹理时保留。
+		if c.last[t.url] == t.bmp {
+			delete(c.last, t.url)
+		}
 	}
 }
 
@@ -548,6 +566,9 @@ func (c *Cache) sweep() {
 			if now.Sub(t.used) > idleTTL {
 				c.bytes -= t.bytes
 				delete(c.textures, key)
+				if c.last[t.url] == t.bmp {
+					delete(c.last, t.url)
+				}
 			}
 		}
 		for url, r := range c.raw {
@@ -572,6 +593,7 @@ func (c *Cache) ReleaseTexturesExcept(keep map[string]bool) {
 		}
 		c.bytes -= t.bytes
 		delete(c.textures, key)
+		delete(c.last, t.url)
 	}
 	c.mu.Unlock()
 	debug.FreeOSMemory()
@@ -584,6 +606,7 @@ func (c *Cache) ReleaseTexturesExcept(keep map[string]bool) {
 func (c *Cache) ReleaseTextures() {
 	c.mu.Lock()
 	clear(c.textures)
+	clear(c.last)
 	c.bytes = 0
 	c.mu.Unlock()
 	// 纹理是常驻内存的大头，清完顺手把堆还给系统。

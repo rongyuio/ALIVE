@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/theme"
@@ -53,33 +51,123 @@ func (a *App) paletteButton(c *ui.Context) {
 	})
 }
 
+// 夜 / 日 / 跟随系统的三种选择。取值会落盘，改名要连带迁移。
+const (
+	themeModeSystem = "system"
+	themeModeDark   = "dark"
+	themeModeLight  = "light"
+)
+
+// themeWantsDark 报告当前选择希望用深色还是浅色配色。
+func (a *App) themeWantsDark(systemDark bool) bool {
+	switch a.ThemeMode {
+	case themeModeDark:
+		return true
+	case themeModeLight:
+		return false
+	default:
+		return systemDark
+	}
+}
+
+// syncThemeMode 让当前配色跟上「夜 / 日 / 跟随系统」的选择。
+//
+// 同色系日夜成对存在（青柠 · 夜 / 青柠 · 日），所以只切换同一色的另一半，
+// 不把用户选的色系换掉。跟随系统时每帧按系统外观校正，系统切主题不用重启。
+func (a *App) syncThemeMode(systemDark bool) {
+	a.systemDark = systemDark
+	want := a.themeWantsDark(systemDark)
+	cur := theme.Find(a.PaletteID)
+	if cur == nil {
+		if want {
+			a.PaletteID = theme.Palettes[0].ID
+		} else {
+			a.PaletteID = theme.Counterpart(theme.Palettes[0].ID)
+		}
+		return
+	}
+	if cur.Dark != want {
+		a.PaletteID = theme.Counterpart(cur.ID)
+	}
+}
+
 // palettePanel 是六套配色的选择面板。
 //
 // 布局对齐 baseline：352 宽、两列、每格上方一条三色预览带，
 // 下面写配色名和明暗；选中项用强调色描边 + 右上角一枚勾。
 func (a *App) palettePanel(c *ui.Context) {
-	name := theme.Current().Name
-	if cur := theme.Find(a.PaletteID); cur != nil {
-		name = cur.Name
-	}
+	dark := theme.Current().Dark
 
 	ui.Column(c).Gap(10).Children(func() {
-		// ---- 标题行
-		ui.Row(c).Padding(2, 4, 8, 4).Children(func() {
+		// ---- 标题行：左边标题，右边夜 / 日 / 跟随系统
+		ui.Row(c).Padding(2, 4, 8, 4).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "主题配色").FontSize(theme.TextSM).FontWeight(600).
 				TextColor(theme.TextPrimary)
 			ui.Box(c).Grow(1)
-			ui.Text(c, fmt.Sprintf("%d 套 · 当前 %s", len(theme.Palettes), name)).
-				FontSize(theme.Text2XS).TextColor(theme.TextTertiary).SingleLine()
+			a.themeModeButton(c)
 		})
 
-		// ---- 两列配色格
+		// ---- 两列配色格：只列当前这一侧的三套，日夜由上面的按钮决定
 		ui.Grid(c).Width(palettePanelW - 24).Columns(2).Gap(6).Children(func() {
-			for i := range theme.Palettes {
-				a.paletteItem(c, &theme.Palettes[i])
+			for _, p := range theme.Side(dark) {
+				a.paletteItem(c, p)
 			}
 		})
 	})
+}
+
+// themeModeButton 是标题行右侧的圆形按钮：一个按钮循环切换
+// 日 → 夜 → 跟随系统，当前状态由图标表达。
+//
+// 三个状态各占一个按钮会挤掉标题、而且三种选择本来就是同一件事的三种取值，
+// 圆形按钮 + 图标更像一个开关，不用读字。
+func (a *App) themeModeButton(c *ui.Context) {
+	icon, label := themeModeIcon(a.ThemeMode)
+	btn := ui.Box(c).Size(26, 26).Radius(theme.RadiusFull).
+		Center().Cursor(ui.CursorPointer).
+		Label("配色模式 " + label).
+		Tooltip("配色模式：" + label + "（点击切换）").
+		Background(theme.FillQuaternary)
+	if btn.Hovered() {
+		btn.Background(theme.FillTertiary)
+	}
+	if btn.Clicked() {
+		a.ThemeMode = themeModeNext(a.ThemeMode)
+		// 立即按新选择换到同色系的另一半，面板里的格子跟着换。
+		a.syncThemeMode(a.systemDark)
+		a.markDirty()
+	}
+	btn.Children(func() {
+		col := theme.TextSecondary
+		if btn.Hovered() {
+			col = theme.TextPrimary
+		}
+		ui.Icon(c, icon).FontSize(15).TextColor(col)
+	})
+}
+
+// themeModeNext 是按钮的切换顺序：日 → 夜 → 跟随系统 → 日。
+func themeModeNext(mode string) string {
+	switch mode {
+	case themeModeLight:
+		return themeModeDark
+	case themeModeDark:
+		return themeModeSystem
+	default:
+		return themeModeLight
+	}
+}
+
+// themeModeIcon 返回某个模式对应的图标与文案。
+func themeModeIcon(mode string) (*ui.SVG, string) {
+	switch mode {
+	case themeModeLight:
+		return iconSun, "日"
+	case themeModeDark:
+		return iconMoon, "夜"
+	default:
+		return iconSystemTheme, "跟随系统"
+	}
 }
 
 // paletteItem 是配色面板里的一格。
@@ -111,13 +199,10 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 		})
 
 		ui.Column(c).Gap(1).Children(func() {
+			// 只留配色名：深浅由上面的圆形按钮决定，说明文字在面板宽度里
+			// 只会折成两行，压住下一格。
 			ui.Text(c, p.Name).FontSize(theme.TextXS).FontWeight(600).
 				SingleLine().TextColor(theme.TextPrimary)
-			mode := "深色"
-			if !p.Dark {
-				mode = "浅色"
-			}
-			ui.Text(c, mode).FontSize(theme.Text2XS).TextColor(theme.TextTertiary)
 		})
 
 		if active {

@@ -140,16 +140,20 @@ func (a *App) followsGrid(c *ui.Context, list []Streamer) {
 		}
 		ui.Grid(c).Width(avail).Columns(cols).Gap(gap).Children(func() {
 			for i := range list {
-				a.followsRow(c, list[i], cellW)
+				a.followsRow(c, i, list[i], cellW)
 			}
 		})
 	})
 }
 
 // followsRow 是一行：40px 圆头像（右下角在线点）+ 昵称 / 直播间标题。
-func (a *App) followsRow(c *ui.Context, s Streamer, w float32) {
-	row := ui.Row(c).Width(w).Gap(12).Padding(10, 12, 10, 12).
-		Radius(theme.RadiusMD).Cursor(ui.CursorPointer)
+func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
+	// 行的身份由位置决定：右键菜单的选中结果要回到同一个元素才生效，
+	// 而 Mock/老记录里可能出现同名同房间的重复项，用名字拼 key 会撞键。
+	row := ui.Row(c).Key(fmt.Sprintf("follow-row-%d", i)).
+		Width(w).Gap(12).Padding(10, 12, 10, 12).
+		Radius(theme.RadiusMD).Cursor(ui.CursorPointer).
+		Label("关注的主播 " + s.Name)
 	hovered := row.Hovered()
 
 	// 动画 key 绑在主播身份上：列表重排时同一行的渐亮状态跟着它走，不会重启。
@@ -166,6 +170,13 @@ func (a *App) followsRow(c *ui.Context, s Streamer, w float32) {
 		a.Player = s
 		a.Router.Push(routePlayer)
 	}
+	// 右键菜单只在“全部关注”里提供取消关注：这里列出的都是已关注的主播，
+	// 菜单只做减法，不能反过来把记录加回去。
+	row.ContextMenu(func(m *ui.Menu) {
+		if m.Item("取消关注").Chosen() {
+			a.removeFollow(s)
+		}
+	})
 
 	row.Children(func() {
 		wrap := ui.Box(c).Size(40, 40)

@@ -35,6 +35,7 @@ func colorBytes(c ui.Color) [4]uint8 { return [4]uint8{c.R, c.G, c.B, c.A} }
 // 重启后必须还是空的。
 type persisted struct {
 	Palette       string          `json:"palette,omitempty"`
+	ThemeMode     string          `json:"themeMode,omitempty"` // system / dark / light
 	PlatformOrder []string        `json:"platformOrder,omitempty"`
 	Follows       *[]string       `json:"follows,omitempty"`       // 旧格式：只有「平台|昵称」
 	FollowRecords *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
@@ -135,6 +136,7 @@ func (a *App) saveState() {
 
 	p := persisted{
 		Palette:       a.PaletteID,
+		ThemeMode:     a.ThemeMode,
 		PlatformOrder: a.PlatformOrder,
 		FollowRecords: &follows,
 		Subs:          &subs,
@@ -161,6 +163,10 @@ func (a *App) restore() {
 	}
 	if p.Palette != "" && theme.Find(p.Palette) != nil {
 		a.PaletteID = p.Palette
+	}
+	switch p.ThemeMode {
+	case themeModeSystem, themeModeDark, themeModeLight:
+		a.ThemeMode = p.ThemeMode
 	}
 	if len(p.PlatformOrder) > 0 {
 		a.PlatformOrder = normalizePlatformOrder(p.PlatformOrder)

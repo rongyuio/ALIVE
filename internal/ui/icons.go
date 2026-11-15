@@ -63,6 +63,25 @@ var (
 			`<circle cx="8.5" cy="7.5" r="0.5"/><circle cx="6.5" cy="12.5" r="0.5"/>` +
 			`<path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>`)
 
+	// 配色模式：日 / 夜 / 跟随系统（显示器）。只用一个圆形按钮，
+	// 状态由图标表达，点击循环切换。
+	iconSun = iconSVG(
+		`<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/>` +
+			`<path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/>` +
+			`<path d="M2 12h2"/><path d="M20 12h2"/>` +
+			`<path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>`)
+	iconMoon = iconSVG(
+		`<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/>`)
+	// 跟随系统：描边圆 + 右半实心，表示随系统日夜切换。
+	// 内层 fill 覆盖根上的 fill="none" 在真实渲染里是生效的（用像素亮度比测过），
+	// 所以右半直接画成实心路径，不用粗描边去凑。
+	iconSystemTheme = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
+			`stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+			`<circle cx="12" cy="12" r="9"/>` +
+			`<path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/>` +
+			`</svg>`))
+
 	iconBookmark     = iconSVG(`<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>`)
 	iconPlus         = iconSVG(`<path d="M5 12h14"/><path d="M12 5v14"/>`)
 	iconChevronRight = iconSVG(`<path d="m9 18 6-6-6-6"/>`)

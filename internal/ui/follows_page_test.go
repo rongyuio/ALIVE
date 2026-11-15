@@ -175,3 +175,70 @@ func TestSearchAvailableOnlyOnPlatformPages(t *testing.T) {
 		t.Error("播放页应该有搜索入口")
 	}
 }
+
+// 右键关注卡片：菜单里只有“取消关注”，选中后记录消失，且不会反过来重新关注。
+func TestFollowsRowContextMenuUnfollows(t *testing.T) {
+	app := NewMockApp()
+	// 关注页只有在 LiveMode 下才读 Follows；NewApp 在正式入口里打开它，
+	// Mock 不带，测试要自己补。
+	app.LiveMode = true
+	app.Follows = []FollowRecord{
+		{Platform: "douyu", RoomID: "1", Name: "甲"},
+		{Platform: "douyu", RoomID: "2", Name: "乙"},
+	}
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	targetLabel, restLabel := "关注的主播 甲", "关注的主播 乙"
+	targetName := "甲"
+	if err := tt.RightClick(targetLabel); err != nil {
+		t.Fatal(err)
+	}
+	labels := tt.Menu()
+	found := false
+	for _, label := range labels {
+		if label == "取消关注" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("右键菜单里没有“取消关注”：%v", labels)
+	}
+	tt.Frame()
+	if err := tt.ChooseMenuItem("取消关注"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	if app.ToastText != "已取消关注 "+targetName {
+		t.Fatalf("取关没有反馈: %q", app.ToastText)
+	}
+	if _, ok := tt.Find(targetLabel); ok {
+		t.Fatal("取关后卡片还在")
+	}
+	if _, ok := tt.Find(restLabel); !ok {
+		t.Fatal("取关误删了别的卡片")
+	}
+}
+
+// 记录已经不在时，取消关注不能把它加回去；重复触发是安全的。
+func TestRemoveFollowIsNotAToggle(t *testing.T) {
+	app := NewMockApp()
+	app.Follows = nil
+	streamer := Streamer{Platform: "douyu", RoomID: "1", Name: "甲"}
+	if app.removeFollow(streamer) {
+		t.Fatal("没有记录却报告删除成功")
+	}
+	if len(app.Follows) != 0 {
+		t.Fatalf("取消关注把记录加回来了: %+v", app.Follows)
+	}
+
+	app.Follows = []FollowRecord{{Platform: "douyu", RoomID: "1", Name: "甲"}}
+	if !app.removeFollow(streamer) {
+		t.Fatal("已关注的记录没有删除")
+	}
+	if len(app.Follows) != 0 {
+		t.Fatalf("取关后仍剩 %+v", app.Follows)
+	}
+}
