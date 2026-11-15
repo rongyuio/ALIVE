@@ -113,9 +113,12 @@ func (a *App) PlayerPage(c *ui.Context) {
 					}
 				}
 				// 右侧弹幕列表（baseline 的 panelSlot）。
-				// baseline 是 {!isFullscreen && <panelSlot>}：两种全屏下整个
-				// 面板连同边缘把手都不出现，画面独占整块空间。
-				if !a.playerFullscreen() {
+				//
+				// 只有系统全屏不给：那是真全屏，画面独占整块屏幕。窗口全屏
+				// （应用内沉浸、任务栏还在）照常保留——那边弹幕列表本身就是
+				// 功能，没有理由跟着画面一起消失。收起 / 展开仍然走面板左沿
+				// 那颗小舌。
+				if !a.sysFullscreen() {
 					a.danmuPanel(c)
 				}
 			})
