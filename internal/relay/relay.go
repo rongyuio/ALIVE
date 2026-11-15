@@ -10,6 +10,9 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,16 +25,29 @@ import (
 	"time"
 )
 
-// Server 是一次转封装会话：一个 FFmpeg 子进程 + 一个本地静态服务。
+// errCanceled 表示这次启动被调用方取消。取消之后不允许再试别的路径
+// （比如硬件转码失败回落软件编码），否则用户切房后还会白起一路 ffmpeg。
+var errCanceled = context.Canceled
+
+// Server 是一次传输会话：一个 FFmpeg 子进程或一个 HLS 代理 + 一个本地服务。
 type Server struct {
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	server  *http.Server
-	url     string
-	dir     string
-	token   string
-	headers []string
-	cancel  context.CancelFunc
+	// startMu 串行化启动与回收。Stop 先取消 context，再等待这把锁，
+	// 避免清理读取尚未由 cmd.Start 完成初始化的进程字段。
+	startMu       sync.Mutex
+	mu            sync.Mutex
+	cmd           *exec.Cmd
+	server        *http.Server
+	proxy         *hlsProxy
+	url           string
+	dir           string
+	token         string
+	mode          string
+	cancel        context.CancelFunc
+	attemptCancel context.CancelFunc
+	generation    uint64
+	// done 在 ffmpeg 退出（或启动失败）时关闭。Stop 靠它等子进程真正
+	// 结束，而不是和 cmd.Wait 抢同一个 Process.Wait。
+	done chan struct{}
 	// jobRelease 关掉绑定 ffmpeg 的 Job 句柄。非 Windows 上恒为 nil。
 	jobRelease func()
 }
@@ -48,31 +64,136 @@ func (s *Server) URL() string {
 	return s.url
 }
 
+// Mode 返回这一次的传输方式：hls-proxy、remux 或 transcode。
+// 未启动时返回空字符串。界面用它打日志，不做逻辑判断。
+func (s *Server) Mode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mode
+}
+
 // Options 是一次转封装的选项。
 type Options struct {
 	// Encoder 是转码时的编码器策略；零值按 EncoderAuto 处理。
 	Encoder EncoderMode
+	// HLSProxy 打开 HLS 透明代理快路径，默认关闭。关闭时行为与之前完全
+	// 一致；打开后只有「codec 明确是 H.264 且上游是 HLS」才会尝试，
+	// 预检只接受 TS 或带完整 MAP 的 fMP4 媒体列表，不支持 BYTERANGE。
+	HLSProxy bool
 }
 
-// Start 打开一条上游流。会先停掉上一条，避免两个 FFmpeg 并存。
+// Start 打开一条上游流。会先停掉上一条，避免两个会话并存。
 // headers 是回源需要的请求头，例如 "Referer: https://live.bilibili.com/"。
 // codec 是上游视频编码（avc / hevc / av1），为空按 avc 处理。
+//
+// 打开 HLSProxy 且条件成立时先试透明代理：只补请求头、改写资源地址，
+// 分片原样转发，省掉 FFmpeg 启动和重新切片。预检失败时代理已经把自己
+// 清理干净，这里直接回到原来的 FFmpeg 路径。
 //
 // 用硬件编码器时，探测通过不代表真转码一定成功（驱动被别的程序占满、
 // 显存不足都会让 ffmpeg 起不来）。这里在失败时回落 libx264 再试一次——
 // 慢一点也比让用户看到「无法拉取直播流」强。
-func (s *Server) Start(ctx context.Context, upstream string, headers []string, codec string, opts Options) (string, error) {
-	url, err := s.start(ctx, upstream, headers, codec, opts)
-	if err == nil {
-		return url, nil
+func (s *Server) Start(ctx context.Context, upstream string, headers []string, codec string, opts Options) (result string, resultErr error) {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	// 回落一：硬件编码器不通（驱动被别的程序占满、显存不足）。
-	if needTranscode(codec) && pickVideoEncoder(opts.Encoder) != softwareEncoder {
-		slog.Warn("硬件转码失败，回落软件编码",
-			"encoder", pickVideoEncoder(opts.Encoder), "error", err)
-		return s.start(ctx, upstream, headers, codec, Options{Encoder: EncoderSoftware})
+	// 启动期间也发布取消函数；Stop 能中断预检、编码器选择及启动等待。
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.cancel()
 	}
-	return url, err
+	runCtx, cancel := context.WithCancel(ctx)
+	s.generation++
+	generation := s.generation
+	s.cancel = cancel
+	s.mu.Unlock()
+	defer func() {
+		if runCtx.Err() != nil {
+			result, resultErr = "", runCtx.Err()
+		}
+		if resultErr != nil {
+			cancel()
+			s.cleanupAttempt()
+		}
+	}()
+	go func() { <-runCtx.Done(); s.stopGeneration(generation) }()
+	s.cleanupAttempt()
+	if err := runCtx.Err(); err != nil {
+		return "", err
+	}
+
+	if proxyEligible(opts, upstream, codec) {
+		result, resultErr = s.startProxy(runCtx, upstream, headers)
+		if runCtx.Err() != nil {
+			return "", runCtx.Err()
+		}
+		if resultErr == nil {
+			return result, nil
+		}
+		slog.Info("HLS 代理不可用，回退转封装", "reason", redactError(resultErr))
+	}
+	result, resultErr = s.start(runCtx, upstream, headers, codec, opts)
+	if runCtx.Err() != nil {
+		return "", runCtx.Err()
+	}
+	if resultErr == nil {
+		return result, nil
+	}
+	if errors.Is(resultErr, context.Canceled) || errors.Is(resultErr, context.DeadlineExceeded) {
+		return "", resultErr
+	}
+	if needTranscode(codec) {
+		encoder, err := pickVideoEncoderContext(runCtx, opts.Encoder)
+		if err != nil {
+			return "", err
+		}
+		if encoder != softwareEncoder {
+			slog.Warn("硬件转码失败，回落软件编码", "encoder", encoder, "error", redactError(resultErr))
+			return s.start(runCtx, upstream, headers, codec, Options{Encoder: EncoderSoftware})
+		}
+	}
+	return result, resultErr
+}
+
+// proxyEligible 报告这次是否应该尝试 HLS 透明代理。
+//
+// codec 必须明确写成 avc / h264：空串在旧路径里按 avc 处理是历史行为，
+// 而代理靠这个判断跳过转封装，猜错会把 HEVC / AV1 直接塞给播放器。
+func proxyEligible(opts Options, upstream, codec string) bool {
+	if !opts.HLSProxy || !isHLSInput(upstream) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "avc", "h264":
+		return true
+	}
+	return false
+}
+
+// startProxy 起代理并接管 Server 状态。失败时返回错误，调用方继续走 FFmpeg。
+func (s *Server) startProxy(ctx context.Context, upstream string, headers []string) (string, error) {
+	if ctx.Err() != nil {
+		return "", errCanceled
+	}
+	p, err := newHLSProxy(ctx, upstream, headers)
+	if err != nil {
+		return "", err
+	}
+	s.cleanupAttempt()
+	s.mu.Lock()
+	if ctx.Err() != nil {
+		s.mu.Unlock()
+		p.stop()
+		return "", ctx.Err()
+	}
+	s.proxy = p
+	s.url = p.url
+	s.mode = "hls-proxy"
+	s.mu.Unlock()
+	slog.Info("传输方式", "mode", "hls-proxy")
+	return p.url, nil
 }
 
 // start 是 Start 的实际实现；抽出来是为了让硬件失败时能重跑一遍。
@@ -81,10 +202,13 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	if upstream == "" {
 		return "", fmt.Errorf("上游地址为空")
 	}
+	if ctx.Err() != nil {
+		return "", errCanceled
+	}
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return "", fmt.Errorf("找不到 ffmpeg，请安装并加入 PATH: %w", err)
 	}
-	s.Stop()
+	s.cleanupAttempt()
 
 	dir, err := os.MkdirTemp("", "dtv-relay-")
 	if err != nil {
@@ -97,6 +221,14 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
+	owned := false
+	defer func() {
+		if !owned {
+			cancel()
+			_ = listener.Close()
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	mux := http.NewServeMux()
 	// 只允许 m3u8 与 ts，且要求 token，避免本机其它页面读文件。
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +255,11 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	})
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
+	// mode 是这次会话的传输方式，Mode() 会把它交给界面日志。
+	mode := "remux"
+	if needTranscode(codec) {
+		mode = "transcode"
+	}
 	args := []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-rw_timeout", "10000000",
@@ -162,7 +299,10 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		//
 		// 编码器由设置项决定：auto 时优先硬编（HEVC 1080p 从占 5-6 个核
 		// 降到几乎为零），software 时强制 libx264 换画质。
-		enc := pickVideoEncoder(opts.Encoder)
+		enc, err := pickVideoEncoderContext(runCtx, opts.Encoder)
+		if err != nil {
+			return "", err
+		}
 		slog.Info("转封装方式", "mode", "transcode", "codec", codec, "encoder", enc)
 		args = append(args, "-map", "0:v:0?", "-map", "0:a:0?")
 		args = append(args, videoEncodeArgs(enc)...)
@@ -174,7 +314,7 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		// 上游本来就是 H.264，只换容器。这条路 CPU 接近零，分片时长由
 		// 上游关键帧决定（B 站是 3 秒），起播与稳定性都和转码路径不同。
 		// 打一行日志是为了排查时不用去猜——哪条路一眼能看出来。
-		slog.Info("转封装方式", "mode", "copy", "codec", codec)
+		slog.Info("转封装方式", "mode", mode, "codec", codec)
 		// 必须显式只取视频和音频。默认选流会把字幕一起带进来——虎牙的
 		// HTTP-FLV 里就挂着一条 webvtt 轨，而 MPEG-TS 不支持 webvtt，
 		// ffmpeg 会以 EINVAL 直接退出，表现就是「虎牙播不了」。
@@ -215,17 +355,23 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		"-hls_segment_filename", filepath.Join(dir, "seg-%05d.ts"),
 		filepath.Join(dir, "live.m3u8"),
 	)
+	if err := runCtx.Err(); err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(runCtx, "ffmpeg", args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdout = nil
-	cmd.Stderr = &relayLog{}
+	cmd.Stderr = &relayLog{token: s.token}
 
+	done := make(chan struct{})
 	s.mu.Lock()
-	s.cmd, s.server, s.dir = cmd, server, dir
-	s.cancel = cancel
-	s.headers = append([]string(nil), headers...)
+	s.cmd, s.server, s.dir, s.done = cmd, server, dir, done
+	s.attemptCancel = cancel
+	s.mode = mode
 	s.url = fmt.Sprintf("http://%s/%s/live.m3u8", listener.Addr().String(), s.token)
 	url := s.url
 	s.mu.Unlock()
+	owned = true
 
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -233,14 +379,16 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		}
 	}()
 	if err := cmd.Start(); err != nil {
-		cancel()
-		_ = server.Close()
-		_ = os.RemoveAll(dir)
-		s.mu.Lock()
-		s.cmd, s.server, s.dir, s.url = nil, nil, "", ""
-		s.mu.Unlock()
-		return "", fmt.Errorf("启动 ffmpeg: %w", err)
+		close(done)
+		// Serve 可能尚未开始，显式关闭 listener，不依赖 Server.Close 接管成功。
+		_ = listener.Close()
+		s.cleanupAttempt()
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("启动 ffmpeg: %w", redactError(err))
 	}
+
 	// 把 ffmpeg 绑到本进程的生死上。应用被强杀（任务管理器、崩溃）时
 	// Go 没有机会执行 Stop，Windows 也不会连带结束子进程——ffmpeg 会变
 	// 成孤儿继续拉流转码，残留几个就把 CPU 吃满，之后所有播放都卡。
@@ -252,11 +400,10 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		s.jobRelease = release
 		s.mu.Unlock()
 	}
-	exited := make(chan struct{})
 	go func() {
 		err := cmd.Wait()
 		slog.Info("ffmpeg 转封装结束", "error", err, "ctxCanceled", runCtx.Err() != nil)
-		close(exited)
+		close(done)
 	}()
 
 	// 等 FFmpeg 写出第一份播放列表再返回。播放器不会重试一次失败的打开，
@@ -264,13 +411,14 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if runCtx.Err() != nil {
-			break
+			s.cleanupAttempt()
+			return "", errCanceled
 		}
 		// ffmpeg 自己退了就别再干等满 15 秒：多半是参数问题——这一路要求
 		// 输出音频，而这个流里根本没有音频轨。立刻交回 Start 去回退。
 		select {
-		case <-exited:
-			s.Stop()
+		case <-done:
+			s.cleanupAttempt()
 			return "", fmt.Errorf("ffmpeg 启动后立即退出")
 		default:
 		}
@@ -289,38 +437,71 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		// 而这点空转对 CPU 毫无意义——循环里只有两次 stat。
 		time.Sleep(50 * time.Millisecond)
 	}
-	s.Stop()
+	s.cleanupAttempt()
+	if ctx.Err() != nil {
+		return "", errCanceled
+	}
 	return "", fmt.Errorf("等待转封装就绪超时")
 }
 
-// Stop 关闭 FFmpeg 与本地服务，删除临时分片。
+// Stop 先取消当前会话，再等待启动互斥锁完成资源回收；不会与 cmd.Start
+// 并发读取 Process 字段，也不会误停随后创建的新一代会话。
 func (s *Server) Stop() {
 	s.mu.Lock()
-	cmd, server, dir, cancel := s.cmd, s.server, s.dir, s.cancel
-	release := s.jobRelease
-	s.cmd, s.server, s.dir, s.url, s.cancel = nil, nil, "", "", nil
-	s.jobRelease = nil
+	generation := s.generation
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.mu.Unlock()
+	s.stopGeneration(generation)
+}
 
+func (s *Server) stopGeneration(generation uint64) {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	s.mu.Lock()
+	matches := s.generation == generation
+	if matches {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.cancel = nil
+	}
+	s.mu.Unlock()
+	if matches {
+		s.cleanupAttempt()
+	}
+}
+
+// cleanupAttempt 必须持有 startMu；一次失败回退只回收该次资源，不取消
+// 整个会话。子进程只有 cmd.Wait 一个等待者。
+func (s *Server) cleanupAttempt() {
+	s.mu.Lock()
+	cmd, server, dir, cancel := s.cmd, s.server, s.dir, s.attemptCancel
+	proxy, done, release := s.proxy, s.done, s.jobRelease
+	s.cmd, s.server, s.dir, s.url, s.attemptCancel = nil, nil, "", "", nil
+	s.proxy, s.done, s.jobRelease, s.mode = nil, nil, nil, ""
+	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+	if proxy != nil {
+		proxy.stop()
 	}
 	if server != nil {
-		ctx, done := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = server.Shutdown(ctx)
-		done()
+		_ = server.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	if release != nil {
+		release()
+	}
+	if done != nil {
+		<-done
 	}
 	if dir != "" {
 		_ = os.RemoveAll(dir)
-	}
-	// 关掉 Job 句柄。此时子进程已经被 kill 过；这里是给没来得及 kill 的情况
-	// 兜底——句柄一关，Job 里还剩的进程会被内核结束。
-	if release != nil {
-		release()
 	}
 }
 
@@ -335,10 +516,14 @@ func isHLSInput(u string) bool {
 	return strings.HasSuffix(strings.ToLower(u), ".m3u8")
 }
 
-// relayLog 把 ffmpeg stderr 限流写进 slog，不把上游 URL 打进日志。
+// relayLog 把 ffmpeg stderr 限流写进 slog。
+//
+// ffmpeg 会把打不开的上游地址（带签名和时效参数）原样写进 stderr，所以
+// 每条都先脱敏再截断；反过来先截断会留下半截带签名的地址。
 type relayLog struct {
-	mu   sync.Mutex
-	last time.Time
+	mu    sync.Mutex
+	last  time.Time
+	token string
 }
 
 func (l *relayLog) Write(p []byte) (int, error) {
@@ -348,10 +533,7 @@ func (l *relayLog) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	l.last = time.Now()
-	msg := string(p)
-	if len(msg) > 400 {
-		msg = msg[:400]
-	}
+	msg := truncateUTF8(scrubText(l.token, string(p)), 400)
 	slog.Warn("ffmpeg", "message", msg)
 	return len(p), nil
 }
@@ -393,13 +575,10 @@ func joinHeaders(headers []string) string {
 }
 
 func randomToken() string {
-	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 24)
-	// 用纳秒时间混合，token 只用于本机隔离，不需要密码学强度。
-	n := time.Now().UnixNano()
-	for i := range b {
-		n = n*6364136223846793005 + 1442695040888963407
-		b[i] = charset[(n>>32)&int64(len(charset)-1)]
+	// token 保护本地服务，用系统随机源避免时间种子的可预测性。
+	var token [24]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		panic("无法生成本地会话标识")
 	}
-	return string(b)
+	return hex.EncodeToString(token[:])
 }

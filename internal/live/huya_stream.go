@@ -175,6 +175,8 @@ func (p *huyaProvider) Stream(ctx context.Context, roomID, line string) (Stream,
 			Label:   variant.Label,
 			URL:     playURL,
 			Headers: headers,
+			// 地址固定带 codec=264，转封装可以直接 copy。
+			Codec: "avc",
 		})
 	}
 	return out, nil

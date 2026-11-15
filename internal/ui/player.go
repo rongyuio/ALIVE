@@ -37,9 +37,14 @@ func (a *App) PlayerPage(c *ui.Context) {
 	// 接真实流：房间变了才重新取流 + 连弹幕
 	a.ensureMedia(c)
 	a.syncPlayer()
+	// 首帧可用时刻是起播耗时的最后一段，顺带负责实验快路径的回退。
+	a.trackFirstFrame()
 	// 左右 14（窄屏 10）、底部不留：baseline 的 appBodyPlayer 就是这样，
-	// 播放页整块一直铺到窗口下沿。窗口全屏时四边都不留（shellFull 是 inset:0）。
-	full := a.WinFull
+	// 播放页整块一直铺到窗口下沿。两种全屏下四边都不留（shellFull 是 inset:0）。
+	//
+	// 判据必须和 Shell 一样用 playerFullscreen()：之前只认 WinFull，系统全屏时
+	// 顶栏让位了，画面四周却还留着 14 的留白和 16 的圆角。
+	full := a.playerFullscreen()
 	pad := a.bodyPadX(c)
 	if full {
 		pad = 0
@@ -93,17 +98,29 @@ func (a *App) PlayerPage(c *ui.Context) {
 					a.playerControls(c)
 					a.playerCaption(c)
 				})
-				// 双击画面切换窗口全屏（baseline 的 onStageDoubleClick）。
+				// 双击画面：已经在全屏里就退出去，没全屏就进窗口全屏。
+				// 原来只翻 WinFull，系统全屏下双击等于没反应。
+				//
 				// 按钮、下拉、头像这些命中目标自带点击身份，在命中链里排在
 				// stage 前面，双击落在它们身上时这里收不到——控制条上连点
 				// 不会误切全屏。
 				if stage.DoubleClicked() {
-					a.WinFull = !a.WinFull
+					switch {
+					case a.WinFull:
+						a.WinFull = false
+					case a.Win != nil && a.Win.IsFullScreen():
+						a.Win.SetFullScreen(false)
+					default:
+						a.WinFull = true
+					}
 				}
 				// 右侧弹幕列表（baseline 的 panelSlot）。
-				// baseline 是 {!isFullscreen && <panelSlot>}：两种全屏下整个
-				// 面板连同边缘把手都不出现，画面独占整块空间。
-				if !a.playerFullscreen() {
+				//
+				// 只有系统全屏不给：那是真全屏，画面独占整块屏幕。窗口全屏
+				// （应用内沉浸、任务栏还在）照常保留——那边弹幕列表本身就是
+				// 功能，没有理由跟着画面一起消失。收起 / 展开仍然走面板左沿
+				// 那颗小舌。
+				if !a.sysFullscreen() {
 					a.danmuPanel(c)
 				}
 			})
@@ -143,7 +160,7 @@ func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
 	// 岛自动展开的那几秒不算「人在操作」；指针停在岛上时本来就落在
 	// 顶部那条带里，下面的坐标判断已经把它兜住了。
 	if !a.Playing || a.QualityOpen || a.LineOpen ||
-		a.DanmuSettingsOpen || a.ShortcutsOpen {
+		a.DanmuSettingsOpen || a.DanmuFilterOpen || a.ShortcutsOpen {
 		stay()
 		return
 	}
@@ -206,7 +223,43 @@ func (a *App) playerFullscreen() bool {
 	if a.Router == nil || a.Router.Path() != routePlayer {
 		return false
 	}
-	return a.WinFull || (a.Win != nil && a.Win.IsFullScreen())
+	return a.WinFull || a.sysFullscreen()
+}
+
+// sysFullscreen 报告窗口是否处于系统原生全屏。
+//
+// 单拎出来是因为有两处只关心系统全屏、不关心窗口全屏：系统全屏下不画
+// 弹幕侧栏，飞幕的宽度也就不能扣掉面板。
+func (a *App) sysFullscreen() bool {
+	return a.Win != nil && a.Win.IsFullScreen()
+}
+
+// leavePlayer 收掉播放页留下的窗口级与界面级状态，离开播放页时调用。
+//
+// 两种全屏必须在这里退出。系统全屏留着不走，窗口回到首页时还是整屏、
+// 没有 WS_THICKFRAME 边框——拖边缘改不了大小，而 Esc 在首页只管返回、
+// 控制条又已经不在了，人没有任何办法把窗口变回普通窗口。WinFull 留着
+// 不走，下次进直播间会直接是全屏态，看着像「退出没生效」。
+//
+// 其余是播放页的跨帧状态：控制条自动隐藏、几个浮层的开关、拖面板和拖
+// 音量的标记。不清的话下次进直播间会以上一次的隐藏 / 展开态开局。
+//
+// 幂等，每帧调用都没问题；判据由调用方给（Router 不是播放页）。
+func (a *App) leavePlayer() {
+	a.WinFull = false
+	if a.Win != nil && a.Win.IsFullScreen() {
+		a.Win.SetFullScreen(false)
+	}
+	a.ChromeHidden = false
+	a.chromeIdleAt = time.Time{}
+	a.InfoOpen = false
+	a.QualityOpen = false
+	a.LineOpen = false
+	a.DanmuSettingsOpen = false
+	a.DanmuFilterOpen = false
+	a.ShortcutsOpen = false
+	a.volumeDragging = false
+	a.panelDragW, a.panelDragX = 0, 0
 }
 
 // stageFrame 是画面本身。
@@ -273,7 +326,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 	// Ready 不了，不单独列一个分支就会一直卡在加载层上。
 	case m.player != nil && m.player.Err() != nil:
 		a.overlayLayer(c, func() {
-			a.overlayText(c, "播放失败："+m.player.Err().Error())
+			a.overlayText(c, "播放失败，请重试或切换线路")
 			a.overlayButton(c, "重试", a.retryStream)
 		})
 
@@ -382,7 +435,7 @@ func (a *App) playerTopbar(c *ui.Context) {
 		back := ui.Box(c).Size(44, 44).Radius(999).
 			Background(ui.RGBA(10, 10, 12, 0.62)).
 			Border(1, ui.RGBA(255, 255, 255, 0.18)).
-			Center().Cursor(ui.CursorPointer)
+			Center().Cursor(ui.CursorPointer).Label("退出直播间")
 		if back.Hovered() {
 			back.Background(ui.RGBA(10, 10, 12, 0.72)).
 				BorderColor(ui.RGBA(255, 255, 255, 0.24))
@@ -421,7 +474,9 @@ func (a *App) playerControls(c *ui.Context) {
 		bar.Children(func() {
 			// ------------------------------ 左：播放 / 刷新 / 音量
 			ui.Row(c).Gap(m.leftGap).AlignItems(ui.Center).Children(func() {
-				playIcon, playSize := iconPlay, float32(22)
+				// 这三颗是同一档：30×30 热区 + 18px 图标。原来播放/暂停是 22、
+				// 刷新 19、音量又套了个 24 的框，三个排在一起大小不齐。
+				playIcon := iconPlay
 				if a.Playing {
 					playIcon = iconPause
 				}
@@ -429,12 +484,12 @@ func (a *App) playerControls(c *ui.Context) {
 				if a.Playing {
 					playLabel = "暂停"
 				}
-				a.playerIconBtn(c, playIcon, playSize, false, playLabel, func() {
+				a.playerIconBtn(c, playIcon, 18, false, playLabel, func() {
 					a.Playing = !a.Playing
 					a.markDirty()
 					a.invalidateWindows()
 				})
-				a.playerIconBtn(c, iconSync, 19, false, "重新加载", func() {})
+				a.playerIconBtn(c, iconSync, 18, false, "重新加载", a.retryStream)
 
 				a.volumeControl(c, m)
 			})
@@ -459,7 +514,7 @@ func (a *App) playerControls(c *ui.Context) {
 						a.markDirty()
 					})
 					a.danmuSettingsButton(c)
-					a.playerIconBtn(c, iconFilter, 16, false, "弹幕屏蔽", func() {})
+					a.danmuFilterButton(c)
 				})
 
 				// 清晰度 / 线路：选项全部来自平台返回值，还没取到流时整块
@@ -483,18 +538,20 @@ func (a *App) playerControls(c *ui.Context) {
 				a.playerIconBtn(c, iconPip, 18, a.miniOpen(), pipLabel, a.togglePip)
 
 				// 窗口全屏：铺满应用窗口、任务栏仍可见（baseline 的 cssFullscreen）。
-				// 这和右边的系统全屏是两件事，别混。
+				// 和右边的系统全屏是两件事，但两者互斥：进来一个就退掉另一个，
+				// 收尾统一走 toggleWinFull / toggleFullscreen。
+				//
+				// 图标是成对的：进 Maximize（四角外扩）、退 Minimize（四角收拢）。
+				// 原来退出态借用了系统全屏的 Minimize2，两颗按钮全屏时长得一样。
 				winFullIcon := iconWinFull
 				if a.WinFull {
-					winFullIcon = iconMinimize2
+					winFullIcon = iconWinShrink
 				}
 				winFullLabel := "窗口全屏"
 				if a.WinFull {
 					winFullLabel = "退出窗口全屏"
 				}
-				a.playerIconBtn(c, winFullIcon, 18, a.WinFull, winFullLabel, func() {
-					a.WinFull = !a.WinFull
-				})
+				a.playerIconBtn(c, winFullIcon, 18, a.WinFull, winFullLabel, a.toggleWinFull)
 
 				isFull := a.Win != nil && a.Win.IsFullScreen()
 				fullIcon := iconFullscreen
@@ -554,7 +611,7 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 		if a.Volume <= 0 {
 			muteLabel = "取消静音"
 		}
-		a.playerIconBtnBox(c, muteIcon, 24, 19, false, muteLabel, a.toggleMute)
+		a.playerIconBtn(c, muteIcon, 18, false, muteLabel, a.toggleMute)
 
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().Cursor(ui.CursorPointer)
 		// PointerPosition 的 x 是相对热区的，除以热区宽度就是音量比例
@@ -752,20 +809,13 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open 
 	})
 }
 
-// playerIconBtn 是控制台里的一枚图标按钮。
+// playerIconBtn 是控制台里的一枚图标按钮：30×30 热区，没有底色也没有圆角，
+// 只靠颜色变化表达 hover / 激活——加方块底会让控制条看起来碎。
 //
-// label 对应 baseline 的 aria-label：既是无障碍名，也让自动化能按名字点到
-// 这颗按钮——自绘 Box 不进无障碍树，没有 Label 就只能靠坐标猜。
+// size 是图标字号。label 对应 baseline 的 aria-label：既是无障碍名，也让自动化
+// 能按名字点到这颗按钮——自绘 Box 不进无障碍树，没有 Label 就只能靠坐标猜。
 func (a *App) playerIconBtn(c *ui.Context, ico *ui.SVG, size float32, active bool, label string, on func()) {
-	a.playerIconBtnBox(c, ico, 30, size, active, label, on)
-}
-
-// playerIconBtnBox 是同一种按钮，但外框可以不是 30——音量那颗图标按钮
-// baseline 用的是 24×24（.volumeIcon），其它才是 30×30（.iconControl）。
-func (a *App) playerIconBtnBox(c *ui.Context, ico *ui.SVG, box, size float32, active bool, label string, on func()) {
-	// baseline 的 .iconControl：30×30，没有底色也没有圆角，
-	// 只靠颜色变化表达 hover / 激活——加方块底会让控制条看起来碎。
-	btn := ui.Box(c).Size(box, box).Center().Cursor(ui.CursorPointer).Label(label)
+	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label(label)
 	if btn.Clicked() {
 		on()
 	}

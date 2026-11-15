@@ -156,21 +156,28 @@ func (p *douyuProvider) Stream(ctx context.Context, roomID, line string) (Stream
 				results[idx] = qualityResult{err: fmt.Errorf("清晰度 %s 没有可用地址", douyuRateLabel(requested))}
 				return
 			}
-			_ = applied
-			_ = unconfirmed
-			results[idx] = qualityResult{variant: Variant{
-				// rate 是平台给的稳定请求码，直接当 id 用
-				ID:    strconv.Itoa(requested.Rate),
-				Label: douyuRateLabel(requested),
-				URL:   urls[0],
-				// 斗鱼的 FLV/HLS 都校验 Referer，不带给 ffmpeg 就是 403
-				Headers: douyuStreamHeaders(room.RoomID),
-			}}
+			// 服务端回填的 rate 才是实际下发的档位：请求档没被接受时，
+			// 地址来自另一个档，菜单不能继续沿用请求档的名字。
+			actual := requested
+			if applied != nil && *applied >= 0 {
+				actual = douyuRateByCode(rates, *applied)
+			}
+			variant := douyuNewVariant(room.RoomID, actual, urls[0])
+			if unconfirmed {
+				// 没有 rate 回填就无法确认实际档位，不能拿请求档（可能是最高档）
+				// 冒充已确认结果；只保留地址，标签退到「默认」。
+				variant.ID = ""
+				variant.Label = "默认"
+			}
+			results[idx] = qualityResult{variant: variant}
 		}(i, rate)
 	}
 	wg.Wait()
 
 	var firstErr error
+	confirmed := make(map[string]bool, len(rates))
+	unconfirmed := make([]Variant, 0, len(rates))
+	seenURL := make(map[string]bool, len(rates))
 	for _, r := range results {
 		if r.err != nil {
 			if firstErr == nil {
@@ -178,7 +185,24 @@ func (p *douyuProvider) Stream(ctx context.Context, roomID, line string) (Stream
 			}
 			continue
 		}
+		if r.variant.ID == "" {
+			if seenURL[r.variant.URL] {
+				continue
+			}
+			seenURL[r.variant.URL] = true
+			unconfirmed = append(unconfirmed, r.variant)
+			continue
+		}
+		// 多个请求档可能落到同一个实际档位，只保留先出现的一条。
+		if confirmed[r.variant.ID] {
+			continue
+		}
+		confirmed[r.variant.ID] = true
 		out.Variants = append(out.Variants, r.variant)
+	}
+	if len(out.Variants) == 0 {
+		// 一个确认档都没有时才用未确认地址兜底。
+		out.Variants = append(out.Variants, unconfirmed...)
 	}
 	if len(out.Variants) == 0 {
 		if firstErr != nil {
@@ -187,6 +211,144 @@ func (p *douyuProvider) Stream(ctx context.Context, roomID, line string) (Stream
 		return Stream{}, fmt.Errorf("房间 %s 没有可用的直播流", room.RoomID)
 	}
 	return out, nil
+}
+
+// StreamForPlayback 只解析当前档位的首选线路，供播放页按需起播。
+//
+// 斗鱼每个「档位 × 线路」都要单独请求一次签名接口，全部解析会让起播白等
+// 好几秒；这里先请求选中线路，服务端确认的就是这一档时立即返回，不行再
+// 按顺序回退到下一条线路。其余档位只返回目录，URL 留空。
+func (p *douyuProvider) StreamForPlayback(ctx context.Context, roomID, line, quality string) (Stream, Variant, error) {
+	room, err := p.RoomInfo(ctx, roomID)
+	if err != nil {
+		return Stream{}, Variant{}, err
+	}
+	out := Stream{
+		RoomID:   room.RoomID,
+		Platform: Douyu,
+		Title:    room.Title,
+		Nickname: room.Nickname,
+		Avatar:   room.Avatar,
+		Live:     room.Live,
+	}
+	if !room.Live {
+		return out, Variant{}, nil
+	}
+
+	rates, cdns, err := p.douyuPlayQualities(ctx, room.RoomID)
+	if err != nil {
+		return Stream{}, Variant{}, err
+	}
+	out.Lines = cdns
+	for _, rate := range rates {
+		// 目录保持平台下发的完整档位，地址等真正选中时再解析。
+		out.Variants = append(out.Variants, douyuNewVariant(room.RoomID, rate, ""))
+	}
+
+	requested := douyuPickRate(rates, quality)
+	resolveOrder := douyuOrderCDNs(cdns, line)
+
+	var (
+		lastErr     error
+		fallback    *Variant
+		unconfirmed *Variant
+	)
+	for _, cdn := range resolveOrder {
+		data, err := p.douyuPlayData(ctx, room.RoomID, requested.Rate, cdn.ID)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		playURL, err := douyuParsePlayURL(data)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		playURL = douyuExpirePatch(playURL)
+		// 斗鱼请求固定 hevc=0，拿到的是 H.264，转封装可以直接 copy。
+		headers := douyuStreamHeaders(room.RoomID)
+
+		applied, known := douyuIntOK(data.Rate)
+		if !known || applied < 0 {
+			// 服务端没给实际档位：地址可用，但不能冒充请求的档位。
+			if unconfirmed == nil {
+				v := Variant{URL: playURL, Headers: headers, Codec: "avc"}
+				unconfirmed = &v
+			}
+			continue
+		}
+		variant := douyuNewVariant(room.RoomID, douyuRateByCode(rates, applied), playURL)
+		if applied == requested.Rate {
+			info, selected := douyuFillSelected(out, variant)
+			return info, selected, nil
+		}
+		if fallback == nil {
+			fallback = &variant
+		}
+	}
+	if fallback != nil {
+		info, selected := douyuFillSelected(out, *fallback)
+		return info, selected, nil
+	}
+	if unconfirmed != nil {
+		// 未确认地址没有可用档位信息，不塞进目录，只交给播放器。
+		return out, *unconfirmed, nil
+	}
+	if lastErr != nil {
+		return Stream{}, Variant{}, lastErr
+	}
+	return Stream{}, Variant{}, fmt.Errorf("房间 %s 没有可用的直播流", room.RoomID)
+}
+
+// douyuPickRate 按菜单标签选档；空值或没命中时用平台默认档（下发顺序第一项）。
+func douyuPickRate(rates []douyuRate, quality string) douyuRate {
+	want := strings.TrimSpace(quality)
+	if want != "" {
+		for _, rate := range rates {
+			if strings.EqualFold(douyuRateLabel(rate), want) {
+				return rate
+			}
+		}
+	}
+	if len(rates) > 0 {
+		return rates[0]
+	}
+	return douyuRate{Name: "默认", Rate: -1}
+}
+
+// douyuRateByCode 在平台下发的档位表里找实际 rate 对应的名字。
+// 找不到时只带 code，标签用「rate N」，绝不借用请求档的名字。
+func douyuRateByCode(rates []douyuRate, code int) douyuRate {
+	for _, rate := range rates {
+		if rate.Rate == code {
+			return rate
+		}
+	}
+	return douyuRate{Name: "rate " + strconv.Itoa(code), Rate: code}
+}
+
+// douyuNewVariant 按实际档位生成一个选项。
+func douyuNewVariant(roomID string, rate douyuRate, playURL string) Variant {
+	return Variant{
+		ID:    strconv.Itoa(rate.Rate),
+		Label: douyuRateLabel(rate),
+		URL:   playURL,
+		// 斗鱼的 FLV/HLS 都校验 Referer，不带给 ffmpeg 就是 403
+		Headers: douyuStreamHeaders(roomID),
+		Codec:   "avc",
+	}
+}
+
+// douyuFillSelected 把确认到的地址填回档位目录，一起返回。
+func douyuFillSelected(info Stream, selected Variant) (Stream, Variant) {
+	for i := range info.Variants {
+		if info.Variants[i].ID == selected.ID {
+			info.Variants[i].URL = selected.URL
+			return info, info.Variants[i]
+		}
+	}
+	info.Variants = append(info.Variants, selected)
+	return info, selected
 }
 
 // douyuStreamHeaders 是回源要带的头。ffmpeg 通过 -headers 拿到它们。
@@ -679,4 +841,7 @@ func douyuContains(list []string, value string) bool {
 }
 
 // 编译期确认斗鱼实现了取流接口。
-var _ Streamer = (*douyuProvider)(nil)
+var (
+	_ Streamer         = (*douyuProvider)(nil)
+	_ PlaybackStreamer = (*douyuProvider)(nil)
+)

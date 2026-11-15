@@ -175,3 +175,25 @@ func videoEncodeArgs(enc string) []string {
 func WarmUpEncoder() {
 	go pickVideoEncoder(EncoderAuto)
 }
+
+// pickVideoEncoderContext 让会话取消不必等共享探测结束；探测本身只启动
+// 一次，预热与播放共用结果，取消不会触发软件编码重试。
+func pickVideoEncoderContext(ctx context.Context, mode EncoderMode) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if mode == EncoderSoftware {
+		return softwareEncoder, nil
+	}
+	result := make(chan string, 1)
+	go func() { result <- pickVideoEncoder(mode) }()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case encoder := <-result:
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return encoder, nil
+	}
+}

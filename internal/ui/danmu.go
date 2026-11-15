@@ -137,16 +137,15 @@ func (a *App) danmuLayer(c *ui.Context) {
 		return
 	}
 	w, h := c.Size()
-	// 两种全屏下顶栏和面板都不在，弹幕层铺满整个窗口；
-	// 常态是「左右 padding + 顶栏 64 + 面板宽度」之外的画面矩形。
+	// 画面矩形 = 窗口 − 顶栏（全屏时没有顶栏）− 左右 padding（全屏时没有）
+	// − 右侧弹幕面板。面板在系统全屏下不画（见 PlayerPage），宽度也就不能扣。
 	stageW, stageH := w, h
 	if !a.playerFullscreen() {
-		pad := a.bodyPadX(c)
-		stageW -= 2 * pad
-		if a.DanmuPanelOn {
-			stageW -= a.panelWidth()
-		}
+		stageW -= 2 * a.bodyPadX(c)
 		stageH -= theme.NavbarHeight
+	}
+	if a.DanmuPanelOn && !a.sysFullscreen() {
+		stageW -= a.panelWidth()
 	}
 	if stageW <= 0 || stageH <= 0 {
 		return
