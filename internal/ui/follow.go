@@ -42,37 +42,55 @@ func followKeyOf(s Streamer) string { return s.Platform + "|" + s.RoomID }
 // 按昵称匹配，等用户再次关注/取关时自然升级成完整记录。
 func (a *App) isFollowed(s Streamer) bool {
 	for _, r := range a.Follows {
-		if r.Platform != s.Platform {
-			continue
-		}
-		if r.RoomID != "" && s.RoomID != "" {
-			if r.RoomID == s.RoomID {
-				return true
-			}
-			continue
-		}
-		if r.Name == s.Name {
+		if sameFollow(r, s) {
 			return true
 		}
 	}
 	return false
 }
 
+// sameFollow 判断关注记录与一位主播是不是同一个。
+//
+// 两侧都有房间号时只比房间号（改过名也算同一个）；任意一侧缺房间号时退回
+// 昵称比较——老记录就是只有「平台|昵称」，卡片也可能来自尚未解析房间号的列表。
+// 只认单侧房间号会让“卡片没号、记录有号”这类组合永远删不掉。
+func sameFollow(r FollowRecord, s Streamer) bool {
+	if r.Platform != s.Platform {
+		return false
+	}
+	if r.RoomID != "" && s.RoomID != "" {
+		return r.RoomID == s.RoomID
+	}
+	return r.Name == s.Name
+}
+
+// removeFollow 删除一位主播的关注记录，报告是否真的删掉了。
+//
+// 与 toggleFollow 分开：右键菜单只做“取消关注”，记录已经不在时不能反过来
+// 关注上。
+func (a *App) removeFollow(s Streamer) bool {
+	removed := false
+	kept := a.Follows[:0]
+	for _, r := range a.Follows {
+		if sameFollow(r, s) {
+			removed = true
+			continue
+		}
+		kept = append(kept, r)
+	}
+	if !removed {
+		return false
+	}
+	a.Follows = kept
+	a.toastTone(fmt.Sprintf("已取消关注 %s", s.Name), toastSuccess)
+	a.markDirty()
+	return true
+}
+
 // toggleFollow 关注 / 取消关注一位主播。
 func (a *App) toggleFollow(s Streamer) {
 	if a.isFollowed(s) {
-		kept := a.Follows[:0]
-		for _, r := range a.Follows {
-			same := r.Platform == s.Platform &&
-				((r.RoomID != "" && r.RoomID == s.RoomID) || (r.RoomID == "" && r.Name == s.Name))
-			if same {
-				continue
-			}
-			kept = append(kept, r)
-		}
-		a.Follows = kept
-		a.toastTone(fmt.Sprintf("已取消关注 %s", s.Name), toastSuccess)
-		a.markDirty()
+		a.removeFollow(s)
 		return
 	}
 
