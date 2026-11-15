@@ -68,6 +68,11 @@ type biliPlayURL struct {
 	Protocol string
 	Codec    string // avc / hevc / av1，选流时优先兼容性好的
 	QN       int64
+	// 以下是 master 播放列表声明的规格；兜底路径拿不到，保留零值。
+	Width     int
+	Height    int
+	Bitrate   int64
+	FrameRate float64
 }
 
 // biliTier 是一个真实下发得到的清晰度档位。
@@ -171,14 +176,7 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 		if !ok {
 			continue
 		}
-		out.Variants = append(out.Variants, Variant{
-			ID:    biliQNSlug(tier.QN),
-			Label: biliQualityLabel(tier.QN, info.QNDesc[tier.QN]),
-			URL:   u.URL,
-			// m3u8 本身不要 Referer，但里面的 .ts 分片会 403
-			Headers: biliStreamHeaders(room.RoomID),
-			Codec:   u.Codec,
-		})
+		out.Variants = append(out.Variants, biliPlaybackVariant(room.RoomID, tier.QN, info.QNDesc, u))
 	}
 
 	// 不额外造「自动」档：网页端那一项是把服务端的默认档又列了一遍，
@@ -189,6 +187,25 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 		out.Live = false
 	}
 	return out, nil
+}
+
+// biliPlaybackVariant 把一个档位地址转成播放页的选项。
+//
+// 分辨率、码率、帧率都来自 master 播放列表的 RESOLUTION / BANDWIDTH /
+// FRAME-RATE，是上游声明值；兜底路径没有这些数据时保持零值。
+func biliPlaybackVariant(roomID string, qn int64, desc map[int64]string, u biliPlayURL) Variant {
+	return Variant{
+		ID:        biliQNSlug(qn),
+		Label:     biliQualityLabel(qn, desc[qn]),
+		URL:       u.URL,
+		Width:     u.Width,
+		Height:    u.Height,
+		Bitrate:   u.Bitrate,
+		FrameRate: u.FrameRate,
+		// m3u8 本身不要 Referer，但里面的 .ts 分片会 403
+		Headers: biliStreamHeaders(roomID),
+		Codec:   u.Codec,
+	}
 }
 
 // biliStreamHeaders 是回源要带的头。

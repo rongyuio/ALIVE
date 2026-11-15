@@ -37,6 +37,8 @@ func (a *App) PlayerPage(c *ui.Context) {
 	// 接真实流：房间变了才重新取流 + 连弹幕
 	a.ensureMedia(c)
 	a.syncPlayer()
+	// 首帧可用时刻是起播耗时的最后一段，顺带负责实验快路径的回退。
+	a.trackFirstFrame()
 	// 左右 14（窄屏 10）、底部不留：baseline 的 appBodyPlayer 就是这样，
 	// 播放页整块一直铺到窗口下沿。两种全屏下四边都不留（shellFull 是 inset:0）。
 	//
@@ -324,7 +326,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 	// Ready 不了，不单独列一个分支就会一直卡在加载层上。
 	case m.player != nil && m.player.Err() != nil:
 		a.overlayLayer(c, func() {
-			a.overlayText(c, "播放失败："+m.player.Err().Error())
+			a.overlayText(c, "播放失败，请重试或切换线路")
 			a.overlayButton(c, "重试", a.retryStream)
 		})
 

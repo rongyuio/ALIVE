@@ -141,6 +141,11 @@ type Variant struct {
 	ID    string
 	Label string
 	URL   string
+	// 以下是上游声明的规格，不代表解码器实测值；未知时保留零值。
+	Width     int
+	Height    int
+	Bitrate   int64 // 单位为 bit/s。
+	FrameRate float64
 	// Headers 是回源要带的请求头，形如 "Referer: https://live.bilibili.com/"。
 	Headers []string
 	// Codec 是这条地址的视频编码（avc / hevc / av1）。转封装层据此决定
@@ -172,6 +177,16 @@ type Stream struct {
 // 这样上层不用为「有没有线路」写分支。
 type Streamer interface {
 	Stream(ctx context.Context, roomID, line string) (Stream, error)
+}
+
+// PlaybackStreamer 让需要逐档请求的平台只解析当前播放地址，避免起播等待全部档位。
+// quality 是现有菜单标签，空值或未命中时选择平台默认档。
+// 返回的 Stream 保留完整菜单，未解析项的 URL 可以为空；selected 必须反映服务端
+// 确认的实际档位。服务端未确认时 selected 只带地址，ID/Label 留空；
+// 未开播时 selected 为零值，不能把请求档位冒充实际档位。
+// 原有 Streamer 的地址完整性约定不变，调用方通过可选接口启用按需解析。
+type PlaybackStreamer interface {
+	StreamForPlayback(ctx context.Context, roomID, line, quality string) (info Stream, selected Variant, err error)
 }
 
 // ErrBlocked 表示被平台风控拦下（403/412/验证码/空响应）。

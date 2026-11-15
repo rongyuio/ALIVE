@@ -59,6 +59,9 @@ type biliMasterTier struct {
 	Bandwidth int64
 	URL       string
 	Pathway   string
+	// Codec 来自 CODECS 声明，比按地址猜可靠；缺失时才回退 biliMasterCodec。
+	Codec     string
+	FrameRate float64
 }
 
 // biliStreamName 从 playinfo 反推不带编码后缀的流名。
@@ -180,14 +183,7 @@ func (p *bilibiliProvider) biliMasterPlayInfo(ctx context.Context, realID int64,
 		if t.QN <= 0 || t.URL == "" {
 			continue
 		}
-		grouped[t.QN] = append(grouped[t.QN], biliPlayURL{
-			URL:      t.URL,
-			Host:     biliURLHost(t.URL),
-			Format:   "hls",
-			Protocol: "http_hls",
-			Codec:    biliMasterCodec(t.URL),
-			QN:       t.QN,
-		})
+		grouped[t.QN] = append(grouped[t.QN], biliPlayURLFromTier(t))
 	}
 
 	qns := make([]int64, 0, len(grouped))
@@ -253,6 +249,8 @@ func biliParseMaster(body []byte) (tiers []biliMasterTier, pathways []string) {
 				tier.Width, _ = strconv.Atoi(w)
 				tier.Height, _ = strconv.Atoi(h)
 			}
+			tier.Codec = biliMasterCodecFromCodecs(pending["CODECS"])
+			tier.FrameRate, _ = strconv.ParseFloat(pending["FRAME-RATE"], 64)
 			tiers = append(tiers, tier)
 			pending = nil
 		}
@@ -296,6 +294,50 @@ func biliParseAttrList(list string) biliMasterAttr {
 	}
 	flush()
 	return out
+}
+
+// biliPlayURLFromTier 把 master 条目转成统一的可播地址。
+//
+// 编码优先用 CODECS 声明：AV1 / HEVC 决定转封装能不能直接 copy，按地址
+// 猜错会把不兼容的码流塞进 MPEG-TS。声明缺失时才回退地址判断。
+func biliPlayURLFromTier(t biliMasterTier) biliPlayURL {
+	codec := t.Codec
+	if codec == "" {
+		codec = biliMasterCodec(t.URL)
+	}
+	return biliPlayURL{
+		URL:       t.URL,
+		Host:      biliURLHost(t.URL),
+		Format:    "hls",
+		Protocol:  "http_hls",
+		Codec:     codec,
+		QN:        t.QN,
+		Width:     t.Width,
+		Height:    t.Height,
+		Bitrate:   t.Bandwidth,
+		FrameRate: t.FrameRate,
+	}
+}
+
+// biliMasterCodecFromCodecs 从 EXT-X-STREAM-INF 的 CODECS 属性判断视频编码。
+//
+// CODECS 里音频（mp4a）可能排在前面，只认第一个能识别的视频编码；全都认不
+// 出来时返回空串，交给 biliMasterCodec 按地址兜底。
+func biliMasterCodecFromCodecs(codecs string) string {
+	for _, raw := range strings.Split(codecs, ",") {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		switch {
+		case strings.HasPrefix(name, "avc1"), strings.HasPrefix(name, "avc3"):
+			return "avc"
+		case strings.HasPrefix(name, "hvc1"), strings.HasPrefix(name, "hev1"),
+			strings.HasPrefix(name, "dvh1"), strings.HasPrefix(name, "dvhe"):
+			// 这些杜比视界标识使用 HEVC，沿用当前 relay 的 HEVC 兼容策略。
+			return "hevc"
+		case strings.HasPrefix(name, "av01"):
+			return "av1"
+		}
+	}
+	return ""
 }
 
 // biliMasterCodec 从地址判断视频编码。

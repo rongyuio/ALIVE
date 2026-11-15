@@ -32,6 +32,8 @@ type douyinQuality struct {
 	ID     string // 跨平台稳定 id
 	URL    string
 	Format string // flv / hls
+	// Codec 是上游 sdk_params 里识别到的编码；识别不到时留空。
+	Codec string
 }
 
 // douyinTierStream 是 stream_data 里的一个清晰度档位。
@@ -52,6 +54,21 @@ func (t *douyinTierStream) douyinIsHEVC() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// douyinVariantCodec 把 sdk_params.VCodec 归一成 relay 认的编码名。
+// 识别不了时返回空串，转封装层仍按 H.264 处理。
+func douyinVariantCodec(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "h264", "264", "avc", "avc1":
+		return "avc"
+	case "h265", "265", "hevc", "hvc1":
+		return "hevc"
+	case "av1", "av01":
+		return "av1"
+	default:
+		return ""
 	}
 }
 
@@ -142,6 +159,7 @@ func (p *douyinProvider) Stream(ctx context.Context, roomID, line string) (Strea
 			URL:   httpsURL(q.URL),
 			// FLV / HLS 都校验 Referer，缺了就是 403。
 			Headers: douyinStreamHeaders,
+			Codec:   q.Codec,
 		})
 	}
 	if len(out.Variants) == 0 {
@@ -368,7 +386,10 @@ func douyinTierQuality(tier, label, id string, stream *douyinTierStream) (douyin
 	if hevc {
 		label = label + " · H.265"
 	}
-	return douyinQuality{Key: tier, Label: label, ID: id, URL: url, Format: format}, true
+	return douyinQuality{
+		Key: tier, Label: label, ID: id, URL: url, Format: format,
+		Codec: douyinVariantCodec(stream.Codec),
+	}, true
 }
 
 // douyinPickQualities 从房间数据里挑出可用清晰度，按画质从高到低排列。

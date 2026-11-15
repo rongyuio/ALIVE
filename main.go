@@ -111,6 +111,8 @@ func main() {
 		// OnClose 在状态捕获（closeState）之前同步触发，自绘的关闭按钮和
 		// Alt+F4 / 窗口菜单都走这一条，所以只需要挂在这里。
 		win.OnClose(func(e *mygo.CloseEvent) {
+			// 关窗时立即取消起播和弹幕任务，避免结果回到已销毁的窗口。
+			app.CloseMedia()
 			if win.IsFullScreen() {
 				win.SetFullScreen(false)
 			}
