@@ -195,21 +195,12 @@ func (p *bilibiliProvider) biliMasterPlayInfo(ctx context.Context, realID int64,
 		out.Tiers = append(out.Tiers, biliTier{QN: qn, URLs: grouped[qn]})
 	}
 
-	// 线路取 CONTENT-STEERING 的 PATHWAY 优先级链。节点数量和族都由服务端
-	// 实时决定（实测同一房间见过 4 个 204 族、2 个 208 族、单个 209），
-	// 所以这里只按返回顺序收，不做任何硬编码。
+	// 线路 = PATHWAY 优先级链，节点 ID 统一归一成主机名后去重。
 	//
-	// 某个 pathway 不一定覆盖所有档位（250 档在 204-4，400 档在 204-1），
-	// 选流时匹配不到会退回该档的第一条，见 biliPickByLine。
-	seen := make(map[string]bool, len(pathways))
-	for _, pathway := range pathways {
-		host := biliURLHost(pathway)
-		if host == "" || seen[host] {
-			continue
-		}
-		seen[host] = true
-		out.Pathways = append(out.Pathways, host)
-	}
+	// 优先级链的写法不止一种：实测有整条节点地址
+	// （https://cn-hnld-ct-01-18.bilivideo.com），也有裸节点 ID（204-4,204b,204-2）。
+	// 码流条目自己的 PATHWAY-ID 只用来补链里缺的节点，顺序仍以链为准。
+	out.Pathways = biliPathwayList(tiers, pathways)
 	return out, nil
 }
 
@@ -306,8 +297,11 @@ func biliPlayURLFromTier(t biliMasterTier) biliPlayURL {
 		codec = biliMasterCodec(t.URL)
 	}
 	return biliPlayURL{
-		URL:       t.URL,
-		Host:      biliURLHost(t.URL),
+		URL:  t.URL,
+		Host: biliURLHost(t.URL),
+		// 线路以 STREAM-INF 的 PATHWAY-ID 为准，和线路菜单用同一套节点标识；
+		// 缺失时才退回地址自己的主机名，见 biliOnLine。
+		Pathway:   biliPathwayID(t.Pathway),
 		Format:    "hls",
 		Protocol:  "http_hls",
 		Codec:     codec,
@@ -365,4 +359,102 @@ func biliURLHost(raw string) string {
 		raw = raw[:i]
 	}
 	return raw
+}
+
+// biliPathwayID 把线路引用归一成节点主机名。
+//
+// 同一个节点在服务端有两种写法：整条地址（https://d1--cn-gotcha204b.bilivideo.com）
+// 和裸节点 ID（204-4）。整条地址只取主机名；裸 ID 没有可剥的部分，原样返回，
+// 匹配时再由 biliPathwayMatch 拿主机名里的短标识去对。
+func biliPathwayID(raw string) string {
+	return strings.ToLower(biliURLHost(strings.TrimSpace(raw)))
+}
+
+// biliPathwayToken 取节点主机名里 gotcha 之后的短标识（204-4 / 204b / 209）。
+//
+// 这是裸节点 ID 的唯一来源：链里写 204-4 时，主机名是
+// d1--cn-gotcha204-4.bilivideo.com。名字里没有 gotcha 的节点返回空串，
+// 这类节点只能按完整主机名匹配。
+func biliPathwayToken(host string) string {
+	const marker = "gotcha"
+	host = strings.ToLower(strings.TrimSpace(host))
+	i := strings.Index(host, marker)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSuffix(host[i+len(marker):], ".bilivideo.com")
+}
+
+// biliPathwayMatch 报告节点主机名 host 是否属于用户选中的线路 want。
+//
+// want 可能是主机名、整条地址或裸节点 ID，三种都得认——少认一种，
+// 菜单里选中的线路就会静默失效。
+func biliPathwayMatch(host, want string) bool {
+	// 两边都归一成节点主机名：调用方可能给主机名、整条地址或裸节点 ID。
+	host = biliPathwayID(host)
+	want = biliPathwayID(want)
+	if host == "" || want == "" {
+		return false
+	}
+	if host == want {
+		return true
+	}
+	// 同一个节点的两种写法：一侧是裸节点 ID，另一侧是带 gotcha 的主机名。
+	// 两侧都要能当裸 ID 用，否则「哪一侧写裸 ID」会决定匹配成败。
+	hostNode := biliPathwayToken(host)
+	if hostNode == "" && !strings.Contains(host, ".") {
+		hostNode = host
+	}
+	wantNode := biliPathwayToken(want)
+	if wantNode == "" && !strings.Contains(want, ".") {
+		wantNode = want
+	}
+	return hostNode != "" && hostNode == wantNode
+}
+
+// biliPathwayList 生成线路菜单的 ID 列表。
+//
+// 先按优先级链的顺序收；链里有、但没有码流落上去的节点也留着——选中这类线路时
+// 该档没有对应候选，会退回该档的第一条地址，见 biliPickByLine。
+// 链里没有、码流条目自己声明了的节点接在后面，这样优先级链缺失时菜单也不会整块没有线路。
+func biliPathwayList(tiers []biliMasterTier, priority []string) []string {
+	seen := make(map[string]bool, len(priority)+4)
+	tokens := make(map[string]bool, len(priority)+4)
+	out := make([]string, 0, len(priority)+4)
+	add := func(raw string) {
+		id := biliPathwayID(raw)
+		if id == "" || seen[id] {
+			return
+		}
+		// 链和码流条目可能用两种写法指同一个节点（204-4 与 d1--cn-gotcha204-4...），
+		// 同一个节点的两种写法只摆一条线路。
+		token := biliPathwayToken(id)
+		if token == "" && !strings.Contains(id, ".") {
+			// 裸节点 ID 自己就是短标识：链给 204-4、码流条目给完整地址时，
+			// 两者指的是同一台节点，只能算一条线路。
+			token = id
+		}
+		if token != "" && tokens[token] {
+			return
+		}
+		seen[id] = true
+		if token != "" {
+			tokens[token] = true
+		}
+		out = append(out, id)
+	}
+	for _, item := range priority {
+		add(item)
+	}
+	for _, t := range tiers {
+		if t.QN <= 0 || t.URL == "" {
+			continue
+		}
+		if t.Pathway != "" {
+			add(t.Pathway)
+			continue
+		}
+		add(t.URL)
+	}
+	return out
 }

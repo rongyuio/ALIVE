@@ -67,7 +67,9 @@ type biliPlayURL struct {
 	Format   string
 	Protocol string
 	Codec    string // avc / hevc / av1，选流时优先兼容性好的
-	QN       int64
+	// Pathway 是 PATHWAY-ID 声明的节点主机名；逐档兜底路径没有这份声明，留空。
+	Pathway string
+	QN      int64
 	// 以下是 master 播放列表声明的规格；兜底路径拿不到，保留零值。
 	Width     int
 	Height    int
@@ -130,20 +132,20 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 		return out, nil
 	}
 
-	// 线路 = master 播放列表的 PATHWAY 优先级链。
+	// 线路 = master 播放列表的 PATHWAY 优先级链，ID 已经归一成节点主机名。
 	//
-	// 服务端实时决定节点数量和族（同一房间实测见过 4 个 204 族、2 个 208 族、
+	// 节点数量和族由服务端实时决定（同一房间实测见过 4 个 204 族、2 个 208 族、
 	// 单个 209），所以只按返回顺序摆，不排序、不硬编码。第一个是主线。
 	//
 	// 回退路径没有 pathway 信息，只能从地址里收 HLS 节点——那收出来的是
-	// 协议族（ts / fmp4），不是网页端意义上的线路。
+	// 协议族（ts / fmp4），不是网页端意义上的线路，保留作最后兜底。
 	if len(info.Pathways) > 0 {
-		for i, host := range info.Pathways {
+		for i, id := range info.Pathways {
 			label := "备线" + strconv.Itoa(i)
 			if i == 0 {
 				label = "主线"
 			}
-			out.Lines = append(out.Lines, Line{ID: host, Label: label})
+			out.Lines = append(out.Lines, Line{ID: id, Label: label})
 		}
 	} else {
 		seen := map[string]bool{}
@@ -439,16 +441,19 @@ func biliExpectedQN(raw string) int64 {
 
 // biliPickByLine 先按用户选的线路过滤，再在这一档里挑最可能能播的那条。
 //
-// 线路是 CDN 节点域名，同一档位下每条地址属于一个节点。线路留空就
-// 不过滤，直接走通用打分——那等价于「让服务端给的第一个来」。
+// 匹配走 biliPathwayMatch：节点主机名、整条节点地址、裸节点 ID 三种写法都认。
+// 旧实现只比主机名，优先级链下发裸 ID（204-4）时永远匹配不上，线路就成了装饰。
+//
+// 这一档在选中线路上没有候选时仍然返回该档最好的那条：宁可给一个别家节点的
+// 地址，也不让菜单空掉。这是原有行为，保持不变。
 func biliPickByLine(urls []biliPlayURL, want string) (biliPlayURL, bool) {
 	if len(urls) == 0 {
 		return biliPlayURL{}, false
 	}
-	if want != "" {
+	if strings.TrimSpace(want) != "" {
 		matched := make([]biliPlayURL, 0, len(urls))
 		for _, u := range urls {
-			if strings.EqualFold(u.Host, want) {
+			if biliOnLine(u, want) {
 				matched = append(matched, u)
 			}
 		}
@@ -457,6 +462,17 @@ func biliPickByLine(urls []biliPlayURL, want string) (biliPlayURL, bool) {
 		}
 	}
 	return biliPickPlayable(urls)
+}
+
+// biliOnLine 报告一条候选是否落在用户选中的线路上。
+//
+// master 路径靠 PATHWAY-ID 声明的节点判断；逐档兜底路径没有这份声明，
+// 只能退回地址自己的主机名。
+func biliOnLine(u biliPlayURL, want string) bool {
+	if u.Pathway != "" && biliPathwayMatch(u.Pathway, want) {
+		return true
+	}
+	return biliPathwayMatch(u.Host, want)
 }
 
 // biliLineFamily 把同一个 CDN 节点的主备域名归成一条线路。
