@@ -207,6 +207,9 @@ type App struct {
 	// 最近一次网格布局：列数与卡片宽度。启动层判断「首屏封面是否到齐」要用
 	gridCols  int
 	gridCardW float32
+	// chipOn 是分类胶囊当前的显示状态：断点判定带 8px 回差，靠它记住上一次
+	// 的结论，拖动窗口时才不会在 260 附近反复切换。
+	chipOn bool
 
 	// 播放页：静音前的音量、全屏退出时刻（防抖）、快捷键说明浮层
 	lastEscape         time.Time // 上一次处理 Esc 的时刻，同一次按键只认一次
@@ -286,6 +289,7 @@ func newApp() *App {
 		// 首帧网格还没量过，先用最小卡片宽占位：预取封面时不能是 0，
 		// 0 在图片缓存里表示「按原图解码」。
 		gridCardW: theme.CardMinWidth,
+		chipOn:    true,
 		Router:    ui.NewRouter(routeHome),
 		PaletteID: "signal",
 		Volume:    0.6,
@@ -626,6 +630,25 @@ func (a *App) filterStreamers(platform, category, sub string) []Streamer {
 // 列表交给 ui.List 做虚拟化：一次只构建可视范围内的那几行卡片。
 // 滑到第 3000 张和第 30 张的每帧成本一样——这是「一直往下滑」的前提。
 // 行高由 List 自己测量（我们的卡片高度是算出来的固定值），不用手动喂。
+// categoryChipVisible 决定卡片是否显示分类胶囊。
+//
+// 阈值 260 与 baseline 一致，但进出各留 8px 回差：拖动窗口时卡片宽度会在
+// 断点附近连续抖动，单阈值会让胶囊跟着每帧闪烁。回差只在跨过外侧边界时
+// 才切换，拖动停止后也保持稳定。
+func (a *App) categoryChipVisible(w float32) bool {
+	const breakpoint, slack = float32(260), float32(8)
+	if a.chipOn {
+		if w < breakpoint-slack {
+			a.chipOn = false
+		}
+		return a.chipOn
+	}
+	if w >= breakpoint+slack {
+		a.chipOn = true
+	}
+	return a.chipOn
+}
+
 func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func()) {
 	w, _ := c.Size()
 	// appBody 的左右 padding，再减掉 baseline 里常驻滚动条占的 10px：
@@ -641,6 +664,7 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 	}
 	cardW := (avail - theme.GridGap*float32(cols-1)) / float32(cols)
 	a.gridCols, a.gridCardW = cols, cardW
+	showChip := a.categoryChipVisible(cardW)
 
 	// 空列表与骨架不需要虚拟化：它们只有十来个元素。
 	if len(list) == 0 {
@@ -683,7 +707,7 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 					in.Delay = time.Duration(i) * 20 * time.Millisecond
 				}
 				a.builtCards++
-				Card(c, st, cardW, a.isFollowed(st), in, func() {
+				Card(c, st, cardW, showChip, a.isFollowed(st), in, func() {
 					a.Player = st
 					a.Router.Push(routePlayer)
 				}, func() {

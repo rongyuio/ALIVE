@@ -52,7 +52,7 @@ func CardHeight(w float32) float32 {
 // 结构与 baseline 的 StreamerCard 一致：封面（16:9，悬停放大 1.02）+
 // 信息条（头像 32、昵称 13/600、标题 12、分类胶囊）。
 // hover 时表面亮一档、播放按钮与关注按钮淡入。
-func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onOpen, onToggleFollow func()) ui.Element {
+func Card(c *ui.Context, s Streamer, w float32, showChip, followed bool, in EnterAnim, onOpen, onToggleFollow func()) ui.Element {
 	coverH := w * 9 / 16
 
 	card := ui.Column(c).Width(w).Radius(theme.RadiusMD)
@@ -176,8 +176,10 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 					TextColor(theme.TextTertiary)
 			})
 
-			// baseline 的容器查询：卡片窄于 260px 时隐藏分类胶囊，优先保证标题可读
-			if s.Category != "" && w >= 260 {
+			// baseline 的容器查询：卡片窄于 260px 时隐藏分类胶囊，优先保证标题可读。
+			// 是否显示由 grid 带 8px 回差统一决定（见 categoryChipVisible），
+			// 否则拖动窗口时宽度在断点附近来回抖，胶囊会一帧一变。
+			if s.Category != "" && showChip {
 				// 胶囊底色交给 Box：Text 的 Background 会按字形分段绘制，
 				// 短标签（CS2 / DOTA2）上会退化成整行实色，长中文反而正常。
 				badge := ui.Box(c).Padding(3, 8, 3, 8).Radius(theme.RadiusFull).
