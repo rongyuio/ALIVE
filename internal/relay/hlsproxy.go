@@ -15,9 +15,11 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -31,8 +33,9 @@ const (
 	// 列表里的分片，映射不能随列表刷新立刻丢弃。
 	proxyResourceKeep = 400
 
-	proxyPlaylistTimeout = 10 * time.Second
-	proxySegmentTimeout  = 20 * time.Second
+	proxyPlaylistTimeout    = 10 * time.Second
+	proxyPlaylistRetryDelay = 100 * time.Millisecond
+	proxySegmentTimeout     = 20 * time.Second
 )
 
 var (
@@ -41,6 +44,8 @@ var (
 	errProxyUnsupported = errors.New("上游播放列表不在 HLS 代理支持范围")
 	// errProxyFetch 表示代理回源失败（网络、HTTP 状态、体积超限）。
 	errProxyFetch = errors.New("HLS 代理回源失败")
+	// 仅在脱敏前确认可恢复的网络错误或指定网关状态时附加此标记。
+	errProxyRetryable = errors.New("播放列表回源可短暂重试")
 )
 
 // proxyResource 仅保存完整上游资源；Range 由播放器请求决定。
@@ -53,6 +58,7 @@ type proxyResource struct {
 // 不做转封装、不重新切片，播放器拿到的分片与上游逐字节一致。
 type hlsProxy struct {
 	token   string
+	codec   string
 	headers []string
 	client  *http.Client
 
@@ -77,7 +83,7 @@ type hlsProxy struct {
 //
 // 预检放在监听端口之前：不支持的 master、加密、低延迟这些不支持的形式会在这里失败，
 // 此时没有任何本地资源需要清理，调用方可以直接回退 FFmpeg。
-func newHLSProxy(ctx context.Context, upstream string, headers []string) (*hlsProxy, error) {
+func newHLSProxy(ctx context.Context, upstream string, headers []string, codec string) (*hlsProxy, error) {
 	base, err := url.Parse(trimSpace(upstream))
 	if err != nil {
 		return nil, fmt.Errorf("%w: 上游地址无法解析", errProxyUnsupported)
@@ -88,6 +94,7 @@ func newHLSProxy(ctx context.Context, upstream string, headers []string) (*hlsPr
 
 	p := &hlsProxy{
 		token:     randomToken(),
+		codec:     strings.ToLower(strings.TrimSpace(codec)),
 		headers:   append([]string(nil), headers...),
 		resources: make(map[string]*proxyResource),
 		client: &http.Client{Transport: &http.Transport{
@@ -111,7 +118,7 @@ func newHLSProxy(ctx context.Context, upstream string, headers []string) (*hlsPr
 	}
 
 	fetchCtx, cancelFetch := context.WithTimeout(ctx, proxyPlaylistTimeout)
-	body, finalURL, err := p.fetchMediaPlaylist(fetchCtx, base.String())
+	body, finalURL, err := p.fetchMediaPlaylistWithRetry(fetchCtx, base.String())
 	cancelFetch()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -208,10 +215,10 @@ func (p *hlsProxy) serve(w http.ResponseWriter, r *http.Request) {
 func (p *hlsProxy) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	p.playlistMu.Lock()
 	defer p.playlistMu.Unlock()
-	body := p.takePending()
+	body := p.takePending(r.Method == http.MethodGet)
 	if body == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), proxyPlaylistTimeout)
-		raw, finalURL, err := p.fetchMediaPlaylist(ctx, p.upstreamURL())
+		raw, finalURL, err := p.fetchMediaPlaylistWithRetry(ctx, p.upstreamURL())
 		cancel()
 		if err != nil {
 			slog.Warn("HLS 代理刷新播放列表失败", "error", redactError(err))
@@ -232,7 +239,9 @@ func (p *hlsProxy) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "application/vnd.apple.mpegurl")
 	h.Set("Cache-Control", "no-store")
 	h.Set("Access-Control-Allow-Origin", "*")
-	_, _ = w.Write(body)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
 }
 
 func (p *hlsProxy) serveResource(w http.ResponseWriter, r *http.Request, id string) {
@@ -320,12 +329,61 @@ func (p *hlsProxy) lookup(id string) *proxyResource {
 	return p.resources[id]
 }
 
-func (p *hlsProxy) takePending() []byte {
+// HEAD 只探测首份列表，留给随后 GET 使用，避免额外回源。
+func (p *hlsProxy) takePending(consume bool) []byte {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	body := p.pending
-	p.pending = nil
+	if consume {
+		p.pending = nil
+	}
 	return body
+}
+
+// fetchMediaPlaylistWithRetry 最多重试一次完整解析链，确保每次有独立的重定向 seen。
+// 退避和所有回源都共用调用方预算；取消不等待退避结束，也不会启动下一次请求。
+func (p *hlsProxy) fetchMediaPlaylistWithRetry(ctx context.Context, rawURL string) ([]byte, *url.URL, error) {
+	body, base, err := p.fetchMediaPlaylist(ctx, rawURL)
+	if ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+	if !errors.Is(err, errProxyRetryable) {
+		return body, base, err
+	}
+	timer := time.NewTimer(proxyPlaylistRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-timer.C:
+	}
+	return p.fetchMediaPlaylist(ctx, rawURL)
+}
+
+// 网络错误先分类再脱敏；不将证书、协议、重定向拒绝或取消误判为瞬时故障。
+func playlistNetworkError(err error) error {
+	clean := playlistFetchError(err)
+	if errors.Is(err, errProxyUnsupported) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return clean
+	}
+	// Windows 的 Winsock 错误码不同于 syscall.ECONNRESET 等兼容常量。
+	// 64 是 ERROR_NETNAME_DELETED；其余依次为 WSAECONNABORTED/RESET/REFUSED。
+	// 仅在 Windows 解释这些数字，保持此文件可在其他平台编译。
+	var errno syscall.Errno
+	if runtime.GOOS == "windows" && errors.As(err, &errno) {
+		switch errno {
+		case 64, 10053, 10054, 10061:
+			return fmt.Errorf("%w: %w", errProxyRetryable, clean)
+		}
+	}
+	var network net.Error
+	if (errors.As(err, &network) && (network.Timeout() || network.Temporary())) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) {
+		return fmt.Errorf("%w: %w", errProxyRetryable, clean)
+	}
+	return clean
 }
 
 // fetchPlaylist 拉一份播放列表，返回内容和跟随重定向后的最终地址。
@@ -337,18 +395,21 @@ func (p *hlsProxy) fetchPlaylist(ctx context.Context, client *http.Client, rawUR
 	applyUpstreamHeaders(req, p.headers)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", errProxyFetch, playlistFetchError(err))
+		return nil, nil, fmt.Errorf("%w: %w", errProxyFetch, playlistNetworkError(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+			return nil, nil, fmt.Errorf("%w: %w: 上游状态 %d", errProxyFetch, errProxyRetryable, resp.StatusCode)
+		}
 		return nil, nil, fmt.Errorf("%w: 上游状态 %d", errProxyFetch, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, proxyPlaylistLimit+1))
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", errProxyFetch, playlistFetchError(err))
-	}
 	if len(body) > proxyPlaylistLimit {
 		return nil, nil, fmt.Errorf("%w: 播放列表超过 %d 字节", errProxyFetch, proxyPlaylistLimit)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errProxyFetch, playlistNetworkError(err))
 	}
 	base := resp.Request.URL
 	if base == nil {
@@ -417,7 +478,7 @@ func (p *hlsProxy) rewrite(playlist []byte, base *url.URL) ([]byte, error) {
 			out.WriteString(local + "\n")
 			// fMP4 媒体分片需要此前声明的初始化段；不能把缺 init 的列表
 			// 交给播放器后才等待失败。
-			if path.Ext(local) != ".ts" && !mapSeen {
+			if (path.Ext(local) != ".ts" && !mapSeen) || ((p.codec == "hevc" || p.codec == "av1") && (!mapSeen || path.Ext(local) == ".ts")) {
 				return unsupported()
 			}
 			pending = false
@@ -457,6 +518,12 @@ func (p *hlsProxy) rewrite(playlist []byte, base *url.URL) ([]byte, error) {
 			startSeen = true
 		case "#EXT-BILI-AUX":
 			// 仅剔除已观测的平台辅助标签，不将其内容或签名转发给播放器。
+			continue
+		case "#EXT-X-ALLOW-CACHE":
+			// 兼容旧版 HLS 缓存提示；本地响应统一 no-store，无需转发。
+			if !colon || (value != "YES" && value != "NO") {
+				return unsupported()
+			}
 			continue
 		case "#EXT-X-PLAYLIST-TYPE":
 			if value != "EVENT" && value != "VOD" {
