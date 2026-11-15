@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -280,6 +281,10 @@ func huyaSelectCandidate(candidates []huyaStreamCandidate, line string) huyaStre
 			if strings.ToLower(candidate.CdnType) == target {
 				return candidate
 			}
+		}
+		if len(candidates) > 0 {
+			// 线路菜单也来自同一份候选列表，走到这里说明菜单过期了。
+			slog.Info("虎牙线路未命中，改用第一条", "requested", target, "fallback", candidates[0].CdnType)
 		}
 	}
 	return candidates[0]
