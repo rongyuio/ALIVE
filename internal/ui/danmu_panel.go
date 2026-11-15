@@ -187,17 +187,11 @@ func (a *App) danmuPanelList(c *ui.Context) {
 		list = list[len(list)-danmuPanelMaxLines:]
 	}
 
+	// 空列表不画占位文案：连接状态在后台，界面根本拿不到「正在连接」
+	// 这个事实——连上了只是没人在说话，也会一直挂着那行字。
 	ui.Scroll(c).Grow(1).Padding(12, 10, 16, 10).TrackScroll(&a.PanelScroll).
 		Children(func() {
 			ui.Column(c).FillWidth().Gap(danmuPanelListGap).Children(func() {
-				if len(list) == 0 {
-					// .empty { padding: 34px 12px; text-align: center }
-					ui.Text(c, "暂无弹幕，正在连接…").FontSize(theme.TextSM).
-						TextColor(theme.TextTertiary).LineHeight(1.5).
-						TextAlign(ui.Center).FillWidth().
-						Padding(34, 12, 34, 12)
-					return
-				}
 				for _, d := range list {
 					a.danmuPanelItem(c, d)
 				}
