@@ -155,9 +155,15 @@ type App struct {
 	panelDragW   float32
 	panelDragX   float32
 
-	// 配色：当前配色 ID 与配色面板是否展开
+	// 配色：当前配色 ID、配色面板是否展开，以及夜/日/跟随系统的选择。
+	// ThemeMode 取 "system"（默认）/ "dark" / "light"：它决定用哪一侧的配色，
+	// PaletteID 决定用哪个色系，两者一起确定最终配色。
 	PaletteID   string
 	PaletteOpen bool
+	ThemeMode   string
+	// systemDark 是最近一帧读到的系统外观，供「跟随系统」按钮当场使用，
+	// 不用等下一帧重新读窗口主题。
+	systemDark bool
 
 	// 登录：顶栏右上角的头像入口。
 	//
@@ -288,6 +294,7 @@ func newApp() *App {
 		gridCardW: theme.CardMinWidth,
 		Router:    ui.NewRouter(routeHome),
 		PaletteID: "signal",
+		ThemeMode: themeModeSystem,
 		Volume:    0.6,
 		Playing:   true,
 		// 清晰度 / 线路都只能来自平台返回值，本地不留默认：B 站没有叫
@@ -417,6 +424,9 @@ func (a *App) Shell(c *ui.Context) {
 	// 一帧只让第一个 spinner 驱动动画时钟，其余的读它的相位
 	resetSpinFrame()
 
+	// 系统外观要在 SetTheme 之前读：SetTheme 之后 Context 返回的是我们这套
+	// 配色，就再也看不到系统是深色还是浅色了。
+	a.syncThemeMode(c.Theme().Dark)
 	// 每帧开头按当前配色重写包级颜色，之后所有绘制读到的就是这套色
 	theme.Apply(a.PaletteID)
 	c.SetTheme(theme.Theme())

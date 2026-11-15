@@ -164,6 +164,30 @@ func Find(id string) *Palette {
 	return nil
 }
 
+// Palettes 里同色系日夜成对、相邻排列（signal/daylight、mono/paper、
+// ember/parchment），所以「换到另一边」就是把下标异或 1。
+// Counterpart 返回 id 的日夜对应配色；找不到时返回原 id。
+func Counterpart(id string) string {
+	for i := range Palettes {
+		if Palettes[i].ID != id {
+			continue
+		}
+		return Palettes[i^1].ID
+	}
+	return id
+}
+
+// Side 返回某一侧（深色 / 浅色）的配色，保持同色系顺序。
+func Side(dark bool) []*Palette {
+	out := make([]*Palette, 0, len(Palettes)/2)
+	for i := range Palettes {
+		if Palettes[i].Dark == dark {
+			out = append(out, &Palettes[i])
+		}
+	}
+	return out
+}
+
 // Apply 切换配色。
 //
 // 包级颜色变量在每帧开头被重写一次，所以 view 里读到的永远是当前配色；
