@@ -1,16 +1,10 @@
 # Repository Guidelines
 
-alive 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.com/egoist/mygo`）用 GPU 直接画出来，没有 webview、没有前端构建。它是 `D:\Project\DTV` 的 `baseline` 分支（Go + React 的 webview 版）的原生重写——**同一套界面、同一套交互，换一套实现**。
+alive 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.com/egoist/mygo`）用 GPU 直接画出来，没有 webview、没有前端构建。
 
-## 视觉与交互基准
+## 设计令牌
 
-UI 视觉效果与交互必须与 DTV baseline 一致，所有改动以它为唯一标准。
-
-- 基准仓库：`D:\Project\DTV`，分支 `baseline`。
-- 对照文件：`src/styles/theme.css`（设计令牌）、`src/styles/base.css`（全局约定）、`src/components/shell/*`（顶栏、平台 tab、搜索、关注面板、窗口按钮）、`src/components/categories/CategoryBar*`（分区栏）、`src/components/streamers/*`（卡片与网格）、`src/screens/*`（首页、订阅、播放）。
-- 细节以 baseline 的 CSS 实际值为准，不凭印象；CSS 里带 `font-size`、`gap`、`padding`、`transition` 的地方都要照抄数值，不四舍五入。
-
-固定令牌（来自 `theme.css`，Go 侧在 `internal/theme`）：
+所有视觉数值以 `internal/theme` 为唯一来源：
 
 | 项 | 值 |
 |---|---|
@@ -33,10 +27,11 @@ resources/         随包资源；icon.png 为应用图标（当前是占位图�
 go.mod             MyGo CLI 作为 tool：go tool mygo
 .agents/skills/    MyGo 官方 skill（维护约定、原生模块），动 MyGo 相关代码前先读
 internal/ui/       界面：Shell、顶栏、分区栏、卡片、订阅页、播放页、搜索浮层、配色面板、灵动岛
-internal/theme/    设计令牌与配色表，对齐 baseline 的 theme.css
+internal/theme/    设计令牌与配色表
 internal/media/    图片下载、解码与缓存
-internal/bili/     B 站协议（推荐列表、分区名）
-internal/relay/    ffmpeg 转封装成本地 HLS，供播放器使用
+internal/live/     各平台数据层：分区、列表、搜索、取流、弹幕，归一化成同一套类型
+internal/relay/    ffmpeg 转封装成本地 HLS。画面和声音都由 MyGo 的 ui/video
+                   （Media Foundation）输出，relay 不进播放链路
 ```
 
 不新增顶层目录。新功能按职责落到 `internal/<领域>`；界面代码只写在 `internal/ui`，协议代码不进 `internal/ui`。
@@ -61,7 +56,7 @@ $env:ALIVE_CAPTURE="D:\tmp\alive.png"; $env:ALIVE_CAPTURE_DELAY="2s"
 go run .
 ```
 
-`ALIVE_ROUTE` 取 `home` / `subscribe` / `player`；`ALIVE_UI` 取 `palette` / `island` / `search`；`ALIVE_CAPTURE_KEEP=1` 截完不退出。
+`ALIVE_ROUTE` 取 `home` / `subscribe` / `player`；`ALIVE_UI` 取 `palette` / `island` / `search` / `quality` / `danmu` / `sync` / `splash` / `nocover`；`ALIVE_CAPTURE_KEEP=1` 截完不退出。
 
 ## MyGo 生命周期（写 UI 必须遵守）
 
@@ -69,7 +64,7 @@ go run .
 - `Children(func())` 共享 Context，只是切换父作用域。
 - 视图每帧重建：副作用写在 `Clicked()` / `OnClick` 里，不要在渲染路径里无条件触发。
 - 慢 I/O 和耗时计算放 goroutine，结果用 `win.Update(func(){...})` 回主线程；视图数据只在主线程读写。
-- 动画用 `AnimateTo(key, target, curve)`，曲线取 `ui.Smooth` / `ui.Snappy`，对应 baseline 的 `--ease-out` / 弹簧。
+- 动画用 `AnimateTo(key, target, curve)`，曲线取 `ui.Smooth` / `ui.Snappy`：两者都是弹簧，`Snappy` 多带一点回弹，用在需要「弹一下」的地方（岛伸缩、浮层出现）。
 - 输入控件需要稳定身份时用 `c.Key(key)`，`Bind(&handle)` 只有真需要跨帧句柄时才用。
 
 ## 编码规范
@@ -78,13 +73,13 @@ go run .
 - 注释一律中文，解释「为什么」而不是复述代码；界面文案中文只作用于用户可见层，标识符保持英文。
 - 颜色、字号、圆角、间距一律走 `internal/theme`，不在 `internal/ui` 里写字面量；确实需要局部常量时集中在文件顶部并注明来源。
 - 组件签名统一 `func (a *App) xxx(c *ui.Context)` 或 `func xxx(c *ui.Context, ...) ui.Element`。
-- 一个文件一个界面职责，超过约 600 行先拆。
+- 一个文件一个界面职责。拆不拆看里面有没有两件互不相干的事，不看行数。
 
 ## 测试与验证
 
 - 视图测试用 `ui.NewTester(view, w, h)`，在内存里点击、输入、按键；测试文件放包旁边，命名 `*_test.go`。
 - 改 UI 前跑 `go build ./...`、`go vet ./...`、`go tool mygo vet .`、`go test ./...`。
-- 涉及视觉的改动必须截图对照 baseline：默认态一张，被改动的浮层/状态各一张。只看代码不算验证。
+- 涉及视觉的改动必须截图：默认态一张，被改动的浮层/状态各一张。只看代码不算验证。
 - 没有跑过的检查不能写成通过；无关的既有失败要如实说明。
 
 ### 驱动真实窗口做验收（mygo-automation）

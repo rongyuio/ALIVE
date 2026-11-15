@@ -63,7 +63,11 @@ type Options struct {
 // 慢一点也比让用户看到「无法拉取直播流」强。
 func (s *Server) Start(ctx context.Context, upstream string, headers []string, codec string, opts Options) (string, error) {
 	url, err := s.start(ctx, upstream, headers, codec, opts)
-	if err != nil && needTranscode(codec) && pickVideoEncoder(opts.Encoder) != softwareEncoder {
+	if err == nil {
+		return url, nil
+	}
+	// 回落一：硬件编码器不通（驱动被别的程序占满、显存不足）。
+	if needTranscode(codec) && pickVideoEncoder(opts.Encoder) != softwareEncoder {
 		slog.Warn("硬件转码失败，回落软件编码",
 			"encoder", pickVideoEncoder(opts.Encoder), "error", err)
 		return s.start(ctx, upstream, headers, codec, Options{Encoder: EncoderSoftware})
@@ -122,15 +126,25 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	args := []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-rw_timeout", "10000000",
-		// B 站 CDN 会主动掐 HTTP 长连接：复用连接时每片分片都要重连，
-		// 60 秒能刷 40 多次 keepalive failed / I/O error，表现是播放卡顿。
-		// 每片新建连接实测零失败（240 秒 134/134），代价只是多一次握手。
-		"-http_persistent", "0",
-		// 直播不需要「先攒够数据再判断流参数」：默认 probesize 5MB /
-		// analyzeduration 5 秒，ffmpeg 会先读一大段才肯出首片，转码路径
-		// 上实测能多等 2 秒以上。HLS 的第一个分片就带 SPS/PPS，32KB 够用；
-		// 码率是我们指定的 CBR，也不依赖它的估算。
-		"-probesize", "32768", "-analyzeduration", "0",
+	}
+	if isHLSInput(upstream) {
+		// B 站 / 虎牙分片：探测窗口压到最小尽快出首片（HLS 第一个分片就带
+		// SPS/PPS，32KB 够用）；同时关掉 HTTP keep-alive——B 站 CDN 会主动
+		// 掐长连接，复用连接时每片都要重连，60 秒能刷 40 多次 I/O error。
+		args = append(args,
+			"-http_persistent", "0",
+			"-probesize", "32768", "-analyzeduration", "0",
+		)
+	} else {
+		// 斗鱼 / 抖音：HTTP-FLV 直连。这里不能用 HLS 那套极小的探测窗口：
+		// FLV 的 SPS/PPS 不一定落在前 32KB 里，ffmpeg 找不到流参数会直接
+		// 以 EINVAL 退出（虎牙实测就是这个）。留半秒分析窗口。
+		//
+		// http_persistent 也不能带——它不是 FLV/HTTP 那条路的选项，
+		// ffmpeg 会以 "Option http_persistent not found" 立刻退出。
+		args = append(args,
+			"-probesize", "500000", "-analyzeduration", "500000",
+		)
 	}
 	if len(headers) > 0 {
 		args = append(args, "-headers", joinHeaders(headers))
@@ -157,7 +171,14 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		// 上游关键帧决定（B 站是 3 秒），起播与稳定性都和转码路径不同。
 		// 打一行日志是为了排查时不用去猜——哪条路一眼能看出来。
 		slog.Info("转封装方式", "mode", "copy", "codec", codec)
-		args = append(args, "-c", "copy")
+		// 必须显式只取视频和音频。默认选流会把字幕一起带进来——虎牙的
+		// HTTP-FLV 里就挂着一条 webvtt 轨，而 MPEG-TS 不支持 webvtt，
+		// ffmpeg 会以 EINVAL 直接退出，表现就是「虎牙播不了」。
+		args = append(args,
+			"-map", "0:v:0?",
+			"-map", "0:a:0?",
+			"-c", "copy",
+		)
 	}
 	// HLS 输出参数全部是按播放器实测调出来的，逐条说明：
 	//
@@ -221,15 +242,17 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	// 成孤儿继续拉流转码，残留几个就把 CPU 吃满，之后所有播放都卡。
 	// 绑定失败不致命，退回到「只有 Stop 能清理」。
 	if release, bindErr := bindProcessLifecycle(cmd.Process.Pid); bindErr != nil {
-		slog.Debug("绑定 ffmpeg 生命周期失败", "error", bindErr)
+		slog.Warn("绑定 ffmpeg 生命周期失败，退出时可能残留子进程", "error", bindErr)
 	} else {
 		s.mu.Lock()
 		s.jobRelease = release
 		s.mu.Unlock()
 	}
+	exited := make(chan struct{})
 	go func() {
 		err := cmd.Wait()
 		slog.Info("ffmpeg 转封装结束", "error", err, "ctxCanceled", runCtx.Err() != nil)
+		close(exited)
 	}()
 
 	// 等 FFmpeg 写出第一份播放列表再返回。播放器不会重试一次失败的打开，
@@ -238,6 +261,14 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	for time.Now().Before(deadline) {
 		if runCtx.Err() != nil {
 			break
+		}
+		// ffmpeg 自己退了就别再干等满 15 秒：多半是参数问题——这一路要求
+		// 输出音频，而这个流里根本没有音频轨。立刻交回 Start 去回退。
+		select {
+		case <-exited:
+			s.Stop()
+			return "", fmt.Errorf("ffmpeg 启动后立即退出")
+		default:
 		}
 		if info, err := os.Stat(filepath.Join(dir, "live.m3u8")); err == nil && info.Size() > 0 {
 			// 等第一个分片也落盘，否则播放器打开时会拿到空列表。
@@ -285,6 +316,17 @@ func (s *Server) Stop() {
 	if release != nil {
 		release()
 	}
+}
+
+// isHLSInput 报告上游地址是不是 HLS（m3u8）。
+//
+// 只看路径，别被 query 里的字符串骗了：斗鱼的分片地址带一堆参数，
+// 抖音的 FLV 也可能带 .m3u8 字样。
+func isHLSInput(u string) bool {
+	if i := strings.IndexByte(u, '?'); i >= 0 {
+		u = u[:i]
+	}
+	return strings.HasSuffix(strings.ToLower(u), ".m3u8")
 }
 
 // relayLog 把 ffmpeg stderr 限流写进 slog，不把上游 URL 打进日志。
