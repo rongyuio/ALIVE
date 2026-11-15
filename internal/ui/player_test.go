@@ -123,29 +123,32 @@ func TestDoubleClickStageTogglesWindowFullscreen(t *testing.T) {
 	}
 }
 
-// 窗口全屏时顶部那条拖窗条压在画面上，灵动岛必须仍在它之上。
-// MyGo 的命中链只取最上层那个元素，拖窗条不能把岛盖掉。
-func TestFullscreenTopChromeStaysClickable(t *testing.T) {
+// 两种全屏下灵动岛整块不画：画面上只留返回钮和控制条，岛连同它的流光
+// 和投影压满屏画面上纯属干扰。退出全屏要回来。
+func TestFullscreenHidesIsland(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	if err := tt.Click("旭旭宝宝"); err != nil {
 		t.Fatal(err)
 	}
-	// 进场会自动展开，先让它闲置收起，这样点到的确实是岛本身
 	tt.Move(700, 450)
 	tt.Advance(5 * time.Second)
+
+	// 进场会自动展开，先让它闲置收起，确认窗口模式下岛确实在
+	if _, ok := tt.Find("灵动岛"); !ok {
+		t.Fatal("窗口模式下灵动岛应该还在")
+	}
+
 	app.WinFull = true
 	tt.Frame()
-
-	island, ok := tt.Find("灵动岛")
-	if !ok {
-		t.Fatal("灵动岛没有渲染出来")
+	if _, ok := tt.Find("灵动岛"); ok {
+		t.Fatal("窗口全屏下灵动岛还在渲染")
 	}
-	tt.Press(island.X+island.W/2, island.Y+island.H/2)
-	tt.Release(island.X+island.W/2, island.Y+island.H/2)
+
+	app.WinFull = false
 	tt.Frame()
-	if !app.InfoOpen {
-		t.Fatal("全屏下点灵动岛没有展开")
+	if _, ok := tt.Find("灵动岛"); !ok {
+		t.Fatal("退出窗口全屏后灵动岛没有回来")
 	}
 }
 

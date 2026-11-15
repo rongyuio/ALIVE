@@ -455,9 +455,17 @@ func (a *App) Shell(c *ui.Context) {
 				a.closeMedia()
 			}
 		})
-		// 灵动岛浮在内容之上。播放页全屏时也得画：主播信息现在就住在这枚
-		// 岛里（进场展开、闲置收起），藏掉它全屏就看不到主播是谁了。
-		a.Island(c)
+		// 灵动岛浮在内容之上。两种全屏下整块不画：画面上只留返回钮和控制条，
+		// 岛连同它那圈流光和投影压在满屏画面上纯属干扰。
+		//
+		// 但观看时长照常累计。全屏时没人调 tickWatch，退出全屏那一次
+		// now−watchAt 会把全屏这一段整段补进时长里——中间暂停过的时间也会
+		// 被算进去，所以这里补上这一次调用。
+		if fullscreen {
+			a.tickWatch(c.Now())
+		} else {
+			a.Island(c)
+		}
 		// Toast 永远在最上层（数据同步面板是模态，压在它下面一次即可）
 		if a.SyncOpen {
 			a.syncOverlay(c)
