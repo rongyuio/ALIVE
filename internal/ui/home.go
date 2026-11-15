@@ -83,9 +83,16 @@ type App struct {
 	// InfoOpen 是播放页灵动岛是否展开：进直播间自动展开，闲置几秒收起，
 	// 点岛可以反复开关。infoOpenAt 是最近一次展开 / 悬停刷新的时刻，
 	// infoRoom 记着当前房间，用来判断「刚进直播间」。
-	InfoOpen    bool
-	infoOpenAt  time.Time
-	infoRoom    string
+	InfoOpen   bool
+	infoOpenAt time.Time
+	infoRoom   string
+	// watch 是当前这间直播间已经看了多久，暂停时不走；watchAt 是上一次
+	// 累计的时刻——每帧只加一次差值，结果不受帧率影响。换房间归零。
+	// watchSeed 只在截图验收时预置起始时长（ALIVE_WATCH=2h），tickWatch
+	// 消费一次就清掉；生产路径上它恒为 0。
+	watch       time.Duration
+	watchAt     time.Time
+	watchSeed   time.Duration
 	Quality     string
 	QualityOpen bool
 	Line        string

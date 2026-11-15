@@ -48,6 +48,7 @@ func (a *App) Island(c *ui.Context) {
 
 	if player {
 		a.enterPlayerIsland(c)
+		a.tickWatch(c.Now())
 	} else {
 		// 离开播放页就清掉房间记号：下次进同一个房间也要重新展开一次
 		a.infoRoom = ""
@@ -136,6 +137,7 @@ func (a *App) enterPlayerIsland(c *ui.Context) {
 		return
 	}
 	a.infoRoom = room
+	a.watch, a.watchAt = 0, time.Time{}
 	a.setIslandOpen(c, true)
 }
 
@@ -146,6 +148,45 @@ func (a *App) enterPlayerIsland(c *ui.Context) {
 func (a *App) setIslandOpen(c *ui.Context, open bool) {
 	a.InfoOpen = open
 	a.infoOpenAt = c.Now()
+}
+
+// SetWatchForCapture 让观看时长从一个预设值开始走，只给截图验收用
+// （ALIVE_WATCH=2h 这类）。正常运行时时长由 tickWatch 从进房间那一刻累计。
+func (a *App) SetWatchForCapture(d time.Duration) {
+	a.watchSeed = d
+}
+
+// tickWatch 累计这间直播间的观看时长。
+//
+// 每帧只加「距上次的那点差值」，所以结果和帧率无关；暂停时不加——岛上
+// 那个数字说的是「看了多久」，不是「进来多久」。岛的 conic 光环每帧都
+// 请求帧，这个累计不会因为画面静止而停摆。
+func (a *App) tickWatch(now time.Time) {
+	// 截图验收可以从预设值起步（ALIVE_WATCH=2h），只消费一次；生产路径上
+	// watchSeed 恒为 0，时长从进房间那一刻开始累计。
+	if a.watchSeed > 0 {
+		a.watch, a.watchSeed = a.watchSeed, 0
+	}
+	if a.watchAt.IsZero() {
+		a.watchAt = now
+		return
+	}
+	if a.Playing {
+		a.watch += now.Sub(a.watchAt)
+	}
+	a.watchAt = now
+}
+
+// formatWatch 把观看时长写成 05:21，满一小时写 1:05:21。
+func formatWatch(d time.Duration) string {
+	sec := int(d / time.Second)
+	if sec < 0 {
+		sec = 0
+	}
+	if sec < 3600 {
+		return fmt.Sprintf("%02d:%02d", sec/60, sec%60)
+	}
+	return fmt.Sprintf("%d:%02d:%02d", sec/3600, sec%3600/60, sec%60)
 }
 
 // playerIsland 是播放页里岛的内容。
@@ -169,10 +210,12 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 		}
 	}
 
-	// ---------- 收起层：头像 + 声波
+	// ---------- 收起层：头像 + 观看时长
 	//
-	// 不写主播名：收起来就该只是一颗头像和一点动静，名字留在展开态。
-	// 那排会跳的声波条比任何文字都更快地说出「正在播」。
+	// 不写主播名：收起来就该只是一颗头像加一个数字，名字留在展开态。
+	// 右边那格原本是排随声音跳动的声波条，音频链路回归 Media Foundation
+	// 之后它一起没了，整颗胶囊右侧空着五十多像素。补进来的这个数字是真
+	// 信息——这间直播间已经看了多久；暂停时它不涨，换成暂停图标。
 	collapsed := ui.Row(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 		Padding(0, 4, 0, 6).Gap(8).AlignItems(ui.Center)
 	collapsed.Opacity(1 - op)
@@ -183,6 +226,28 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 		ui.Box(c).Size(28, 28).Shrink(0).Children(func() {
 			a.islandAvatar(c, s, 28)
 		})
+		// 弹性空白把时长顶到右沿：头像在左、数字在右，中间那格才算用上。
+		ui.Box(c).Grow(1)
+		if a.Playing {
+			// 13 + SemiBold：11/12 在 38 高的胶囊里显得虚，五个字符撑不满
+			// 右边那格。字族换圆体（见 fonts.go），系统字体的数字太方正。
+			//
+			// 小时级会多出两段（1:05:21），字号降一档。100 宽的岛留给数字
+			// 只有 46px（100 − 6 左 − 28 头像 − 8×2 间距 − 4 右），Quicksand
+			// 实测：mm:ss 在 13px 下 34px，h:mm:ss 在 13px 下 38.9px、12px 下
+			// 35.9px。13px 其实撑到 9 小时都没事，但两位数小时（12:05:21）
+			// 要 46.2px，一滴不剩；12px 到 99 小时还有 3px 余量。
+			size := theme.TextSM
+			if a.watch >= time.Hour {
+				size = theme.TextXS
+			}
+			ui.Text(c, formatWatch(a.watch)).Font(FontNumeric).
+				FontSize(size).FontWeight(600).
+				TextColor(theme.TextTertiary).FontFeatures("tnum").
+				SingleLine().LineHeight(1)
+		} else {
+			ui.Icon(c, iconPause).FontSize(12).TextColor(theme.TextTertiary)
+		}
 	})
 
 	// ---------- 展开层：头像 + 标题 / 平台·昵称·ID + 状态 + 关注
@@ -283,6 +348,29 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32) {
 	d := float32(10)
 	if size < 32 {
 		d = 8
+	}
+	// 呼吸环：和全部关注页那颗在线点同一套 baseline live-pulse——2px 绿环从
+	// scale 0.75 扩到 1.85、透明度 0.9 → 0，2 秒一循环，70% 之后停在扩满的
+	// 无形状态。环先画，压在点下面。
+	//
+	// Key 要带上 size：收起和展开两层头像同时存在（交叉淡化），同一个 Key
+	// 会让两个环共用一段动画状态，谁后建谁把相位抢走。
+	ringSize := d + 4
+	ringLeft := size - d - 1
+	ringKey := fmt.Sprintf("island-live-%d", int(size))
+	ring := ui.Box(c).Key(ringKey).Absolute().
+		Left(ringLeft).Top(ringLeft).Size(ringSize, ringSize).
+		Radius(theme.RadiusFull).Border(2, theme.StatusOnline)
+	if c.Preferences().ReduceMotion {
+		// baseline 在 reduced motion 下关掉脉冲，只留静态绿点
+		ring.Opacity(0)
+	} else {
+		// 相位用 Loop 驱动：这版 MyGo 的 Keyframes + RepeatForever 播完一次
+		// 就停在末值，环会扩满后透明，看起来只剩一颗绿点。
+		p := ring.Loop(ringKey+"-pulse", 2*time.Second, ui.Linear)
+		scale, alpha := livePulse(p)
+		ring.Scale(scale, scale)
+		ring.Opacity(alpha)
 	}
 	ui.Box(c).Absolute().Left(size-d+1).Top(size-d+1).Size(d, d).Radius(d/2).
 		Background(theme.StatusOnline).Border(2, theme.BgSecondary)
