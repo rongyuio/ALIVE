@@ -80,11 +80,16 @@ type App struct {
 	Volume       float32
 	Playing      bool // 播放页的播放 / 暂停状态
 	WinFull      bool // 窗口全屏（baseline 的 cssFullscreen）：播放页铺满窗口，应用顶栏让位
-	InfoOpen     bool // 播放页主播信息岛是否展开
-	Quality      string
-	QualityOpen  bool
-	Line         string
-	LineOpen     bool
+	// InfoOpen 是播放页灵动岛是否展开：进直播间自动展开，闲置几秒收起，
+	// 点岛可以反复开关。infoOpenAt 是最近一次展开 / 悬停刷新的时刻，
+	// infoRoom 记着当前房间，用来判断「刚进直播间」。
+	InfoOpen    bool
+	infoOpenAt  time.Time
+	infoRoom    string
+	Quality     string
+	QualityOpen bool
+	Line        string
+	LineOpen    bool
 	// RelayEncoder 是转码器策略（auto / software）。后面接设置页，
 	// 现在先由状态文件带着走，默认 auto。
 	RelayEncoder string
@@ -436,10 +441,9 @@ func (a *App) Shell(c *ui.Context) {
 				a.closeMedia()
 			}
 		})
-		if !fullscreen {
-			// 灵动岛浮在内容之上，只报状态（点击不再展开任何东西）
-			a.Island(c)
-		}
+		// 灵动岛浮在内容之上。播放页全屏时也得画：主播信息现在就住在这枚
+		// 岛里（进场展开、闲置收起），藏掉它全屏就看不到主播是谁了。
+		a.Island(c)
 		// Toast 永远在最上层（数据同步面板是模态，压在它下面一次即可）
 		if a.SyncOpen {
 			a.syncOverlay(c)

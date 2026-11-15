@@ -140,7 +140,9 @@ func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
 		a.chromeIdleAt = now
 	}
 
-	if !a.Playing || a.InfoOpen || a.QualityOpen || a.LineOpen ||
+	// 岛自动展开的那几秒不算「人在操作」；指针停在岛上时本来就落在
+	// 顶部那条带里，下面的坐标判断已经把它兜住了。
+	if !a.Playing || a.QualityOpen || a.LineOpen ||
 		a.DanmuSettingsOpen || a.ShortcutsOpen {
 		stay()
 		return
@@ -365,11 +367,11 @@ func (a *App) current() Streamer {
 	return Streamer{Name: "未选择直播间", Title: "", Category: ""}
 }
 
-// playerTopbar 是画面顶部那条：返回 + 直播间信息岛。
+// playerTopbar 是画面顶部那条：只有一颗返回钮。
+//
+// 直播间信息在顶栏那枚灵动岛里（见 island.go），这里不再重复一份——
+// 同一个直播间在画面上出现两条一模一样的头像加标题，属于历史遗留。
 func (a *App) playerTopbar(c *ui.Context) {
-	s := a.current()
-	winW, _ := c.Size()
-
 	// 这条 Row 只是布局容器，自己不该吃指针：窗口全屏时它整条压在画面
 	// 顶部的拖窗条上，不穿透的话这条 44 高的带子会被它连同下面那根弹性
 	// 空 Box 一起挡死。按钮和信息岛是子元素，照常命中。
@@ -391,145 +393,6 @@ func (a *App) playerTopbar(c *ui.Context) {
 		back.Children(func() {
 			// baseline 用的是 X（关闭），不是返回箭头
 			ui.Icon(c, iconPlayerBack).FontSize(19).TextColor(ui.RGBA(255, 255, 255, 0.92))
-		})
-
-		// ------------------------------ 信息岛
-		//
-		// 收起是一枚 44px 的头像圆胶囊，点开头像才展开成整条：
-		// 高度固定、宽度做弹性过渡，内容跟着一起长出来（baseline 的 infoIsland）。
-		open := a.InfoOpen
-		targetW := float32(44)
-		targetR := float32(999)
-		var padT, padR, padB, padL float32 = 3, 3, 3, 3
-		if open {
-			targetW = 520
-			if limit := winW * 0.6; limit < targetW {
-				targetW = limit
-			}
-			targetR = 24
-			padT, padR, padB, padL = 4, 14, 4, 4
-		}
-
-		island := ui.Row(c).Height(44).Padding(padT, padR, padB, padL).Gap(10).
-			AlignItems(ui.Center).Clip()
-		island.Width(island.AnimateTo("info-w", targetW,
-			theme.EaseOut(240*time.Millisecond)))
-		island.Radius(island.AnimateTo("info-r", targetR,
-			theme.EaseOut(240*time.Millisecond)))
-		bg := ui.RGBA(10, 10, 12, 0.52)
-		if open {
-			bg = ui.RGBA(10, 10, 12, 0.66)
-		}
-		island.Background(bg)
-		border := ui.RGBA(255, 255, 255, 0.14)
-		if island.Hovered() {
-			border = ui.RGBA(255, 255, 255, 0.26)
-		}
-		island.Border(1, border)
-
-		island.Children(func() {
-			// 头像触发钮：36 圆，展开时才带上右下角的直播点
-			trigger := ui.Box(c).Size(36, 36).Shrink(0).Cursor(ui.CursorPointer).
-				Label("主播信息")
-			if trigger.Clicked() {
-				a.InfoOpen = !a.InfoOpen
-			}
-			trigger.Children(func() {
-				if bmp := media.Default.Bitmap(s.AvatarURL, 36); bmp != nil {
-					ui.Image(c, bmp).Size(36, 36).Radius(18).Fit(ui.Cover)
-				} else {
-					ui.Box(c).Size(36, 36).Radius(18).
-						Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().Children(func() {
-						ui.Text(c, initial(s.Name)).FontSize(13).FontWeight(600).
-							TextColor(ui.RGBA(255, 255, 255, 0.88))
-					})
-				}
-				if s.Live {
-					// 10px 绿点压在头像右下角，带 2px 深色描边。
-					// 用 Left/Top 而不是 Right/Bottom：MyGo 里 Right 的基准
-					// 在缩小后的祖先上会偏出去，Left/Top 从 padding box 左上角
-					// 算起，36 的盒子里 27 就是右下角那一格。
-					ui.Box(c).Absolute().Left(27).Top(27).Size(10, 10).Radius(5).
-						Background(theme.StatusOnline).
-						Border(2, ui.RGBA(12, 13, 16, 0.9))
-				}
-			})
-
-			if !open {
-				return
-			}
-
-			// 展开内容：淡入 + 从左侧 8px 处滑进来
-			panel := ui.Row(c).Gap(10).AlignItems(ui.Center)
-			op := panel.AnimateTo("info-panel", 1, theme.EaseOut(150*time.Millisecond))
-			panel.Opacity(op)
-			panel.Translate((1-op)*-8, 0)
-
-			panel.Children(func() {
-				// 标题 + 平台·昵称·ID
-				ui.Column(c).Gap(2).Grow(1).Children(func() {
-					ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
-						TextColor(ui.RGBA(244, 244, 239, 0.95)).SingleLine().LineHeight(1.3)
-					ui.Text(c, fmt.Sprintf("%s · %s · ID:%s",
-						platformLabel(s.Platform), s.Name, s.RoomID)).
-						FontSize(theme.Text2XS).TextColor(playerTextDim).SingleLine().LineHeight(1.3)
-				})
-
-				// 状态胶囊：在播绿、未开播灰
-				statusBg := ui.RGBA(34, 197, 94, 0.16)
-				statusBorder := ui.RGBA(34, 197, 94, 0.34)
-				statusText := ui.RGBA(219, 255, 235, 0.95)
-				label := "直播中"
-				if !s.Live {
-					statusBg = ui.RGBA(148, 163, 184, 0.14)
-					statusBorder = ui.RGBA(148, 163, 184, 0.28)
-					statusText = ui.RGBA(226, 232, 240, 0.88)
-					label = "未开播"
-				}
-				ui.Box(c).Height(22).Padding(4, 10, 4, 10).Radius(999).
-					Background(statusBg).Border(1, statusBorder).Center().Children(func() {
-					ui.Text(c, label).FontSize(theme.Text2XS).FontWeight(700).
-						LetterSpacing(0.02).TextColor(statusText)
-				})
-
-				// 关注按钮
-				followed := a.isFollowed(s)
-				btn := ui.Row(c).Height(30).Padding(8, 12, 8, 12).Gap(5).Radius(999).
-					AlignItems(ui.Center).Cursor(ui.CursorPointer)
-				if followed {
-					btn.Background(ui.RGBA(34, 197, 94, 0.16)).
-						Border(1, ui.RGBA(34, 197, 94, 0.34))
-				} else {
-					btn.Background(ui.RGBA(10, 10, 12, 0.44)).
-						Border(1, ui.RGBA(255, 255, 255, 0.14))
-					if btn.Hovered() {
-						btn.Background(ui.RGBA(10, 10, 12, 0.56)).
-							BorderColor(ui.RGBA(255, 255, 255, 0.22))
-					}
-				}
-				if btn.Clicked() {
-					a.toggleFollow(s)
-				}
-				col := ui.RGBA(255, 255, 255, 0.92)
-				if followed {
-					col = ui.RGBA(219, 255, 235, 0.95)
-				}
-				btn.Children(func() {
-					ico := iconStar
-					if followed {
-						ico = iconStarFilled
-					}
-					ui.Icon(c, ico).FontSize(14).TextColor(col)
-					text := "关注"
-					if followed {
-						text = "已关注"
-					}
-					ui.Text(c, text).FontSize(theme.TextXS).FontWeight(700).
-						LetterSpacing(0.01).TextColor(col)
-				})
-
-				// 登录入口在顶栏头像上，播放页这条信息岛只放关注。
-			})
 		})
 
 		// 弹性空白也穿透：它占了顶栏右侧整段，不穿透就等于把拖窗条

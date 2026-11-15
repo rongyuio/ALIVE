@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 
+	"alive/internal/media"
 	"alive/internal/theme"
 )
 
@@ -16,21 +18,66 @@ const (
 	islandBodyInset float32 = 1
 )
 
+// 播放页信息岛的尺寸与节奏。
+//
+// 高度跟画面左上角那颗返回钮对齐（44），所以顶栏 64 高时正好留 10 上下，
+// 和 IslandGap 是一个数。收起宽度直接取首页那枚眼睛岛的宽度——同一个位置
+// 换页面时，岛不该跟着变胖变瘦，两种收起态看起来得是一枚东西。
+// 展开上限 400，窄窗口按 50% 收——顶栏左右两侧还有平台 tab 和图标格，
+// 岛不能把它们盖掉。
+const (
+	islandPlayerCollapsedW float32 = theme.IslandW
+	islandPlayerExpandedW  float32 = 400
+	islandPlayerMinW       float32 = 320
+	islandAutoCollapse             = 4 * time.Second
+)
+
 // Island 是顶部居中的「灵动岛」。
 //
-// 它只报状态，不承载面板：一双会眨的眼睛（9×11 的青柠色椭圆、间隔 11）。
-// hover 不换内容、也不显示数字——岛只做呼吸，不抢注意力。
+// 首页里它只报状态：一双会眨的眼睛，hover 不换内容、也不显示数字，
+// 岛只做呼吸，不抢注意力。全部关注面板的入口在顶栏的星标格子上
+// （见 follows_panel.go），点岛不放大成任何面板。
 //
-// 全部关注面板的入口在顶栏的星标格子上（见 follows_panel.go），
-// 点岛不再放大成面板。
+// 播放页里它接的是主播信息：进直播间自动展开成整条（头像、标题、关注），
+// 指针不在岛上、闲置 4 秒之后收成一颗小胶囊——头像加一排跳动的声波，
+// 不写名字，点一下再展开。宽度用弹簧跑，Left 每帧按当前宽度重算，长度是
+// 从中心向两侧长出来的——这是灵动岛的手感来源，不是从左往右推。
 func (a *App) Island(c *ui.Context) {
 	winW, _ := c.Size()
+	player := a.Router != nil && a.Router.Path() == routePlayer
 
+	if player {
+		a.enterPlayerIsland(c)
+	} else {
+		// 离开播放页就清掉房间记号：下次进同一个房间也要重新展开一次
+		a.infoRoom = ""
+	}
+
+	targetW := float32(theme.IslandW)
+	openW := float32(0)
+	if player {
+		openW = islandPlayerExpandedW
+		if limit := winW * 0.5; limit < openW {
+			openW = limit
+		}
+		if openW < islandPlayerMinW {
+			openW = islandPlayerMinW
+		}
+		targetW = islandPlayerCollapsedW
+		if a.InfoOpen {
+			targetW = openW
+		}
+	}
+
+	// 高度恒为 theme.IslandH（38），和首页那枚眼睛岛一模一样。
+	// 展开只让宽度往两边长，高度一像素都不动——这是灵动岛的死规矩。
 	island := ui.Box(c).Key("island").Label("灵动岛").Absolute().Top(theme.IslandGap).
-		Width(theme.IslandW).Height(theme.IslandH).Radius(theme.RadiusFull).
-		Left((winW-theme.IslandW)/2).
+		Height(theme.IslandH).Radius(theme.RadiusFull).
 		// baseline 的 .sidebar 有 1px 描边，光环正压在这条描边上
 		Border(1, theme.Border)
+
+	w := island.AnimateTo("island-w", targetW, ui.Snappy)
+	island.Width(w).Left((winW - w) / 2)
 
 	// ---------- 投影：baseline 深浅两套（.sidebar 与 [data-theme="light"] .sidebar）。
 	// 浅色主题用低透明度蓝黑，套深色的纯黑阴影会在白底上压出一圈脏灰。
@@ -57,9 +104,188 @@ func (a *App) Island(c *ui.Context) {
 		body.ClipInset(0, 0, 0, 0, theme.RadiusFull-islandBodyInset)
 
 		body.Children(func() {
+			if player {
+				a.playerIsland(c, w, openW)
+				return
+			}
 			a.islandPill(c)
 		})
 	})
+
+	// 自动收起：指针停在岛上就一直亮着，移开之后数满 4 秒才收。
+	// 到点要一帧，否则画面静止时这一帧可能永远不来。
+	if player && a.InfoOpen {
+		if island.Hovered() {
+			a.infoOpenAt = c.Now()
+		} else if idle := c.Now().Sub(a.infoOpenAt); idle >= islandAutoCollapse {
+			a.InfoOpen = false
+		} else {
+			c.After(islandAutoCollapse - idle)
+		}
+	}
+}
+
+// enterPlayerIsland 在「换了直播间」的那一帧把岛展开。
+//
+// 判据是平台 + 房间号 + 主播名：同一个房间从订阅页返回、切换线路、重连，
+// 都不该再弹一次；换房间（哪怕是同一个主播换场，标题没变）就得重新弹。
+func (a *App) enterPlayerIsland(c *ui.Context) {
+	s := a.current()
+	room := s.Platform + "|" + s.RoomID + "|" + s.Name
+	if room == a.infoRoom {
+		return
+	}
+	a.infoRoom = room
+	a.setIslandOpen(c, true)
+}
+
+// setIslandOpen 切换展开态并把计时基准拨到现在。
+//
+// 手动展开之后同样要数满 4 秒才收——点开就是为了看这几秒，
+// 不能因为鼠标早就停在岛外而立刻缩回去。
+func (a *App) setIslandOpen(c *ui.Context, open bool) {
+	a.InfoOpen = open
+	a.infoOpenAt = c.Now()
+}
+
+// playerIsland 是播放页里岛的内容。
+//
+// 收起态和展开态是两套图层叠在一起，按当前宽度交叉淡化：宽度只有 88 时
+// 只剩头像和声波，宽到 300 以上才轮得到标题和关注。用宽度换算透明度、
+// 而不是再起一条动画，两层才跟伸缩严丝合缝。
+//
+// w 是这一帧的动画宽度，openW 是展开目标宽度（跟着窗口钳过）。
+func (a *App) playerIsland(c *ui.Context, w, openW float32) {
+	s := a.current()
+
+	op := float32(0)
+	if openW > islandPlayerCollapsedW {
+		op = (w - islandPlayerCollapsedW) / (openW - islandPlayerCollapsedW)
+		if op < 0 {
+			op = 0
+		}
+		if op > 1 {
+			op = 1
+		}
+	}
+
+	// ---------- 收起层：头像 + 声波
+	//
+	// 不写主播名：收起来就该只是一颗头像和一点动静，名字留在展开态。
+	// 那排会跳的声波条比任何文字都更快地说出「正在播」。
+	collapsed := ui.Row(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+		Padding(0, 4, 0, 6).Gap(8).AlignItems(ui.Center)
+	collapsed.Opacity(1 - op)
+	if op >= 0.5 {
+		collapsed.PassThrough()
+	}
+	collapsed.Children(func() {
+		ui.Box(c).Size(28, 28).Shrink(0).Children(func() {
+			a.islandAvatar(c, s, 28)
+		})
+	})
+
+	// ---------- 展开层：头像 + 标题 / 平台·昵称·ID + 状态 + 关注
+	expanded := ui.Row(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+		Padding(0, 12, 0, 6).Gap(10).AlignItems(ui.Center)
+	expanded.Opacity(op)
+	if op < 0.5 {
+		expanded.PassThrough()
+	}
+	expanded.Children(func() {
+		// 头像 32：岛高锁在 38，本体让出 1px 边之后可用 36，32 上下各剩 2。
+		// 之前给 36 会正好顶满、贴着描边，看着像被裁过。
+		trigger := ui.Box(c).Size(32, 32).Shrink(0).Cursor(ui.CursorPointer).
+			Label("主播信息")
+		if trigger.Clicked() {
+			a.setIslandOpen(c, !a.InfoOpen)
+		}
+		trigger.Children(func() {
+			a.islandAvatar(c, s, 32)
+		})
+
+		ui.Column(c).Gap(2).Grow(1).Children(func() {
+			ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
+				SingleLine().TextColor(theme.TextPrimary).LineHeight(1.3)
+			ui.Text(c, fmt.Sprintf("%s · %s · ID:%s",
+				platformLabel(s.Platform), s.Name, s.RoomID)).
+				FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
+				TextColor(theme.TextTertiary)
+		})
+
+		// 关注：纯图标，不带文字。头像右下角那个绿点已经说明在播，这里
+		// 只留一颗星，岛才不至于拖得太长。
+		followed := a.isFollowed(s)
+		label := "关注"
+		if followed {
+			label = "取消关注"
+		}
+		btn := ui.Box(c).Size(26, 26).Radius(theme.RadiusFull).
+			Center().Cursor(ui.CursorPointer).Shrink(0).Label(label)
+		if followed {
+			btn.Background(theme.StatusOnline.Alpha(0.16)).
+				Border(1, theme.StatusOnline.Alpha(0.34))
+		} else {
+			btn.Background(theme.FillTertiary).Border(1, theme.Border)
+			if btn.Hovered() {
+				btn.Background(theme.FillSecondary).BorderColor(theme.BorderStrong)
+			}
+		}
+		if btn.Clicked() {
+			a.toggleFollow(s)
+		}
+		col := theme.TextPrimary
+		if followed {
+			col = theme.StatusOnline
+		}
+		btn.Children(func() {
+			ico := iconStar
+			if followed {
+				ico = iconStarFilled
+			}
+			ui.Icon(c, ico).FontSize(15).TextColor(col)
+		})
+
+		// 登录入口在顶栏头像上，岛屿里只放关注。
+	})
+
+	// 收起态整块都能点：一层透明热区压在最上面，收着的时候才存在。
+	//
+	// 不能给外层的 Row 挂 Clicked——MyGo 把点击只发给命中链最上那一个元素，
+	// 点在主播名那行 Text 上，Row 根本收不到。展开态的按钮和头像必须排在
+	// 它下面，所以这东西不能常驻，否则会把关注按钮一起挡掉。
+	if op < 0.5 {
+		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+			Cursor(ui.CursorPointer)
+		if hit.Clicked() {
+			a.setIslandOpen(c, true)
+		}
+	}
+}
+
+// islandAvatar 画一枚圆形头像，在播时右下角压一个带深色描边的绿点。
+// 绿点用 Left/Top 而不是 Right/Bottom：MyGo 里 Right 的基准在缩小后的
+// 祖先上会偏出去，Left/Top 从 padding box 左上角算起，size-d+1 就是
+// 右下角那一格。
+func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32) {
+	if bmp := media.Default.Bitmap(s.AvatarURL, size); bmp != nil {
+		ui.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
+	} else {
+		ui.Box(c).Size(size, size).Radius(size / 2).
+			Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().Children(func() {
+			ui.Text(c, initial(s.Name)).FontSize(size * 0.36).FontWeight(600).
+				TextColor(theme.TextSecondary)
+		})
+	}
+	if !s.Live {
+		return
+	}
+	d := float32(10)
+	if size < 32 {
+		d = 8
+	}
+	ui.Box(c).Absolute().Left(size-d+1).Top(size-d+1).Size(d, d).Radius(d/2).
+		Background(theme.StatusOnline).Border(2, theme.BgSecondary)
 }
 
 // islandPill 是收起态：只有一双眨着的眼睛，hover 不改变任何内容。
