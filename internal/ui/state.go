@@ -45,6 +45,7 @@ type persisted struct {
 	Volume        *float32        `json:"volume,omitempty"`
 	DanmuOn       *bool           `json:"danmuOn,omitempty"`
 	Danmu         *danmuPrefs     `json:"danmu,omitempty"`
+	DanmuFilters  *[]string       `json:"danmuFilters,omitempty"`
 }
 
 // statePath 是状态文件的位置；拿不到用户配置目录时返回空串，调用方跳过落盘。
@@ -120,6 +121,8 @@ func (a *App) saveState() {
 	subs := append([]Subscription(nil), a.Subs...)
 	volume := a.Volume
 	danmuOn := a.DanmuOn
+	// 屏蔽词也要落盘：用户加了一堆词，重启就该还在
+	filters := append([]string(nil), a.DanmuFilters...)
 	danmu := danmuPrefs{
 		Font:     a.DanmuFont,
 		DurMs:    a.DanmuDur.Milliseconds(),
@@ -141,6 +144,7 @@ func (a *App) saveState() {
 		Volume:        &volume,
 		DanmuOn:       &danmuOn,
 		Danmu:         &danmu,
+		DanmuFilters:  &filters,
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -199,6 +203,9 @@ func (a *App) restore() {
 	}
 	if p.DanmuOn != nil {
 		a.DanmuOn = *p.DanmuOn
+	}
+	if p.DanmuFilters != nil {
+		a.DanmuFilters = *p.DanmuFilters
 	}
 	if p.Danmu != nil {
 		if p.Danmu.Font > 0 {

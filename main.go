@@ -61,6 +61,9 @@ func main() {
 	case "danmu":
 		// 播放页弹幕设置面板展开
 		app.DanmuSettingsOpen = true
+	case "filter":
+		// 播放页弹幕过滤面板展开，用于截图验收
+		app.DanmuFilterOpen = true
 	case "sync":
 		// 顶栏数据同步面板打开，用于截图验收
 		app.SyncOpen = true

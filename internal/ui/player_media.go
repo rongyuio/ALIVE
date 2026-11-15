@@ -479,6 +479,10 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 	if a.media.seq != seq {
 		return
 	}
+	// 命中屏蔽词的整条丢掉：不上屏，也不写进右侧历史
+	if a.danmuBlocked(d.Content) {
+		return
+	}
 	kind := danmuChat
 	if d.Kind == live.DanmuSuperChat {
 		kind = danmuSuperChat

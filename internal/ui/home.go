@@ -138,6 +138,13 @@ type App struct {
 	DanmuColor        ui.Color
 	DanmuStroke       ui.Color
 
+	// 弹幕屏蔽词（控制条漏斗面板）：命中的弹幕不上屏、也不进右侧历史。
+	// 面板只有点击才开，所以不需要 hoverClose。
+	DanmuFilters      []string
+	DanmuFilterOpen   bool
+	DanmuFilterQuery  string
+	danmuFilterScroll ui.ScrollState
+
 	// 右侧弹幕列表（baseline 的 DanmuPanel）
 	DanmuPanelOn bool
 	DanmuPanelW  float32
