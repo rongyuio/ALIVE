@@ -29,6 +29,9 @@ func TestHomeOpensPlayer(t *testing.T) {
 func TestPaletteSwitch(t *testing.T) {
 	app := appui.NewMockApp()
 	app.PaletteOpen = true
+	// 面板只列当前这一侧的配色（深色三套 / 浅色三套），所以要显式选日间，
+	// 不能依赖 Tester 的默认外观——那个默认值会随 MyGo 版本变。
+	app.ThemeMode = "light"
 	tt := ui.NewTester(app.Shell, 1440, 900)
 
 	if !tt.HasText("主题配色") {

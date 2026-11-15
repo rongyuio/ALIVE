@@ -41,6 +41,14 @@ func main() {
 	if p := os.Getenv("ALIVE_PLATFORM"); p != "" {
 		app.Platform = p
 	}
+	// 截图验收用：ALIVE_ROOM=<platform>:<roomID> 直接进某个房间
+	if v := os.Getenv("ALIVE_ROOM"); v != "" {
+		if p, id, ok := strings.Cut(v, ":"); ok && id != "" {
+			app.Player = appui.Streamer{Platform: p, RoomID: id, Name: "验收房间"}
+			app.Playing = true
+			app.Router = ui.NewRouter("/player")
+		}
+	}
 	// 截图验收用：预置观看时长（ALIVE_WATCH=2h），验小时级的岛收起态
 	if v := os.Getenv("ALIVE_WATCH"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {

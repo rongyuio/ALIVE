@@ -68,18 +68,15 @@ func douyinVariantCodec(raw string) string {
 	}
 }
 
-// douyinPrefersHLS 判断同一档同时有 FLV / HLS 时该给哪个协议。
+// 抖音的取流优先给 HTTP-FLV。
 //
-// 明确 H.264 / HEVC 的同档 HLS 可交给传输层按解码能力选择，省去不必要的重新切片。
-// 未知编码与其他编码保持原有协议优先级，交给后续兼容路径处理。
-func (t *douyinTierStream) douyinPrefersHLS() bool {
-	switch douyinVariantCodec(t.Codec) {
-	case "avc", "hevc":
-		return true
-	default:
-		return false
-	}
-}
+// 网页端就是这么做的：fetch 一条 FLV 连续流喂给 MSE，边收边解边出帧，没有分片边界，
+// 收到第一个关键帧就能显示。我们曾经在同档有 HLS 时优先选 HLS，理由是为 Media
+// Foundation「省去不必要的重新切片」——那是代理时代的取舍。自解码路径下 ffmpeg
+// 直接读 FLV 就行，不需要切片；而 HLS 要先解包 master（抖音有的房间套三层），再按
+// 分片节奏吐数据，两头都更慢。
+//
+// 只有 FLV 缺失时才退回 HLS。
 
 // douyinTiers 是抖音的画质阶梯，从高到低。
 //
@@ -373,17 +370,14 @@ func douyinTierFromURL(raw string) string {
 	return ""
 }
 
-// douyinTierQuality 把一个档位转成可播档位（HEVC / 明确 H.264 优先给 HLS）。
+// douyinTierQuality 把一个档位转成可播档位。协议选择见上面 douyinPrefersHLS 那段说明：
+// 优先 FLV，只有 FLV 缺失才用 HLS。
 func douyinTierQuality(tier, label, id string, stream *douyinTierStream) (douyinQuality, bool) {
 	if stream == nil {
 		return douyinQuality{}, false
 	}
 	hevc := stream.douyinIsHEVC()
 	url, format := stream.FLV, "flv"
-	if stream.douyinPrefersHLS() && stream.HLS != "" {
-		// 是否可原样代理由传输层结合系统解码能力和播放列表决定。
-		url, format = stream.HLS, "hls"
-	}
 	if url == "" {
 		url, format = stream.HLS, "hls"
 	}

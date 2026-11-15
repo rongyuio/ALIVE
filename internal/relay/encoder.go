@@ -111,8 +111,10 @@ func probeEncoder(name string) bool {
 //
 //  1. 关键帧。硬编普遍不认 -force_key_frames（它是 ffmpeg.c 层面的请求：
 //     把某些帧标成 I，编码器可以不理）。AMF 实测：只给 force_key_frames
-//     时分片 4 秒起跳。改用编码器自己的 -g（GOP 帧数），60 帧在 60fps 下
-//     是 1 秒、30fps 下是 2 秒，hls_time 2 都能切在 2 秒。
+//     时分片 4 秒起跳。改用编码器自己的 -g（GOP 帧数），取 60：60fps 下
+//     1 秒、30fps 下 2 秒一个关键帧。试过收到 30（关键帧更密、首片更短），
+//     实测反而更慢——IDR 密度翻倍后 AMF 每片体积变大，首片落盘从 1.6 秒
+//     涨到 2.4 秒。缩短首帧改在分片目标时长上做，见 relay.go 的 hlsTime。
 //  2. 码控。libx264 默认 CRF 就够看，硬编默认是 CQP（画质随内容乱飘）。
 //     AMF 上尤其明显：-rc cbr 时分片从 230KB 跳到 3116KB（13 倍），
 //     播放器按这种节奏必然反复进出缓冲；换成 -rc vbr_latency

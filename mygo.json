@@ -2,5 +2,12 @@
   "name": "alive",
   "identifier": "com.ry.alive",
   "version": "0.1.0",
-  "out": "build"
+  "out": "build",
+  "resources": [
+    "third_party/ffmpeg/bin/avcodec-63.dll",
+    "third_party/ffmpeg/bin/avformat-63.dll",
+    "third_party/ffmpeg/bin/avutil-61.dll",
+    "third_party/ffmpeg/bin/swresample-7.dll",
+    "third_party/ffmpeg/bin/swscale-10.dll"
+  ]
 }

@@ -19,6 +19,7 @@ import (
 
 	"alive/internal/ffmpeg"
 	"alive/internal/live"
+	"alive/internal/playback"
 	"alive/internal/relay"
 )
 
@@ -109,6 +110,7 @@ func newMediaStubs(t *testing.T, startErr error) *mediaStubs {
 	}
 	oldNew, oldOpts := newRelaySession, relayOptions
 	oldOpen, oldRun, oldProv := openVideo, runOnMain, providerFor
+	oldNative := openNative
 
 	newRelaySession = func() relaySession { return s.relay }
 	relayOptions = func(enc relay.EncoderMode, proxy bool) relay.Options {
@@ -121,6 +123,10 @@ func newMediaStubs(t *testing.T, startErr error) *mediaStubs {
 		// 真播放器在这个环境里建不出来；失败路径正是要验的那条。
 		return nil, errors.New("mf 打不开")
 	}
+	// 自带解码会起真实的解码进程；测试只要它的失败路径，免得去碰网络和解码器。
+	openNative = func(context.Context, string, playback.Options) (*playback.Engine, error) {
+		return nil, playback.ErrUnsupported
+	}
 	runOnMain = func(_ *mygo.Window, fn func()) bool {
 		s.queue <- fn
 		return true
@@ -129,6 +135,7 @@ func newMediaStubs(t *testing.T, startErr error) *mediaStubs {
 	t.Cleanup(func() {
 		newRelaySession, relayOptions = oldNew, oldOpts
 		openVideo, runOnMain, providerFor = oldOpen, oldRun, oldProv
+		openNative = oldNative
 	})
 	return s
 }
@@ -706,11 +713,12 @@ func TestProxyTimeoutUsesOpenTimeAndExcludesPause(t *testing.T) {
 		t.Fatal("暂停时不应回退")
 	}
 	m.observeStartupPause(true, opened.Add(time.Minute))
-	if m.needProxyFallback(nil, opened.Add(time.Minute+6*time.Second), true) {
+	// 恢复播放这一刻有效等待是 1 秒，用常量算边界，改预算时不必改测试。
+	if m.needProxyFallback(nil, opened.Add(time.Minute+proxyFirstFrameWait-2*time.Second), true) {
 		t.Fatal("暂停时间消耗了预算")
 	}
-	if !m.needProxyFallback(nil, opened.Add(time.Minute+7*time.Second), true) {
-		t.Fatal("有效等待八秒未回退")
+	if !m.needProxyFallback(nil, opened.Add(time.Minute+proxyFirstFrameWait), true) {
+		t.Fatal("有效等待超出预算没有回退")
 	}
 	m.firstFrame = true
 	if m.needProxyFallback(nil, opened.Add(time.Hour), true) {
@@ -769,7 +777,9 @@ func TestPlaybackUsesCapturedWindow(t *testing.T) {
 	var got *mygo.Window
 	var queued func()
 	runOnMain = func(win *mygo.Window, fn func()) bool { got, queued = win, fn; return true }
-	a.startPlayback(sess, live.Variant{URL: "https://example.invalid/x.flv"}, false)
+	a.startPlayback(sess, live.Variant{URL: "https://example.invalid/x.m3u8", Codec: "avc"}, false)
+	// 自带解码在后台失败后才回退，窗口必须在起播那一刻就捕获好。
+	waitFor(t, func() bool { return got != nil })
 	if got != captured {
 		t.Fatal("使用了后台完成时的 App.Win")
 	}

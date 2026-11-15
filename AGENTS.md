@@ -29,34 +29,79 @@ go.mod             MyGo CLI 作为 tool：go tool mygo
 internal/ui/       界面：Shell、顶栏、分区栏、卡片、订阅页、播放页、搜索浮层、配色面板、灵动岛
 internal/theme/    设计令牌与配色表
 internal/media/    图片下载、解码与缓存
-internal/ffmpeg/   播放组件（FFmpeg / ffprobe）的定位与自动准备，应用自给，不依赖 PATH
+internal/ffmpeg/   ffmpeg / ffprobe 子进程的定位与自动准备，仅供 relay 兜底路径使用
 internal/live/     各平台数据层：分区、列表、搜索、取流、弹幕，归一化成同一套类型
-internal/relay/    按容器、编码与系统能力选择 HLS 透明代理、转封装或转码；
-                   提供本地 HLS，画面和声音由 MyGo ui/video（Media Foundation）输出
+internal/libav/    cgo 桥接 libav*：解封装、解码、sws 转 NV12、swr 重采样。C 侧只有 alive.h/alive.c 一个面
+internal/playback/ 播放引擎：三个 goroutine（解封装 / 音频 / 视频）+ PCM 环，实现 MyGo 的 media.Engine
+internal/relay/    兜底：HLS 透明代理、转封装、转码。只在 libav 起不来时接手
+doc/               文档唯一入口：架构、决策、实测。从 doc/README.md 进
+third_party/       mygo 源码（仅导出引擎契约的 replace）与 ffmpeg 头文件 / 导入库 / 运行库
 ```
 
-播放分层、路径决策、超时与验收矩阵见 `internal/relay/README.md`。
+顶层目录只有这一个例外：`doc/` 是文档目录。新功能按职责落到 `internal/<领域>`；
+界面代码只写在 `internal/ui`，协议代码不进 `internal/ui`。
 
-不新增顶层目录。新功能按职责落到 `internal/<领域>`；界面代码只写在 `internal/ui`，协议代码不进 `internal/ui`。
+## 文档
+
+**`doc/README.md` 是唯一入口。** 不在这个索引里的文档等于不存在。
+
+改下面这些代码之前，先读对应文档——这是流程，不是建议：
+
+| 要动的代码 | 必读 |
+|---|---|
+| `internal/libav/*` | `doc/architecture/playback.md`、`doc/decisions/0003-libav-in-process.md` |
+| `internal/playback/*` | `doc/architecture/playback.md`、`doc/decisions/0001-player-backend.md`、`doc/decisions/0003-libav-in-process.md` |
+| `internal/relay/*` | `doc/architecture/playback.md`、`doc/reference/measurements.md` |
+| `internal/live/*` | `doc/architecture/platform.md` |
+| `internal/ui/player_media.go` | `doc/architecture/playback.md` |
+| `internal/ffmpeg/*` | `doc/decisions/0002-ffmpeg-provisioning.md` |
+
+各包的 `README.md` 只留导航和包内约定，事实写在 `doc/`。新增文档按主题落到
+`doc/architecture/`、`doc/decisions/`、`doc/reference/`，并更新 `doc/README.md` 的索引。
+
+声称"变快/变慢"之前先对 `doc/reference/measurements.md` 的基准；写新数字必须带日期和条件。
 
 ## 命令
 
+播放走 cgo，构建只需要一件额外前置：**MinGW-w64 的 gcc 在 PATH 上**。
+`CGO_ENABLED=1` 与运行库的搜索路径都由 `Makefile` 统一给出，不用自己记。
+
 ```sh
-go run .                  # 直接运行
-go tool mygo dev          # 开发模式，改 .go 自动重建重启
-go tool mygo build        # 打包到 build/<os>-<arch>/
-go build ./...            # 编译检查
-go vet ./...              # 静态检查
-go tool mygo vet .        # MyGo 专属检查：跨帧保存的元素、goroutine 捕获
-go test ./...             # 视图测试
+make              # 打包：便携版 exe + NSIS 安装包，都进 build/<os>-<arch>/
+make dev          # 开发模式：改 .go 自动重建重启
+make check        # gofmt + build + vet + mygo vet + test，一次跑完
+make test
+make run          # 从源码跑（.dll 的搜索路径已在 recipe 里）
+make mock / mock-offline / probe / e2e / tools / tidy / clean
 ```
+
+直接调 `go` / `go tool mygo` 而不是 make 时，环境得自己带，否则 `internal/libav`
+会被构建约束整个排除：
+
+```sh
+$env:CGO_ENABLED="1"      # pwsh；bash 用 export CGO_ENABLED=1
+go tool mygo dev          # 运行库会自动放到开发二进制旁边
+go tool mygo build        # 便携版 + 安装包
+go test ./...             # 还要把 third_party/ffmpeg/bin 加进 PATH，见「测试与验证」
+```
+
+**不要用 `go run .`**：它把二进制放进临时目录，libav 的 DLL 不在那里，进程在加载器
+阶段就退出（`0xc0000135`）。要么用 `go tool mygo dev`，要么把
+`third_party/ffmpeg/bin` 加进 PATH：
+
+```pwsh
+$env:PATH = "D:\Project\alive\third_party\ffmpeg\bin;$env:PATH"
+```
+
+库的版本在 `third_party/ffmpeg`（头文件、导入库、运行库）与 `go.mod` 的 cgo 指令里，
+换版本要同时换这三样，理由见 `doc/decisions/0002`。
 
 截图验收（要改 `ALIVE_*` 环境变量时用 pwsh，不要用 Git Bash —— 它会改写以 `/` 开头的值）：
 
 ```pwsh
 $env:ALIVE_ROUTE="subscribe"; $env:ALIVE_UI="palette"
 $env:ALIVE_CAPTURE="D:\tmp\alive.png"; $env:ALIVE_CAPTURE_DELAY="2s"
-go run .
+go run .   # 见上：PATH 里要有 third_party/ffmpeg/bin
 ```
 
 `ALIVE_ROUTE` 取 `home` / `subscribe` / `player`；`ALIVE_UI` 取 `palette` / `island` / `search` / `quality` / `danmu` / `sync` / `splash` / `nocover`；`ALIVE_WATCH=2h` 预置播放页的观看时长（验小时级的岛收起态）；`ALIVE_CAPTURE_KEEP=1` 截完不退出。
@@ -81,7 +126,10 @@ go run .
 ## 测试与验证
 
 - 视图测试用 `ui.NewTester(view, w, h)`，在内存里点击、输入、按键；测试文件放包旁边，命名 `*_test.go`。
-- 改 UI 前跑 `go build ./...`、`go vet ./...`、`go tool mygo vet .`、`go test ./...`。
+- 改 UI 前跑 `make check`（gofmt + build + vet + mygo vet + test，一次跑完）。
+- 单独调 `go test` 时注意：测试二进制落在临时目录，找不到 libav 的 DLL，会以
+  `0xc0000135` 直接退出——加载器在进程入口点之前就解析 import table，一行 Go 代码
+  都跑不到。`make test` 的 recipe 已经把运行库目录带进 PATH，平时用它就行。
 - 涉及视觉的改动必须截图：默认态一张，被改动的浮层/状态各一张。只看代码不算验证。
 - 没有跑过的检查不能写成通过；无关的既有失败要如实说明。
 

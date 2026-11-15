@@ -150,7 +150,7 @@ func (a *App) followsGrid(c *ui.Context, list []Streamer) {
 func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 	// 行的身份由位置决定：右键菜单的选中结果要回到同一个元素才生效，
 	// 而 Mock/老记录里可能出现同名同房间的重复项，用名字拼 key 会撞键。
-	row := ui.Row(c).Key(fmt.Sprintf("follow-row-%d", i)).
+	row := ui.Row(c.Key(fmt.Sprintf("follow-row-%d", i))).
 		Width(w).Gap(12).Padding(10, 12, 10, 12).
 		Radius(theme.RadiusMD).Cursor(ui.CursorPointer).
 		Label("关注的主播 " + s.Name)
@@ -203,7 +203,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 				//
 				// 相位用 Loop 驱动：这版 MyGo 的 Keyframes + RepeatForever
 				// 播完一次就停在末值（环会扩满后透明，看起来只剩绿点）。
-				ring := ui.Box(c).Key(dotKey+"-ring").
+				ring := ui.Box(c.Key(dotKey+"-ring")).
 					Absolute().Right(-1).Bottom(-1).Size(15, 15).
 					Radius(theme.RadiusFull).Border(2, theme.StatusOnline)
 				if c.Preferences().ReduceMotion {
@@ -217,7 +217,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 				}
 			}
 
-			dot := ui.Box(c).Key(dotKey+"-dot").
+			dot := ui.Box(c.Key(dotKey+"-dot")).
 				Absolute().Right(0).Bottom(0).Size(13, 13).
 				Radius(theme.RadiusFull).Border(2, theme.BgSecondary)
 			if s.Live {

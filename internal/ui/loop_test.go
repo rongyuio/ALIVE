@@ -11,7 +11,7 @@ import (
 // 绿点脉冲、眨眼、骨架脉冲都改用了 Loop，这条守住「会回来」。
 func TestLoopWraps(t *testing.T) {
 	view := func(c *ui.Context) {
-		b := ui.Box(c).Key("probe").Label("probe").
+		b := ui.Box(c.Key("probe")).Label("probe").
 			Absolute().Top(0).Size(10, 10).Background(ui.RGB(255, 0, 0))
 		b.Left(b.Loop("l", time.Second, ui.Linear) * 100)
 	}

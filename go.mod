@@ -6,10 +6,11 @@ require (
 	github.com/Akegarasu/blivedm-go v1.6.0
 	github.com/coder/websocket v1.8.14
 	github.com/dop251/goja v0.0.0-20261110204830-f493a2b600d6
-	github.com/egoist/mygo v0.9.0
+	github.com/egoist/mygo v0.9.1
 	github.com/rongyuio/bilibili v0.14.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/image v0.46.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
@@ -36,9 +37,12 @@ require (
 	go.digitalxero.dev/rpm v0.3.4 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 )
 
 tool github.com/egoist/mygo/cmd/mygo
+
+// 本地一份 mygo：只为了把 internal/media 与 internal/scene 的引擎契约导出，
+// 好让应用自己实现解码引擎交给 ui.NewEngineVideoPlayer。上游代码一行未改。
+replace github.com/egoist/mygo => ./third_party/mygo

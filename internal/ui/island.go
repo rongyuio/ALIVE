@@ -72,7 +72,7 @@ func (a *App) Island(c *ui.Context) {
 
 	// 高度恒为 theme.IslandH（38），和首页那枚眼睛岛一模一样。
 	// 展开只让宽度往两边长，高度一像素都不动——这是灵动岛的死规矩。
-	island := ui.Box(c).Key("island").Label("灵动岛").Absolute().Top(theme.IslandGap).
+	island := ui.Box(c.Key("island")).Label("灵动岛").Absolute().Top(theme.IslandGap).
 		Height(theme.IslandH).Radius(theme.RadiusFull).
 		// baseline 的 .sidebar 有 1px 描边，光环正压在这条描边上
 		Border(1, theme.Border)
@@ -358,7 +358,7 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32) {
 	ringSize := d + 4
 	ringLeft := size - d - 1
 	ringKey := fmt.Sprintf("island-live-%d", int(size))
-	ring := ui.Box(c).Key(ringKey).Absolute().
+	ring := ui.Box(c.Key(ringKey)).Absolute().
 		Left(ringLeft).Top(ringLeft).Size(ringSize, ringSize).
 		Radius(theme.RadiusFull).Border(2, theme.StatusOnline)
 	if c.Preferences().ReduceMotion {

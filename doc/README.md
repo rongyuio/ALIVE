@@ -1,0 +1,64 @@
+# alive 文档
+
+这里是唯一的文档入口。代码旁边只留导航，事实写在这里。
+
+散落在各包的 README 曾经没人读——因为没有任何地方指向它们。这份索引就是那个指向。
+
+## 分类
+
+| 目录 | 放什么 | 回答的问题 |
+|---|---|---|
+| `architecture/` | 系统怎么组织、数据怎么流动 | 这条链路长什么样？为什么这样分层？ |
+| `decisions/` | 选型取舍、调研结论、迁移方案 | 为什么选它？以后要换成什么？ |
+| `reference/` | 实测数字、外部依赖约束、速查 | 现在到底多快？MyGo 这个 API 怎么用？ |
+
+## 全部文档
+
+### architecture
+
+| 文档 | 内容 | 什么时候必读 |
+|---|---|---|
+| [playback.md](architecture/playback.md) | 播放链路：libav 进程内解码、时间轴怎么构造、三个 goroutine 与反压、缓冲取值、首帧模型 | **动 `internal/libav`、`internal/playback`、`internal/ui/player_media.go` 之前** |
+| [platform.md](architecture/platform.md) | 四个平台的取流约束：入口、登录门槛、线路语义、编码分支 | 动 `internal/live` 之前，或遇到"取不到流 / 档位不对 / 选错了分支" |
+
+### decisions
+
+| 文档 | 内容 | 什么时候必读 |
+|---|---|---|
+| [0001-player-backend.md](decisions/0001-player-backend.md) | 播放器后端：Media Foundation、自带 FFmpeg 解码、libmpv 三条路线的取舍与迁移条件 | 想改播放器实现，或觉得"是不是该换 libmpv"之前 |
+| [0002-ffmpeg-provisioning.md](decisions/0002-ffmpeg-provisioning.md) | FFmpeg 随包分发、版本锁定、校验落盘 | 升级 FFmpeg、改下载源、加新的二进制依赖之前 |
+| [0003-libav-in-process.md](decisions/0003-libav-in-process.md) | 为什么是 cgo + libav 而不是 ffmpeg 子进程，以及代价（不能交叉编译、gcc、139MB、GPL） | 想改回子进程、想换播放引擎、遇到构建/分发问题时 |
+
+### reference
+
+| 文档 | 内容 | 什么时候必读 |
+|---|---|---|
+| [measurements.md](reference/measurements.md) | 所有实测：首帧成本模型、路径对照、验证矩阵、编码扫描 | 声称"变快了 / 变慢了"之前，先看基准数 |
+| [mygo.md](reference/mygo.md) | MyGo 版本演进、生命周期约束、已知限制 | 写 UI、升 MyGo 版本、怀疑是框架问题时 |
+
+## 必读映射
+
+改这些代码之前，先读对应文档。不是建议，是流程。
+
+| 要动的代码 | 必读 |
+|---|---|
+| `internal/libav/*` | [architecture/playback.md](architecture/playback.md)、[decisions/0003](decisions/0003-libav-in-process.md) |
+| `internal/playback/*` | [architecture/playback.md](architecture/playback.md)、[decisions/0001](decisions/0001-player-backend.md)、[decisions/0003](decisions/0003-libav-in-process.md) |
+| `internal/relay/*` | [architecture/playback.md](architecture/playback.md)、[reference/measurements.md](reference/measurements.md) |
+| `internal/live/*` | [architecture/platform.md](architecture/platform.md) |
+| `internal/ui/player_media.go` | [architecture/playback.md](architecture/playback.md) |
+| `internal/ffmpeg/*` | [decisions/0002](decisions/0002-ffmpeg-provisioning.md) |
+| `internal/ui/*`（界面） | [reference/mygo.md](reference/mygo.md)、根目录 `AGENTS.md` |
+
+## 写作约定
+
+- **一个事实只写一处。** 要引用就写链接，不要复制段落。复制出来的第二份一定会过期。
+- **数字必须带日期和条件。** "首帧 2245ms" 没有意义，"B 站 545068 HEVC 1080P，2026-11-16，Ryzen 7 9700X，2245ms" 才有。
+- **写为什么，不写是什么。** 是什么看代码。文档的价值在于解释代码里看不出来的取舍、失败过的尝试和它们的代价。
+- **失败的尝试要留记录。** "试过 X，更慢，回退" 比 "现采用 Y" 有用得多——它让下一个人不必再试一遍。
+- **没测过的不写肯定句。** 标"未实测"，或者干脆不写。
+
+## 新增文档
+
+按主题落到 `architecture/`、`decisions/`、`reference/` 之一，然后在上面两张表里加一行。
+没有索引的文档等于不存在。

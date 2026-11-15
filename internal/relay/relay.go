@@ -295,7 +295,10 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		// 掐长连接，复用连接时每片都要重连，60 秒能刷 40 多次 I/O error。
 		args = append(args,
 			"-http_persistent", "0",
-			"-probesize", "32768", "-analyzeduration", "0",
+			// 窗口不能压到极小：从直播流中间切入时收不全 SPS/PPS 和首个 IDR，
+			// 转码分支必须解码，缺参考帧就是 `Could not find ref with POC`，成批丢帧。
+			// 压小的收益只是 20ms 级别的首帧，代价是整条转码链路的正确性。
+			"-probesize", "5000000", "-analyzeduration", "2000000",
 			// live_start_index 默认 -3：ffmpeg 会从倒数第三片开始下，白拉
 			// 6~9 秒已经播过的内容才等到第一个关键帧。-1 直接取最新一片，
 			// 首片落盘能快半秒到一秒半，画质和稳定性都不受影响。
@@ -371,9 +374,16 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	//                 开始要求完整序列，窗口一滚动就缓冲。
 	//   不加 program_date_time：本地转封装不需要绝对时间轴，带 PDT 反而
 	//                 会让播放器去追某个墙钟时间，触发无谓的 seek。
+	// 转码路径的分片再短一档：播放器要等第二个分片才开始出画，1 秒分片让
+	// 第二片早 1 秒到。代价是 1 秒窗口里 vbr_latency 摊不平 I 帧、分片大小
+	// 波动更大，只用在“系统确实解不了、必须转码”这条兜底路径上。
+	hlsTime := "2"
+	if mode == modeTranscode {
+		hlsTime = "1"
+	}
 	args = append(args,
 		"-f", "hls",
-		"-hls_time", "2",
+		"-hls_time", hlsTime,
 		"-hls_init_time", "1",
 		"-hls_list_size", "10",
 		"-hls_flags", "delete_segments+temp_file+omit_endlist+independent_segments",
@@ -576,4 +586,19 @@ func randomToken() string {
 		panic("无法生成本地会话标识")
 	}
 	return hex.EncodeToString(token[:])
+}
+
+// NativeDecode 报告系统能不能直接解码这个编码。
+//
+// 自带解码路径据此决定要不要接手：系统能解就走透明代理（少一层、首帧更快），
+// 解不了才自己上。未声明的编码返回 true，让 relay 原有的探测链去判断。
+func NativeDecode(codec string) bool {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "hevc", "h265":
+		return nativeHEVCAvailable()
+	case "av1":
+		return nativeAV1Available()
+	default:
+		return true
+	}
 }

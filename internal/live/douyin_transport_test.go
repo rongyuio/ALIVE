@@ -106,9 +106,11 @@ func TestDouyinVariantCodecNormalization(t *testing.T) {
 	}
 }
 
-// TestDouyinTierPrefersHLSForExplicitAVC 明确 H.264 的同档 HLS 要压过 FLV，
-// 同时 Key / Label / ID / Codec 这些元数据不能被选择过程改掉。
-func TestDouyinTierPrefersHLSForExplicitAVC(t *testing.T) {
+// TestDouyinTierPrefersFLVForExplicitAVC 明确 H.264 的同档要优先 FLV。
+//
+// 网页端就是拿 HTTP-FLV 连续流喂 MSE，收到第一个关键帧就出画；HLS 要先解包再按分片
+// 吐数据。同时 Key / Label / ID / Codec 这些元数据不能被选择过程改掉。
+func TestDouyinTierPrefersFLVForExplicitAVC(t *testing.T) {
 	const flv = "https://pull.example.com/stream-1_hd.flv"
 	const hls = "https://pull.example.com/stream-1_hd/index.m3u8"
 	for _, raw := range []string{"h264", "264", "avc", "avc1", " H264 "} {
@@ -116,8 +118,8 @@ func TestDouyinTierPrefersHLSForExplicitAVC(t *testing.T) {
 		if !ok {
 			t.Fatalf("VCodec %q 的档位被判为不可播", raw)
 		}
-		if q.URL != hls || q.Format != "hls" {
-			t.Errorf("VCodec %q 选到 %q/%q，明确 H.264 应优先 HLS", raw, q.URL, q.Format)
+		if q.URL != flv || q.Format != "flv" {
+			t.Errorf("VCodec %q 选到 %q/%q，明确 H.264 应优先 FLV", raw, q.URL, q.Format)
 		}
 		if q.Codec != "avc" || q.Key != "hd" || q.Label != "超清" || q.ID != "high" {
 			t.Errorf("VCodec %q 的元数据被改动: %+v", raw, q)
@@ -125,7 +127,7 @@ func TestDouyinTierPrefersHLSForExplicitAVC(t *testing.T) {
 	}
 }
 
-// TestDouyinTierKeepsHEVCPreference 原有的 HEVC 走 HLS 不能回退成 FLV。
+// TestDouyinTierKeepsHEVCPreference HEVC 同样优先 FLV，编码标注要保留。
 func TestDouyinTierKeepsHEVCPreference(t *testing.T) {
 	const flv = "https://pull.example.com/stream-1_uhd.flv"
 	const hls = "https://pull.example.com/stream-1_uhd/index.m3u8"
@@ -134,8 +136,8 @@ func TestDouyinTierKeepsHEVCPreference(t *testing.T) {
 		if !ok {
 			t.Fatalf("VCodec %q 的档位被判为不可播", raw)
 		}
-		if q.URL != hls || q.Format != "hls" {
-			t.Errorf("VCodec %q 选到 %q/%q，HEVC 仍应优先 HLS", raw, q.URL, q.Format)
+		if q.URL != flv || q.Format != "flv" {
+			t.Errorf("VCodec %q 选到 %q/%q，HEVC 也应优先 FLV", raw, q.URL, q.Format)
 		}
 		if q.Codec != "hevc" || q.Label != "蓝光 · H.265" {
 			t.Errorf("VCodec %q 的编码标注 = %q/%q", raw, q.Codec, q.Label)
@@ -260,8 +262,8 @@ func TestDouyinPickQualitiesDoesNotBorrowCodecForIndependentHLS(t *testing.T) {
 	}
 
 	sd := douyinTestQuality(t, ladder, "sd")
-	if sd.Format != "hls" || sd.Codec != "avc" {
-		t.Errorf("高清 = %+v，stream_data 自带 HLS 的 H.264 档应选 HLS", sd)
+	if sd.Format != "flv" || sd.Codec != "avc" {
+		t.Errorf("高清 = %+v，H.264 档优先 FLV（与网页端一致）", sd)
 	}
 }
 
@@ -288,7 +290,7 @@ func TestDouyinPickQualitiesWithoutStreamDataKeepsFLV(t *testing.T) {
 }
 
 // TestDouyinOrderForPlaybackKeepsAVCOriginDefault 原画是 H.264 时不再挪位，
-// 默认档就是原画并走 HLS；HEVC 原画仍然让位给第二位。
+// 默认档就是原画并走 FLV；HEVC 原画仍然让位给第二位。
 func TestDouyinOrderForPlaybackKeepsAVCOriginDefault(t *testing.T) {
 	avcRoom := douyinTestRoom(t, map[string]douyinTestTier{
 		"origin": {
@@ -302,8 +304,8 @@ func TestDouyinOrderForPlaybackKeepsAVCOriginDefault(t *testing.T) {
 	if len(avcLadder) == 0 || avcLadder[0].Key != "origin" {
 		t.Fatalf("H.264 原画的默认档 = %+v，期望仍是原画", avcLadder)
 	}
-	if avcLadder[0].Format != "hls" || avcLadder[0].Codec != "avc" || avcLadder[0].Label != "原画" {
-		t.Errorf("H.264 原画 = %+v，期望走 HLS 且标签不变", avcLadder[0])
+	if avcLadder[0].Format != "flv" || avcLadder[0].Codec != "avc" || avcLadder[0].Label != "原画" {
+		t.Errorf("H.264 原画 = %+v，期望走 FLV 且标签不变", avcLadder[0])
 	}
 
 	hevcRoom := douyinTestRoom(t, map[string]douyinTestTier{

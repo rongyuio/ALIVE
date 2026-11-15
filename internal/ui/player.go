@@ -287,7 +287,7 @@ func (a *App) stageFrame(c *ui.Context) {
 	p := a.media.player
 	if p != nil {
 		// Video 元素必须一直在：视频只有在被显示时才会往下走，藏起来
-		// 或干脆不画，MF 就不解码，首帧永远等不到。
+		// 或干脆不画，解码就停，首帧永远等不到。
 		ui.Video(c, p).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
 		if p.Ready() {
 			return
