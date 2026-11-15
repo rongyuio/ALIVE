@@ -18,6 +18,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"alive/internal/ffmpeg"
 	"alive/internal/media"
 	"alive/internal/relay"
 	appui "alive/internal/ui"
@@ -143,6 +144,9 @@ func main() {
 		// 硬件编码器探测只在进程内做一次，要起一个 ffmpeg 真编 0.2 秒
 		// （约 1 秒）。放启动画面期间后台跑掉，用户看不到；否则第一次
 		// 进转码房间时要为它多等一秒。
+		// 播放组件（FFmpeg）由应用自己准备：干净机器上首次启动会后台取回，
+		// 之后就一直在缓存目录里。用户不需要安装，也不需要配置 PATH。
+		ffmpeg.StartProvision()
 		relay.WarmUpEncoder()
 
 		// 关注列表的在线状态：等首屏起来再刷新一次，
