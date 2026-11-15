@@ -143,7 +143,7 @@ func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
 	// 岛自动展开的那几秒不算「人在操作」；指针停在岛上时本来就落在
 	// 顶部那条带里，下面的坐标判断已经把它兜住了。
 	if !a.Playing || a.QualityOpen || a.LineOpen ||
-		a.DanmuSettingsOpen || a.ShortcutsOpen {
+		a.DanmuSettingsOpen || a.DanmuFilterOpen || a.ShortcutsOpen {
 		stay()
 		return
 	}
@@ -421,7 +421,9 @@ func (a *App) playerControls(c *ui.Context) {
 		bar.Children(func() {
 			// ------------------------------ 左：播放 / 刷新 / 音量
 			ui.Row(c).Gap(m.leftGap).AlignItems(ui.Center).Children(func() {
-				playIcon, playSize := iconPlay, float32(22)
+				// 这三颗是同一档：30×30 热区 + 18px 图标。原来播放/暂停是 22、
+				// 刷新 19、音量又套了个 24 的框，三个排在一起大小不齐。
+				playIcon := iconPlay
 				if a.Playing {
 					playIcon = iconPause
 				}
@@ -429,12 +431,12 @@ func (a *App) playerControls(c *ui.Context) {
 				if a.Playing {
 					playLabel = "暂停"
 				}
-				a.playerIconBtn(c, playIcon, playSize, false, playLabel, func() {
+				a.playerIconBtn(c, playIcon, 18, false, playLabel, func() {
 					a.Playing = !a.Playing
 					a.markDirty()
 					a.invalidateWindows()
 				})
-				a.playerIconBtn(c, iconSync, 19, false, "重新加载", func() {})
+				a.playerIconBtn(c, iconSync, 18, false, "重新加载", a.retryStream)
 
 				a.volumeControl(c, m)
 			})
@@ -459,7 +461,7 @@ func (a *App) playerControls(c *ui.Context) {
 						a.markDirty()
 					})
 					a.danmuSettingsButton(c)
-					a.playerIconBtn(c, iconFilter, 16, false, "弹幕屏蔽", func() {})
+					a.danmuFilterButton(c)
 				})
 
 				// 清晰度 / 线路：选项全部来自平台返回值，还没取到流时整块
@@ -554,7 +556,7 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 		if a.Volume <= 0 {
 			muteLabel = "取消静音"
 		}
-		a.playerIconBtnBox(c, muteIcon, 24, 19, false, muteLabel, a.toggleMute)
+		a.playerIconBtn(c, muteIcon, 18, false, muteLabel, a.toggleMute)
 
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().Cursor(ui.CursorPointer)
 		// PointerPosition 的 x 是相对热区的，除以热区宽度就是音量比例
@@ -752,20 +754,13 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open 
 	})
 }
 
-// playerIconBtn 是控制台里的一枚图标按钮。
+// playerIconBtn 是控制台里的一枚图标按钮：30×30 热区，没有底色也没有圆角，
+// 只靠颜色变化表达 hover / 激活——加方块底会让控制条看起来碎。
 //
-// label 对应 baseline 的 aria-label：既是无障碍名，也让自动化能按名字点到
-// 这颗按钮——自绘 Box 不进无障碍树，没有 Label 就只能靠坐标猜。
+// size 是图标字号。label 对应 baseline 的 aria-label：既是无障碍名，也让自动化
+// 能按名字点到这颗按钮——自绘 Box 不进无障碍树，没有 Label 就只能靠坐标猜。
 func (a *App) playerIconBtn(c *ui.Context, ico *ui.SVG, size float32, active bool, label string, on func()) {
-	a.playerIconBtnBox(c, ico, 30, size, active, label, on)
-}
-
-// playerIconBtnBox 是同一种按钮，但外框可以不是 30——音量那颗图标按钮
-// baseline 用的是 24×24（.volumeIcon），其它才是 30×30（.iconControl）。
-func (a *App) playerIconBtnBox(c *ui.Context, ico *ui.SVG, box, size float32, active bool, label string, on func()) {
-	// baseline 的 .iconControl：30×30，没有底色也没有圆角，
-	// 只靠颜色变化表达 hover / 激活——加方块底会让控制条看起来碎。
-	btn := ui.Box(c).Size(box, box).Center().Cursor(ui.CursorPointer).Label(label)
+	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label(label)
 	if btn.Clicked() {
 		on()
 	}
