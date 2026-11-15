@@ -110,7 +110,7 @@ func TestWrapperRejectsUnsafeOrAmbiguousMasters(t *testing.T) {
 			var requests atomic.Int32
 			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); io.WriteString(w, body) }))
 			defer up.Close()
-			p, err := newHLSProxy(context.Background(), up.URL+"/entry.m3u8", nil)
+			p, err := newHLSProxy(context.Background(), up.URL+"/entry.m3u8", nil, "avc")
 			if p != nil {
 				p.stop()
 				t.Fatal("不支持的包装被接受")
@@ -167,7 +167,7 @@ func TestWrapperDepthAndCycles(t *testing.T) {
 				}
 			}))
 			defer up.Close()
-			p, err := newHLSProxy(context.Background(), up.URL+"/0.m3u8", nil)
+			p, err := newHLSProxy(context.Background(), up.URL+"/0.m3u8", nil, "avc")
 			if p != nil {
 				defer p.stop()
 			}
@@ -306,7 +306,7 @@ func TestProxyRejectsUnsupportedMediaBeforeFetchingResources(t *testing.T) {
 						}
 					}))
 					defer up.Close()
-					p, err := newHLSProxy(context.Background(), up.URL+"/entry.m3u8", nil)
+					p, err := newHLSProxy(context.Background(), up.URL+"/entry.m3u8", nil, "avc")
 					if p != nil {
 						p.stop()
 						t.Fatal("未实现的媒体列表仍然启用代理")
@@ -369,7 +369,7 @@ func TestSingleVariantProgramID(t *testing.T) {
 	}{{"0", true}, {"1", true}, {"42", true}, {"", false}, {"-1", false}, {"1.0", false}, {"18446744073709551616", false}, {`"1"`, false}, {"1,PROGRAM-ID=2", false}, {"1,UNKNOWN=2", false}} {
 		t.Run(tc.value, func(t *testing.T) {
 			body := "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:PROGRAM-ID=" + tc.value + ",BANDWIDTH=800000\nmedia.m3u8\n"
-			uri, wrapper, err := singleVariantURI([]byte(body))
+			uri, wrapper, err := singleVariantURI([]byte(body), "avc")
 			if tc.valid {
 				if err != nil || !wrapper || uri != "media.m3u8" {
 					t.Fatal("兼容的单档包装被拒绝")
@@ -378,5 +378,49 @@ func TestSingleVariantProgramID(t *testing.T) {
 				t.Fatal("非法属性被接受")
 			}
 		})
+	}
+}
+
+// 抖音的 master 在逗号后带空格（PROGRAM-ID=1, BANDWIDTH=…）。
+// 这类写法不能因为“不够严格”被整条拒绝——代价是十秒级的兼容转封装。
+func TestProxyAcceptsSpaceAfterAttributeComma(t *testing.T) {
+	master := "#EXTM3U\n#EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=19119000\nmedia.m3u8\n"
+	media := "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ALLOW-CACHE:NO\n#EXT-X-TARGETDURATION:6\n" +
+		"#EXT-X-MEDIA-SEQUENCE:1794760178\n\n#EXTINF:4.200,\nseg1.ts\n#EXTINF:5.205,\nseg2.ts\n"
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/entry.m3u8":
+			io.WriteString(w, master)
+		default:
+			io.WriteString(w, media)
+		}
+	}))
+	defer up.Close()
+	p, err := newHLSProxy(context.Background(), up.URL+"/entry.m3u8", nil, "avc")
+	if err != nil {
+		t.Fatalf("带空格的属性列表被拒绝: %v", err)
+	}
+	defer p.stop()
+	body, list := fetch(t, p.url, nil)
+	if body.StatusCode != 200 || !strings.Contains(string(list), "#EXTINF:4.200,") {
+		t.Fatalf("代理未返回媒体列表: %d", body.StatusCode)
+	}
+}
+
+// 容错只针对分隔符空白：值内部的空格、重复键和缺引号仍然拒绝。
+func TestStrictAttributesStillRejectsMalformedValues(t *testing.T) {
+	for _, text := range []string{
+		"PROGRAM-ID=1,BANDWIDTH=1000,BANDWIDTH=2000",
+		"BANDWIDTH=1000,",
+		"BANDWIDTH=1000 2000",
+		"BANDWIDTH=1000,,RESOLUTION=1920x1080",
+		"BANDWIDTH=",
+	} {
+		if _, ok := strictPlaylistAttributes(text); ok {
+			t.Fatalf("畸形属性被接受: %q", text)
+		}
+	}
+	if attrs, ok := strictPlaylistAttributes("PROGRAM-ID=1, BANDWIDTH=1000"); !ok || attrs["BANDWIDTH"] != "1000" {
+		t.Fatalf("合法属性解析失败: %v %v", attrs, ok)
 	}
 }

@@ -90,7 +90,7 @@ func TestProxyStrictMediaBoundary(t *testing.T) {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, list) }))
 			defer up.Close()
-			p, err := newHLSProxy(context.Background(), up.URL+"/live.m3u8", nil)
+			p, err := newHLSProxy(context.Background(), up.URL+"/live.m3u8", nil, "avc")
 			if p != nil {
 				p.stop()
 				t.Fatal("未实现形式被接受")
@@ -115,7 +115,7 @@ func TestPreflightFailureClosesOwnedConnections(t *testing.T) {
 	}
 	up.Start()
 	defer up.Close()
-	_, err := newHLSProxy(context.Background(), up.URL+"/live.m3u8", nil)
+	_, err := newHLSProxy(context.Background(), up.URL+"/live.m3u8", nil, "avc")
 	if !errors.Is(err, errProxyUnsupported) {
 		t.Fatal(err)
 	}
@@ -270,14 +270,31 @@ func TestRedactPreservesCancellationIdentity(t *testing.T) {
 
 // 测试进程自身充当 FFmpeg：只写本地假分片，不访问任何直播接口。
 func TestMain(m *testing.M) {
+	if codec := os.Getenv("ALIVE_RELAY_TEST_CODEC"); codec != "" {
+		if codec == "wait" {
+			time.Sleep(time.Minute)
+			os.Exit(0)
+		}
+		fmt.Println(codec)
+		os.Exit(0)
+	}
 	if os.Getenv("ALIVE_RELAY_TEST_CHILD") == "1" {
 		args := os.Args
 		output := args[len(args)-1]
+		if os.Getenv("ALIVE_RELAY_TEST_EXIT") == "empty" {
+			os.Exit(0)
+		}
 		if err := os.WriteFile(filepath.Join(filepath.Dir(output), "seg-00001.ts"), []byte{0x47}, 0600); err != nil {
 			os.Exit(3)
 		}
-		if err := os.WriteFile(output, []byte("#EXTM3U\nseg-00001.ts\n"), 0600); err != nil {
+		if err := os.WriteFile(output, []byte("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nseg-00001.ts\n"), 0600); err != nil {
 			os.Exit(4)
+		}
+		switch os.Getenv("ALIVE_RELAY_TEST_EXIT") {
+		case "clean":
+			os.Exit(0)
+		case "failed":
+			os.Exit(5)
 		}
 		time.Sleep(time.Minute)
 		os.Exit(0)
@@ -308,7 +325,7 @@ func fakeFFmpeg(t *testing.T, broken bool) {
 	if err := os.WriteFile(filepath.Join(dir, name), data, 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
+	t.Setenv("ALIVE_FFMPEG_DIR", dir)
 	t.Setenv("ALIVE_RELAY_TEST_CHILD", "1")
 }
 
@@ -413,7 +430,7 @@ func TestPlaylistSizeLimitAndOversizedWindow(t *testing.T) {
 		io.WriteString(w, strings.Repeat("x", proxyPlaylistLimit+1))
 	}))
 	defer up.Close()
-	p, err := newHLSProxy(context.Background(), up.URL+"/live.m3u8", nil)
+	p, err := newHLSProxy(context.Background(), up.URL+"/live.m3u8", nil, "avc")
 	if p != nil || !errors.Is(err, errProxyFetch) {
 		t.Fatal("超大播放列表未拒绝")
 	}

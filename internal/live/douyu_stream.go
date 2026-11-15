@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strconv"
@@ -309,6 +310,10 @@ func douyuPickRate(rates []douyuRate, quality string) douyuRate {
 				return rate
 			}
 		}
+		// 菜单里的档位理论上都来自同一份列表；走到这里说明请求的标签
+		// 和服务端当前档位对不上了（多半是菜单过期）。记录下来，
+		// 上层还会用“点选 vs 实际”的对比给用户提示。
+		slog.Info("斗鱼请求的清晰度不在当前档位表里，改用默认档", "requested", want, "fallback", douyuRateLabel(rates[0]))
 	}
 	if len(rates) > 0 {
 		return rates[0]

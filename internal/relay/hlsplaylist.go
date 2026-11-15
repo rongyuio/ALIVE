@@ -40,7 +40,7 @@ func (p *hlsProxy) fetchMediaPlaylist(ctx context.Context, rawURL string) ([]byt
 		if err != nil {
 			return nil, nil, err
 		}
-		next, wrapper, err := singleVariantURI(body)
+		next, wrapper, err := singleVariantURI(body, p.codec)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -62,7 +62,7 @@ func (p *hlsProxy) fetchMediaPlaylist(ctx context.Context, rawURL string) ([]byt
 
 // singleVariantURI 只接受 EXTM3U、可选 VERSION、一个 STREAM-INF 和一个 URI。
 // 任何其他扩展标签或属性都拒绝，不能误吞外部音轨、字幕、加密和 steering。
-func singleVariantURI(body []byte) (string, bool, error) {
+func singleVariantURI(body []byte, codec string) (string, bool, error) {
 	lines := strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
 	wrapper := false
 	for _, line := range lines {
@@ -99,7 +99,7 @@ func singleVariantURI(body []byte) (string, bool, error) {
 			}
 			version = true
 		case "#EXT-X-STREAM-INF":
-			if !colon || stream || !validSingleVariantAttributes(value) {
+			if !colon || stream || !validSingleVariantAttributes(value, codec) {
 				return fail()
 			}
 			stream = true
@@ -114,10 +114,19 @@ func singleVariantURI(body []byte) (string, bool, error) {
 }
 
 // 属性值保留引号，由调用者按类型校验；重复、空值和不完整的引号直接拒绝。
+//
+// 逗号两侧允许空格：抖音的 master 就是 `PROGRAM-ID=1, BANDWIDTH=…`，
+// 严格按 RFC 拒绝只会把一条正常可播的流赶去走十秒的兼容转封装。
+// 容错仅限空白，属性名、引号和重复键仍然按原规则校验。
 func strictPlaylistAttributes(text string) (map[string]string, bool) {
 	result := make(map[string]string)
-	for text != "" {
+	for {
+		text = strings.TrimLeft(text, " \t")
+		if text == "" {
+			break
+		}
 		key, rest, ok := strings.Cut(text, "=")
+		key = strings.TrimRight(key, " \t")
 		if !ok || key == "" || result[key] != "" {
 			return nil, false
 		}
@@ -126,6 +135,7 @@ func strictPlaylistAttributes(text string) (map[string]string, bool) {
 				return nil, false
 			}
 		}
+		rest = strings.TrimLeft(rest, " \t")
 		value := ""
 		if strings.HasPrefix(rest, `"`) {
 			end := strings.IndexByte(rest[1:], '"')
@@ -140,6 +150,7 @@ func strictPlaylistAttributes(text string) (map[string]string, bool) {
 			} else {
 				value, rest = rest[:end], rest[end:]
 			}
+			value = strings.TrimRight(value, " \t")
 			if strings.ContainsAny(value, "\" \t\r\n") {
 				return nil, false
 			}
@@ -148,6 +159,7 @@ func strictPlaylistAttributes(text string) (map[string]string, bool) {
 			return nil, false
 		}
 		result[key] = value
+		rest = strings.TrimLeft(rest, " \t")
 		if rest == "" {
 			break
 		}
@@ -196,7 +208,7 @@ func playlistDecimal(value string, signed bool) bool {
 	return err == nil && !math.IsInf(number, 0) && !math.IsNaN(number)
 }
 
-func validSingleVariantAttributes(text string) bool {
+func validSingleVariantAttributes(text, expectedCodec string) bool {
 	attrs, ok := strictPlaylistAttributes(text)
 	if !ok || !positiveInteger(attrs["BANDWIDTH"]) {
 		return false
@@ -225,9 +237,18 @@ func validSingleVariantAttributes(text string) bool {
 			if len(value) < 3 || value[0] != '"' || value[len(value)-1] != '"' {
 				return false
 			}
-			// 只认普通 AVC/AAC 组合；不因包装声明与上层 codec 不一致而误放行。
+			// 包装声明必须匹配本次获准的编码，不能把 AVC 的资格借给 HEVC。
 			for _, codec := range strings.Split(value[1:len(value)-1], ",") {
-				if !strings.HasPrefix(codec, "avc1.") && !strings.HasPrefix(codec, "avc3.") && !strings.HasPrefix(codec, "mp4a.") {
+				if strings.HasPrefix(codec, "mp4a.") {
+					continue
+				}
+				allowed := strings.HasPrefix(codec, "avc1.") || strings.HasPrefix(codec, "avc3.")
+				if expectedCodec == "hevc" {
+					allowed = strings.HasPrefix(codec, "hvc1.") || strings.HasPrefix(codec, "hev1.")
+				} else if expectedCodec == "av1" {
+					allowed = strings.HasPrefix(codec, "av01.")
+				}
+				if !allowed {
 					return false
 				}
 			}

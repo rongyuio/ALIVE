@@ -23,7 +23,7 @@ var testHTTPClient = &http.Client{
 
 func testProxy(t *testing.T, upstream string, headers []string) *hlsProxy {
 	t.Helper()
-	p, err := newHLSProxy(context.Background(), upstream, headers)
+	p, err := newHLSProxy(context.Background(), upstream, headers, "avc")
 	if err != nil {
 		t.Fatalf("newHLSProxy: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestProxyRejectsUnsupportedPlaylists(t *testing.T) {
 			}))
 			defer upstream.Close()
 
-			p, err := newHLSProxy(context.Background(), upstream.URL+"/live.m3u8", nil)
+			p, err := newHLSProxy(context.Background(), upstream.URL+"/live.m3u8", nil, "avc")
 			if p != nil {
 				p.stop()
 				t.Fatal("不支持的播放列表仍然起了代理")
@@ -341,7 +341,7 @@ func TestProxyAllowsClearKeyTag(t *testing.T) {
 }
 
 func TestProxyRejectsNonHTTP(t *testing.T) {
-	if _, err := newHLSProxy(context.Background(), "file:///C:/tmp/live.m3u8", nil); !errors.Is(err, errProxyUnsupported) {
+	if _, err := newHLSProxy(context.Background(), "file:///C:/tmp/live.m3u8", nil, "avc"); !errors.Is(err, errProxyUnsupported) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -402,7 +402,7 @@ func TestProxyStopReleasesListener(t *testing.T) {
 }
 
 func TestProxyErrorRedactsSignature(t *testing.T) {
-	_, err := newHLSProxy(context.Background(), "http://127.0.0.1:1/live.m3u8?sign=secret123", nil)
+	_, err := newHLSProxy(context.Background(), "http://127.0.0.1:1/live.m3u8?sign=secret123", nil, "avc")
 	if err == nil {
 		t.Fatal("预期回源失败")
 	}
@@ -423,7 +423,8 @@ func TestProxyEligible(t *testing.T) {
 		{"明确 avc", Options{HLSProxy: true}, "https://cdn.example.com/live.m3u8", "avc", true},
 		{"明确 h264 大写", Options{HLSProxy: true}, "https://cdn.example.com/live.m3u8?x=1", "H264", true},
 		{"空 codec", Options{HLSProxy: true}, "https://cdn.example.com/live.m3u8", "", false},
-		{"hevc", Options{HLSProxy: true}, "https://cdn.example.com/live.m3u8", "hevc", false},
+		{"hevc", Options{HLSProxy: true}, "https://cdn.example.com/live.m3u8", "hevc", nativeHEVCAvailable()},
+		{"av1", Options{HLSProxy: true}, "https://cdn.example.com/live.m3u8", "av1", nativeAV1Available()},
 		{"非 HLS 上游", Options{HLSProxy: true}, "https://cdn.example.com/live.flv", "avc", false},
 	}
 	for _, tc := range cases {
@@ -470,7 +471,7 @@ func TestStartProxyUnsupportedLeavesServerClean(t *testing.T) {
 	defer upstream.Close()
 
 	s := New()
-	_, err := s.startProxy(context.Background(), upstream.URL+"/live.m3u8", nil)
+	_, err := s.startProxy(context.Background(), upstream.URL+"/live.m3u8", nil, "avc")
 	if !errors.Is(err, errProxyUnsupported) {
 		t.Fatalf("err = %v", err)
 	}

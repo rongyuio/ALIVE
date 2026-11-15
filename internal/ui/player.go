@@ -37,8 +37,20 @@ func (a *App) PlayerPage(c *ui.Context) {
 	// 接真实流：房间变了才重新取流 + 连弹幕
 	a.ensureMedia(c)
 	a.syncPlayer()
-	// 首帧可用时刻是起播耗时的最后一段，顺带负责实验快路径的回退。
+	// 首帧可用时刻是起播耗时的最后一段，顺带负责代理快路径的回退。
 	a.trackFirstFrame()
+	// MyGo 0.9.0 的原生播放器在 Loading 阶段不定时请求帧，不能依赖灵动岛
+	// 或弹幕恰好在动画；首帧预算和健康检查都靠这一帧续上。
+	//
+	// 首帧后所有路径都按 250ms 看一眼：MF 停帧不会主动报错，只靠用户操作
+	// 触发帧会漏掉播放器故障，普通转封装尤其明显。
+	if a.Playing && a.media.player != nil && a.media.player.Err() == nil {
+		if !a.media.firstFrame {
+			c.After(firstFramePollInterval)
+		} else {
+			c.After(proxyHealthPollInterval)
+		}
+	}
 	// 左右 14（窄屏 10）、底部不留：baseline 的 appBodyPlayer 就是这样，
 	// 播放页整块一直铺到窗口下沿。两种全屏下四边都不留（shellFull 是 inset:0）。
 	//
@@ -77,6 +89,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 					// .overlay 是 z-index 15，控制条和顶栏是 20。
 					a.stageOverlay(c)
 					a.bufferingPill(c)
+					a.noticePill(c)
 					// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域
 					// （baseline 的 .dragRegion：navbar 高度 64，压在视频之上、
 					// chrome 之下）。只铺顶部一条，整块铺满会把画面下方的
@@ -315,7 +328,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 			a.overlayText(c, m.err)
 			// 多线路平台失败过才提示，单线路说了也没用
 			if len(m.stream.Lines) > 1 {
-				ui.Text(c, "已尝试自动切换线路，仍失败可手动换线").
+				ui.Text(c, "可以在控制条切换线路后重试").
 					FontSize(theme.TextXS).TextColor(ui.RGBA(255, 255, 255, 0.6)).
 					TextAlign(ui.Center).LineHeight(1.7)
 			}
@@ -406,6 +419,24 @@ func (a *App) bufferingPill(c *ui.Context) {
 	})
 }
 
+// noticePill 是降档一类临时提示：底部居中的小胶囊，几秒后自己消失。
+// 不放在错误层里——画面还在正常播，只是平台的档位和点选的不一样。
+func (a *App) noticePill(c *ui.Context) {
+	now := time.Now()
+	if !a.media.noticeActive(now) {
+		return
+	}
+	// 让下一帧在提示到期时到来，清理逻辑在 noticeActive 里。
+	c.After(a.media.noticeUntil.Sub(now))
+	ui.Box(c).Absolute().Left(0).Right(0).Bottom(76).Center().PassThrough().Children(func() {
+		ui.Row(c).Height(30).Padding(0, 14, 0, 14).Radius(theme.RadiusFull).
+			AlignItems(ui.Center).
+			Background(playerBarBg).Border(1, playerBarBorder).Children(func() {
+			ui.Text(c, a.media.notice).FontSize(theme.TextXS).TextColor(playerIcon)
+		})
+	})
+}
+
 // currentCover 返回当前播放项对应卡片的封面。
 func (a *App) currentCover() string { return a.current().CoverURL }
 
@@ -484,11 +515,9 @@ func (a *App) playerControls(c *ui.Context) {
 				if a.Playing {
 					playLabel = "暂停"
 				}
-				a.playerIconBtn(c, playIcon, 18, false, playLabel, func() {
-					a.Playing = !a.Playing
-					a.markDirty()
-					a.invalidateWindows()
-				})
+				// 播放键在错误态交给 togglePlayback 走显式重试，避免出现
+				// 「图标翻了、画面不动」的死键。
+				a.playerIconBtn(c, playIcon, 18, false, playLabel, a.togglePlayback)
 				a.playerIconBtn(c, iconSync, 18, false, "重新加载", a.retryStream)
 
 				a.volumeControl(c, m)
@@ -521,7 +550,7 @@ func (a *App) playerControls(c *ui.Context) {
 				// 不出现。摆一个本平台根本不存在的档位，只是先骗一下眼睛。
 				if qOpts := a.qualityOptions(); len(qOpts) > 0 {
 					a.playerDropdown(c, "清晰度", qOpts,
-						&a.Quality, &a.QualityOpen, &a.QualityHover, a.pickQuality)
+						&a.Quality, &a.QualityOpen, &a.QualityHover, a.PickQuality)
 				}
 				// 线路只列平台真实给出的节点：抖音这类没有多线路概念的平台
 				// 整块不出现——网页端也没有「自动线路」这一项。

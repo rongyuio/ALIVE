@@ -1,11 +1,6 @@
-// Package relay 把上游直播流转封装成本地 HLS，供 MyGo 的 ui/video 播放。
-//
-// 为什么需要：Windows Media Foundation 打 B 站 CDN 的 m3u8 会返回
-// 0xc00d2ee7（缺 Referer / 相对分片解析），斗鱼与抖音的 HTTP-FLV 更是完全
-// 不在 MF 支持的容器里。FFmpeg 默认只做 -c copy 转封装，不解码、不转码，
-// 单路 CPU 接近于零；只有上游是 HEVC / AV1（系统解码器不一定有，
-// AV1 更是塞不进 MPEG-TS）时才把视频转成 H.264。本地 HTTP 服务只监听
-// 127.0.0.1。
+// Package relay 为原生播放器提供本地 HLS：支持的流透明代理，其余转封装或转码。
+// 代理保留原始分片；兼容路径仅对 AVC 复制视频，其他编码转换为 H.264。
+// 所有服务仅监听 127.0.0.1，传输决策见 transport.go。
 package relay
 
 import (
@@ -23,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"alive/internal/ffmpeg"
 )
 
 // errCanceled 表示这次启动被调用方取消。取消之后不允许再试别的路径
@@ -65,7 +62,7 @@ func (s *Server) URL() string {
 }
 
 // Mode 返回这一次的传输方式：hls-proxy、remux 或 transcode。
-// 未启动时返回空字符串。界面用它打日志，不做逻辑判断。
+// 未启动时返回空字符串。播放层据此识别真实路径并决定故障恢复。
 func (s *Server) Mode() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,15 +73,17 @@ func (s *Server) Mode() string {
 type Options struct {
 	// Encoder 是转码时的编码器策略；零值按 EncoderAuto 处理。
 	Encoder EncoderMode
-	// HLSProxy 打开 HLS 透明代理快路径，默认关闭。关闭时行为与之前完全
-	// 一致；打开后只有「codec 明确是 H.264 且上游是 HLS」才会尝试，
-	// 预检只接受 TS 或带完整 MAP 的 fMP4 媒体列表，不支持 BYTERANGE。
+	// HLSProxy 允许尝试透明代理；应用默认开启，调用方可用零值强制关闭。
+	// 开启后明确 H.264 或系统支持的 HEVC / AV1 HLS 才会尝试，
+	// HEVC / AV1 限带 MAP 的 fMP4；H.264 也接受 TS，不支持 BYTERANGE。
 	HLSProxy bool
 }
 
+const transportStartupBudget = 20 * time.Second
+
 // Start 打开一条上游流。会先停掉上一条，避免两个会话并存。
 // headers 是回源需要的请求头，例如 "Referer: https://live.bilibili.com/"。
-// codec 是上游视频编码（avc / hevc / av1），为空按 avc 处理。
+// codec 是上游视频编码（avc / hevc / av1），缺失时限时探测，仍未知则兼容转码。
 //
 // 打开 HLSProxy 且条件成立时先试透明代理：只补请求头、改写资源地址，
 // 分片原样转发，省掉 FFmpeg 启动和重新切片。预检失败时代理已经把自己
@@ -93,7 +92,12 @@ type Options struct {
 // 用硬件编码器时，探测通过不代表真转码一定成功（驱动被别的程序占满、
 // 显存不足都会让 ffmpeg 起不来）。这里在失败时回落 libx264 再试一次——
 // 慢一点也比让用户看到「无法拉取直播流」强。
-func (s *Server) Start(ctx context.Context, upstream string, headers []string, codec string, opts Options) (result string, resultErr error) {
+func (s *Server) Start(ctx context.Context, upstream string, headers []string, codec string, opts Options) (string, error) {
+	return s.startWithBudget(ctx, upstream, headers, codec, opts, transportStartupBudget)
+}
+
+// 启动预算覆盖探测、代理预检与兼容回退的总和；成功后撤掉计时，不限制播放寿命。
+func (s *Server) startWithBudget(ctx context.Context, upstream string, headers []string, codec string, opts Options, budget time.Duration) (result string, resultErr error) {
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -104,14 +108,25 @@ func (s *Server) Start(ctx context.Context, upstream string, headers []string, c
 	if s.cancel != nil {
 		s.cancel()
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancelCause := context.WithCancelCause(ctx)
+	cancel := func() { cancelCause(context.Canceled) }
+	startupExpired := make(chan struct{})
+	startupTimer := time.AfterFunc(budget, func() {
+		cancelCause(context.DeadlineExceeded)
+		close(startupExpired)
+	})
 	s.generation++
 	generation := s.generation
 	s.cancel = cancel
 	s.mu.Unlock()
 	defer func() {
-		if runCtx.Err() != nil {
-			result, resultErr = "", runCtx.Err()
+		// 回调已开始时等它发布取消结果，避免刚返回成功就被到期计时器杀掉。
+		if !startupTimer.Stop() {
+			<-startupExpired
+		}
+		// 组件未就绪是独立语义，不能在上层被改写成普通启动超时。
+		if runCtx.Err() != nil && !errors.Is(resultErr, ffmpeg.ErrPreparing) {
+			result, resultErr = "", context.Cause(runCtx)
 		}
 		if resultErr != nil {
 			cancel()
@@ -124,15 +139,25 @@ func (s *Server) Start(ctx context.Context, upstream string, headers []string, c
 		return "", err
 	}
 
-	if proxyEligible(opts, upstream, codec) {
-		result, resultErr = s.startProxy(runCtx, upstream, headers)
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	if codec == "" {
+		codec = probeVideoCodec(runCtx, upstream, headers)
+		slog.Info("视频编码探测", "codec", codec, "resolved", codec != "")
+		if runCtx.Err() != nil {
+			return "", context.Cause(runCtx)
+		}
+	}
+	plan := currentTransportPlan(upstream, codec, opts)
+	slog.Info("播放路径决策", "mode", plan.primary, "fallback", plan.fallback, "reason", plan.reason)
+	if plan.primary == modeProxy {
+		result, resultErr = s.startProxy(runCtx, upstream, headers, codec)
 		if runCtx.Err() != nil {
 			return "", runCtx.Err()
 		}
 		if resultErr == nil {
 			return result, nil
 		}
-		slog.Info("HLS 代理不可用，回退转封装", "reason", redactError(resultErr))
+		slog.Info("HLS 代理不可用，进入兼容路径", "mode", plan.fallback, "reason", redactError(resultErr))
 	}
 	result, resultErr = s.start(runCtx, upstream, headers, codec, opts)
 	if runCtx.Err() != nil {
@@ -159,28 +184,25 @@ func (s *Server) Start(ctx context.Context, upstream string, headers []string, c
 
 // proxyEligible 报告这次是否应该尝试 HLS 透明代理。
 //
-// codec 必须明确写成 avc / h264：空串在旧路径里按 avc 处理是历史行为，
-// 而代理靠这个判断跳过转封装，猜错会把 HEVC / AV1 直接塞给播放器。
+// 明确 H.264 可直接尝试；HEVC / AV1 必须有系统解码器且通过 fMP4 预检。
+// 未知编码先限时探测，不能把空编码当 AVC。
 func proxyEligible(opts Options, upstream, codec string) bool {
-	if !opts.HLSProxy || !isHLSInput(upstream) {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(codec)) {
-	case "avc", "h264":
-		return true
-	}
-	return false
+	return currentTransportPlan(upstream, codec, opts).primary == modeProxy
 }
 
 // startProxy 起代理并接管 Server 状态。失败时返回错误，调用方继续走 FFmpeg。
-func (s *Server) startProxy(ctx context.Context, upstream string, headers []string) (string, error) {
+func (s *Server) startProxy(ctx context.Context, upstream string, headers []string, codec string) (string, error) {
 	if ctx.Err() != nil {
 		return "", errCanceled
 	}
-	p, err := newHLSProxy(ctx, upstream, headers)
+	preflightStart := time.Now()
+	p, err := newHLSProxy(ctx, upstream, headers, codec)
 	if err != nil {
+		// 预检失败要能看出耗时：慢在回源还是格式不支持，排障时两条路完全不同。
+		slog.Info("HLS 代理预检失败", "ms", time.Since(preflightStart).Milliseconds(), "reason", redactError(err))
 		return "", err
 	}
+	slog.Info("HLS 代理预检完成", "ms", time.Since(preflightStart).Milliseconds())
 	s.cleanupAttempt()
 	s.mu.Lock()
 	if ctx.Err() != nil {
@@ -205,8 +227,11 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	if ctx.Err() != nil {
 		return "", errCanceled
 	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return "", fmt.Errorf("找不到 ffmpeg，请安装并加入 PATH: %w", err)
+	// 播放组件由应用自己准备：用户不需要安装 FFmpeg，也不该去改 PATH。
+	// 首次使用可能还在下载，所以这里按本轮启动预算等待，而不是直接报错。
+	ffmpegExe, err := ffmpeg.Ready(ctx, ffmpeg.FFmpeg)
+	if err != nil {
+		return "", fmt.Errorf("播放组件不可用: %w", err)
 	}
 	s.cleanupAttempt()
 
@@ -292,7 +317,7 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	}
 	args = append(args, "-i", upstream)
 	if needTranscode(codec) {
-		// 上游是 HEVC / AV1：MF 只吃 H.264，AV1 更是没法封进 MPEG-TS
+		// 原生代理不可用时，把 HEVC / AV1 转成兼容路径需要的 H.264
 		// ——直接 -c copy 的话 ffmpeg 会把视频轨整个丢掉，界面上只剩黑屏
 		// 加一段音频。这里只转视频、音频照旧直通，2 秒一个关键帧保证
 		// 分片边界干净。
@@ -358,10 +383,11 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 	if err := runCtx.Err(); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(runCtx, "ffmpeg", args...)
+	cmd := exec.CommandContext(runCtx, ffmpegExe, args...)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdout = nil
-	cmd.Stderr = &relayLog{token: s.token}
+	stderr := &relayLog{token: s.token}
+	cmd.Stderr = stderr
 
 	done := make(chan struct{})
 	s.mu.Lock()
@@ -400,9 +426,14 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		s.jobRelease = release
 		s.mu.Unlock()
 	}
+	var waitErr error // 由 done 关闭同步到启动检查，不能在收到 done 前读取。
 	go func() {
-		err := cmd.Wait()
-		slog.Info("ffmpeg 转封装结束", "error", err, "ctxCanceled", runCtx.Err() != nil)
+		waitErr = cmd.Wait()
+		stderr.flush()
+		if waitErr != nil && runCtx.Err() == nil {
+			slog.Warn("ffmpeg 失败详情", "message", stderr.summary())
+		}
+		slog.Info("ffmpeg 转封装结束", "error", waitErr, "ctxCanceled", runCtx.Err() != nil)
 		close(done)
 	}()
 
@@ -414,28 +445,28 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 			s.cleanupAttempt()
 			return "", errCanceled
 		}
-		// ffmpeg 自己退了就别再干等满 15 秒：多半是参数问题——这一路要求
-		// 输出音频，而这个流里根本没有音频轨。立刻交回 Start 去回退。
+		// 快速完成的有限流可能先退出再被轮询到；成功退出且输出完整仍然可播。
+		finished := false
 		select {
 		case <-done:
-			s.cleanupAttempt()
-			return "", fmt.Errorf("ffmpeg 启动后立即退出")
+			finished = true
+			if waitErr != nil {
+				s.cleanupAttempt()
+				return "", fmt.Errorf("ffmpeg 启动失败: %w", redactError(waitErr))
+			}
 		default:
 		}
-		if info, err := os.Stat(filepath.Join(dir, "live.m3u8")); err == nil && info.Size() > 0 {
-			// 等第一个分片也落盘，否则播放器打开时会拿到空列表。
-			entries, _ := os.ReadDir(dir)
-			for _, e := range entries {
-				if filepath.Ext(e.Name()) == ".ts" {
-					if fi, err := e.Info(); err == nil && fi.Size() > 0 {
-						return url, nil
-					}
-				}
-			}
+		if localPlaylistReady(dir) {
+			return url, nil
 		}
-		// 50ms 而不是 200ms：首片一落盘就能返回，平均少等 75ms，
-		// 而这点空转对 CPU 毫无意义——循环里只有两次 stat。
-		time.Sleep(50 * time.Millisecond)
+		if finished {
+			s.cleanupAttempt()
+			return "", fmt.Errorf("ffmpeg 已退出，未生成完整播放列表")
+		}
+		select {
+		case <-runCtx.Done():
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 	s.cleanupAttempt()
 	if ctx.Err() != nil {
@@ -505,47 +536,11 @@ func (s *Server) cleanupAttempt() {
 	}
 }
 
-// isHLSInput 报告上游地址是不是 HLS（m3u8）。
-//
-// 只看路径，别被 query 里的字符串骗了：斗鱼的分片地址带一堆参数，
-// 抖音的 FLV 也可能带 .m3u8 字样。
-func isHLSInput(u string) bool {
-	if i := strings.IndexByte(u, '?'); i >= 0 {
-		u = u[:i]
-	}
-	return strings.HasSuffix(strings.ToLower(u), ".m3u8")
-}
-
-// relayLog 把 ffmpeg stderr 限流写进 slog。
-//
-// ffmpeg 会把打不开的上游地址（带签名和时效参数）原样写进 stderr，所以
-// 每条都先脱敏再截断；反过来先截断会留下半截带签名的地址。
-type relayLog struct {
-	mu    sync.Mutex
-	last  time.Time
-	token string
-}
-
-func (l *relayLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if time.Since(l.last) < time.Second {
-		return len(p), nil
-	}
-	l.last = time.Now()
-	msg := truncateUTF8(scrubText(l.token, string(p)), 400)
-	slog.Warn("ffmpeg", "message", msg)
-	return len(p), nil
-}
-
-// needTranscode 报告上游视频编码是否必须转码后才能播。
-//
-// H.264 是唯一能保证被系统解码器接住的：HEVC 要看有没有装「HEVC 视频
-// 扩展」，AV1 除了解码器问题，还根本没法封进 MPEG-TS——直接 -c copy 时
-// ffmpeg 会静默把视频轨丢掉，界面上就是黑屏加一段音频。
+// needTranscode 只描述兼容 MPEG-TS 输出路径，不代表原生播放器的完整解码能力。
+// 未知编码不能当作 AVC 复制，否则可能产出无视频的列表；已知 AVC 才直接复制。
 func needTranscode(codec string) bool {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
-	case "", "avc", "h264":
+	case "avc", "h264":
 		return false
 	}
 	return true

@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"alive/internal/ffmpeg"
 )
 
 // EncoderMode 是转码时挑编码器的策略，由界面设置项决定（后面接设置页）。
@@ -87,7 +89,11 @@ func pickVideoEncoder(mode EncoderMode) string {
 func probeEncoder(name string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	exe, err := ffmpeg.Path(ffmpeg.FFmpeg)
+	if err != nil {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, exe,
 		"-hide_banner", "-loglevel", "error",
 		"-f", "lavfi", "-i", "testsrc2=s=1280x720:d=0.2",
 		"-pix_fmt", "yuv420p",
@@ -173,7 +179,16 @@ func videoEncodeArgs(enc string) []string {
 //
 // 探测的是硬件可不可用，和设置项无关，所以这里固定按 auto 探。
 func WarmUpEncoder() {
-	go pickVideoEncoder(EncoderAuto)
+	go func() {
+		// 干净机器上第一次启动时组件还在后台安装；先等它就绪再探测，
+		// 否则这次探测会把“没有 ffmpeg”误记成“没有硬件编码器”。
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if _, err := ffmpeg.Ready(ctx, ffmpeg.FFmpeg); err != nil {
+			return
+		}
+		pickVideoEncoder(EncoderAuto)
+	}()
 }
 
 // pickVideoEncoderContext 让会话取消不必等共享探测结束；探测本身只启动
