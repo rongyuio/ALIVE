@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/video"
 
@@ -170,6 +171,9 @@ func (a *App) startStream(keepDanmaku bool) {
 	// 界面上存的是线路标签（「主线」「备线1」），取流要的是节点 id。
 	line, want := a.lineID(a.Line), a.Quality
 	platform, roomID := s.Platform, s.RoomID
+	// 窗口在主线程上取一次再交给后台 goroutine：弹幕连接要用它做回主线程
+	// 的入口，而 a.Win 本身不是并发安全的读。
+	win := a.Win
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -207,8 +211,11 @@ func (a *App) startStream(keepDanmaku bool) {
 		// 弹幕和画面是两条独立的路：连弹幕不该被「取不到播流」门控。
 		// mock 模式就是靠这一点验界面的——它故意不给任何档位，
 		// 于是这里不起 ffmpeg，但弹幕照样要能到。
+		//
+		// 必须异步：弹幕要先换 token 再建 WebSocket，网络抖一下就是几秒。
+		// 同步调在这里会把下面的起流整段压在后面——用户等的是画面，不是聊天。
 		if !keepDanmaku {
-			a.startDanmaku(seq, prov, roomID)
+			go a.startDanmaku(seq, prov, roomID, win)
 		}
 
 		if !info.Live || len(info.Variants) == 0 {
@@ -429,12 +436,14 @@ func hasLineLabel(lines []live.Line, label string) bool {
 }
 
 // startDanmaku 连上弹幕流。取流失败时也要连——聊天和画面是两条独立的路。
-func (a *App) startDanmaku(seq int, prov live.Provider, roomID string) {
+//
+// win 由调用方在主线程上取好再传进来：这个函数跑在后台 goroutine 上，
+// 不能去读 App 的字段。
+func (a *App) startDanmaku(seq int, prov live.Provider, roomID string, win *mygo.Window) {
 	danmakuer, ok := prov.(live.Danmakuer)
 	if !ok {
 		return
 	}
-	win := a.Win
 	if win == nil {
 		return
 	}

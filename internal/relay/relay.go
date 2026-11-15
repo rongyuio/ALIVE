@@ -134,6 +134,10 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 		args = append(args,
 			"-http_persistent", "0",
 			"-probesize", "32768", "-analyzeduration", "0",
+			// live_start_index 默认 -3：ffmpeg 会从倒数第三片开始下，白拉
+			// 6~9 秒已经播过的内容才等到第一个关键帧。-1 直接取最新一片，
+			// 首片落盘能快半秒到一秒半，画质和稳定性都不受影响。
+			"-live_start_index", "-1",
 		)
 	} else {
 		// 斗鱼 / 抖音：HTTP-FLV 直连。这里不能用 HLS 那套极小的探测窗口：
@@ -281,7 +285,9 @@ func (s *Server) start(ctx context.Context, upstream string, headers []string, c
 				}
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		// 50ms 而不是 200ms：首片一落盘就能返回，平均少等 75ms，
+		// 而这点空转对 CPU 毫无意义——循环里只有两次 stat。
+		time.Sleep(50 * time.Millisecond)
 	}
 	s.Stop()
 	return "", fmt.Errorf("等待转封装就绪超时")
