@@ -48,13 +48,9 @@ type douyinTierStream struct {
 //
 // 原画几乎总是 H.265，而解码器不一定跟得上（系统缺 HEVC 扩展时播不了），
 // 所以原画是 HEVC 时不能默认顶在第一档——默认档要让给 H.264 转码档。
+// 归一化只走 douyinVariantCodec，判断别名不另写一份。
 func (t *douyinTierStream) douyinIsHEVC() bool {
-	switch strings.ToLower(strings.TrimSpace(t.Codec)) {
-	case "h265", "265", "hevc", "hvc1":
-		return true
-	default:
-		return false
-	}
+	return douyinVariantCodec(t.Codec) == "hevc"
 }
 
 // douyinVariantCodec 把 sdk_params.VCodec 归一成 relay 认的编码名。
@@ -69,6 +65,19 @@ func douyinVariantCodec(raw string) string {
 		return "av1"
 	default:
 		return ""
+	}
+}
+
+// douyinPrefersHLS 判断同一档同时有 FLV / HLS 时该给哪个协议。
+//
+// 明确 H.264 / HEVC 的同档 HLS 可交给传输层按解码能力选择，省去不必要的重新切片。
+// 未知编码与其他编码保持原有协议优先级，交给后续兼容路径处理。
+func (t *douyinTierStream) douyinPrefersHLS() bool {
+	switch douyinVariantCodec(t.Codec) {
+	case "avc", "hevc":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -163,10 +172,8 @@ func (p *douyinProvider) Stream(ctx context.Context, roomID, line string) (Strea
 		})
 	}
 	if len(out.Variants) == 0 {
-		// 在播却拿不到地址：不报错，交给播放页显示「未开播」而不是「加载失败」，
-		// 与 B 站的处理保持一致。
+		// 缺少地址不代表下播，保留上游状态，让播放层报告取流失败。
 		slog.Debug("抖音取流没有可用清晰度", "room", webRID)
-		out.Live = false
 	}
 	return out, nil
 }
@@ -366,15 +373,15 @@ func douyinTierFromURL(raw string) string {
 	return ""
 }
 
-// douyinTierQuality 把一个档位转成可播档位（HEVC 档优先给 HLS）。
+// douyinTierQuality 把一个档位转成可播档位（HEVC / 明确 H.264 优先给 HLS）。
 func douyinTierQuality(tier, label, id string, stream *douyinTierStream) (douyinQuality, bool) {
 	if stream == nil {
 		return douyinQuality{}, false
 	}
 	hevc := stream.douyinIsHEVC()
 	url, format := stream.FLV, "flv"
-	if hevc && stream.HLS != "" {
-		// HEVC 在 FLV 里对播放器不友好，优先给 HLS，让系统解码器接。
+	if stream.douyinPrefersHLS() && stream.HLS != "" {
+		// 是否可原样代理由传输层结合系统解码能力和播放列表决定。
 		url, format = stream.HLS, "hls"
 	}
 	if url == "" {
@@ -429,11 +436,16 @@ func douyinPickQualities(room *douyinStreamRoom) []douyinQuality {
 		byTier[tier] = &douyinTierStream{FLV: u}
 	}
 	for _, u := range su.HLSPullURL {
-		if strings.TrimSpace(u) == "" {
+		u = strings.TrimSpace(u)
+		if u == "" {
 			continue
 		}
 		tier := douyinTierFromURL(u)
-		if tier == "" || byTier[tier] != nil {
+		if tier == "" {
+			continue
+		}
+		// 独立地址表没有编码声明，不能借用另一来源同名档位的编码。
+		if byTier[tier] != nil {
 			continue
 		}
 		byTier[tier] = &douyinTierStream{HLS: u}

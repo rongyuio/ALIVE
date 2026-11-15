@@ -127,7 +127,8 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 	if err != nil {
 		return Stream{}, err
 	}
-	if !info.Live || len(info.Tiers) == 0 {
+	// 是否在播以取流接口为准，空档位交给播放层报告取流失败。
+	if !info.Live {
 		out.Live = false
 		return out, nil
 	}
@@ -185,9 +186,6 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 	// 选它和选对应档位是同一路流。菜单按 qn 降序，第一档就是能拿到的
 	// 最高档，进房间默认选它。
 
-	if len(out.Variants) == 0 {
-		out.Live = false
-	}
 	return out, nil
 }
 
