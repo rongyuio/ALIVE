@@ -38,8 +38,11 @@ func (a *App) PlayerPage(c *ui.Context) {
 	a.ensureMedia(c)
 	a.syncPlayer()
 	// 左右 14（窄屏 10）、底部不留：baseline 的 appBodyPlayer 就是这样，
-	// 播放页整块一直铺到窗口下沿。窗口全屏时四边都不留（shellFull 是 inset:0）。
-	full := a.WinFull
+	// 播放页整块一直铺到窗口下沿。两种全屏下四边都不留（shellFull 是 inset:0）。
+	//
+	// 判据必须和 Shell 一样用 playerFullscreen()：之前只认 WinFull，系统全屏时
+	// 顶栏让位了，画面四周却还留着 14 的留白和 16 的圆角。
+	full := a.playerFullscreen()
 	pad := a.bodyPadX(c)
 	if full {
 		pad = 0
@@ -93,12 +96,21 @@ func (a *App) PlayerPage(c *ui.Context) {
 					a.playerControls(c)
 					a.playerCaption(c)
 				})
-				// 双击画面切换窗口全屏（baseline 的 onStageDoubleClick）。
+				// 双击画面：已经在全屏里就退出去，没全屏就进窗口全屏。
+				// 原来只翻 WinFull，系统全屏下双击等于没反应。
+				//
 				// 按钮、下拉、头像这些命中目标自带点击身份，在命中链里排在
 				// stage 前面，双击落在它们身上时这里收不到——控制条上连点
 				// 不会误切全屏。
 				if stage.DoubleClicked() {
-					a.WinFull = !a.WinFull
+					switch {
+					case a.WinFull:
+						a.WinFull = false
+					case a.Win != nil && a.Win.IsFullScreen():
+						a.Win.SetFullScreen(false)
+					default:
+						a.WinFull = true
+					}
 				}
 				// 右侧弹幕列表（baseline 的 panelSlot）。
 				// baseline 是 {!isFullscreen && <panelSlot>}：两种全屏下整个
@@ -206,7 +218,43 @@ func (a *App) playerFullscreen() bool {
 	if a.Router == nil || a.Router.Path() != routePlayer {
 		return false
 	}
-	return a.WinFull || (a.Win != nil && a.Win.IsFullScreen())
+	return a.WinFull || a.sysFullscreen()
+}
+
+// sysFullscreen 报告窗口是否处于系统原生全屏。
+//
+// 单拎出来是因为有两处只关心系统全屏、不关心窗口全屏：系统全屏下不画
+// 弹幕侧栏，飞幕的宽度也就不能扣掉面板。
+func (a *App) sysFullscreen() bool {
+	return a.Win != nil && a.Win.IsFullScreen()
+}
+
+// leavePlayer 收掉播放页留下的窗口级与界面级状态，离开播放页时调用。
+//
+// 两种全屏必须在这里退出。系统全屏留着不走，窗口回到首页时还是整屏、
+// 没有 WS_THICKFRAME 边框——拖边缘改不了大小，而 Esc 在首页只管返回、
+// 控制条又已经不在了，人没有任何办法把窗口变回普通窗口。WinFull 留着
+// 不走，下次进直播间会直接是全屏态，看着像「退出没生效」。
+//
+// 其余是播放页的跨帧状态：控制条自动隐藏、几个浮层的开关、拖面板和拖
+// 音量的标记。不清的话下次进直播间会以上一次的隐藏 / 展开态开局。
+//
+// 幂等，每帧调用都没问题；判据由调用方给（Router 不是播放页）。
+func (a *App) leavePlayer() {
+	a.WinFull = false
+	if a.Win != nil && a.Win.IsFullScreen() {
+		a.Win.SetFullScreen(false)
+	}
+	a.ChromeHidden = false
+	a.chromeIdleAt = time.Time{}
+	a.InfoOpen = false
+	a.QualityOpen = false
+	a.LineOpen = false
+	a.DanmuSettingsOpen = false
+	a.DanmuFilterOpen = false
+	a.ShortcutsOpen = false
+	a.volumeDragging = false
+	a.panelDragW, a.panelDragX = 0, 0
 }
 
 // stageFrame 是画面本身。
@@ -382,7 +430,7 @@ func (a *App) playerTopbar(c *ui.Context) {
 		back := ui.Box(c).Size(44, 44).Radius(999).
 			Background(ui.RGBA(10, 10, 12, 0.62)).
 			Border(1, ui.RGBA(255, 255, 255, 0.18)).
-			Center().Cursor(ui.CursorPointer)
+			Center().Cursor(ui.CursorPointer).Label("退出直播间")
 		if back.Hovered() {
 			back.Background(ui.RGBA(10, 10, 12, 0.72)).
 				BorderColor(ui.RGBA(255, 255, 255, 0.24))
@@ -485,18 +533,20 @@ func (a *App) playerControls(c *ui.Context) {
 				a.playerIconBtn(c, iconPip, 18, a.miniOpen(), pipLabel, a.togglePip)
 
 				// 窗口全屏：铺满应用窗口、任务栏仍可见（baseline 的 cssFullscreen）。
-				// 这和右边的系统全屏是两件事，别混。
+				// 和右边的系统全屏是两件事，但两者互斥：进来一个就退掉另一个，
+				// 收尾统一走 toggleWinFull / toggleFullscreen。
+				//
+				// 图标是成对的：进 Maximize（四角外扩）、退 Minimize（四角收拢）。
+				// 原来退出态借用了系统全屏的 Minimize2，两颗按钮全屏时长得一样。
 				winFullIcon := iconWinFull
 				if a.WinFull {
-					winFullIcon = iconMinimize2
+					winFullIcon = iconWinShrink
 				}
 				winFullLabel := "窗口全屏"
 				if a.WinFull {
 					winFullLabel = "退出窗口全屏"
 				}
-				a.playerIconBtn(c, winFullIcon, 18, a.WinFull, winFullLabel, func() {
-					a.WinFull = !a.WinFull
-				})
+				a.playerIconBtn(c, winFullIcon, 18, a.WinFull, winFullLabel, a.toggleWinFull)
 
 				isFull := a.Win != nil && a.Win.IsFullScreen()
 				fullIcon := iconFullscreen

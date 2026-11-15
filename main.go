@@ -105,6 +105,16 @@ func main() {
 		})
 		// 自绘的窗口按钮要有窗口句柄才能真的最小化 / 最大化 / 关闭
 		app.Win = win
+		// 全屏状态下关窗，StateKey 会把 fullScreen 一起记进 window-state.json，
+		// 下次启动一进来就是全屏。关之前先退出来：状态里留的是普通窗口。
+		//
+		// OnClose 在状态捕获（closeState）之前同步触发，自绘的关闭按钮和
+		// Alt+F4 / 窗口菜单都走这一条，所以只需要挂在这里。
+		win.OnClose(func(e *mygo.CloseEvent) {
+			if win.IsFullScreen() {
+				win.SetFullScreen(false)
+			}
+		})
 		// StateKey 会在创建时把上次的窗口尺寸恢复回去，覆盖掉上面的
 		// Width/Height，所以验收用的尺寸必须在这之后再压一次。
 		if os.Getenv("ALIVE_SIZE") != "" {

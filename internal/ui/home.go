@@ -427,6 +427,13 @@ func (a *App) Shell(c *ui.Context) {
 		a.SearchOpen = true
 	}
 
+	// 离开播放页先把窗口级和界面级的状态收干净。统一放在这里而不是各个
+	// 返回按钮上：离开播放页的路不止一条（左上返回钮、Esc、顶栏 tab），
+	// 漏一条就是窗口卡死（见 leavePlayer）。
+	if a.Router.Path() != routePlayer {
+		a.leavePlayer()
+	}
+
 	// 播放页的两种全屏下应用外壳整体让位给画面（baseline 的 playerShell 是
 	// position:fixed inset:0 z-index:9999，顶栏和灵动岛都被盖住）。
 	// 窗口全屏是我们自己的状态，原生全屏是系统状态，两者都算。

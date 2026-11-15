@@ -102,12 +102,35 @@ func (a *App) handleEscape() {
 	a.Router.Back()
 }
 
-// toggleFullscreen 切换窗口全屏。
+// toggleWinFull 切换应用内窗口全屏（baseline 的 cssFullscreen：铺满应用窗口、
+// 任务栏仍在，不动系统窗口状态）。
+//
+// 两种全屏互斥。系统全屏里点这颗按钮，先退出系统全屏再进窗口全屏——不然两个
+// 状态同时为真，画面看不出变化，退出系统全屏后还会留着一层没人收的全屏壳。
+func (a *App) toggleWinFull() {
+	if a.WinFull {
+		a.WinFull = false
+		return
+	}
+	if a.Win != nil && a.Win.IsFullScreen() {
+		a.Win.SetFullScreen(false)
+	}
+	a.WinFull = true
+}
+
+// toggleFullscreen 切换系统原生全屏。
+//
+// 进系统全屏前先清掉窗口全屏（原因见 toggleWinFull）：两个状态互斥，退出
+// 系统全屏之后不会再掉回一层窗口全屏。
 func (a *App) toggleFullscreen() {
 	if a.Win == nil {
 		return
 	}
-	a.Win.SetFullScreen(!a.Win.IsFullScreen())
+	full := a.Win.IsFullScreen()
+	if !full {
+		a.WinFull = false
+	}
+	a.Win.SetFullScreen(!full)
 }
 
 // toggleMute 静音 / 取消静音：记住静音前的音量，恢复时回到那个值。
