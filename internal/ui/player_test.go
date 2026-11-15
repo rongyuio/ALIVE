@@ -123,23 +123,29 @@ func TestDoubleClickStageTogglesWindowFullscreen(t *testing.T) {
 	}
 }
 
-// 窗口全屏时顶部那条拖窗条压在画面上，顶栏控件必须仍在它之上。
-// MyGo 的命中链只取最上层那个元素，拖窗条不能把按钮盖掉。
+// 窗口全屏时顶部那条拖窗条压在画面上，灵动岛必须仍在它之上。
+// MyGo 的命中链只取最上层那个元素，拖窗条不能把岛盖掉。
 func TestFullscreenTopChromeStaysClickable(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	if err := tt.Click("旭旭宝宝"); err != nil {
 		t.Fatal(err)
 	}
-	tt.Advance(1500 * time.Millisecond)
+	// 进场会自动展开，先让它闲置收起，这样点到的确实是岛本身
+	tt.Move(700, 450)
+	tt.Advance(5 * time.Second)
 	app.WinFull = true
 	tt.Frame()
 
-	if err := tt.Click("主播信息"); err != nil {
-		t.Fatalf("窗口全屏下点不到头像：%v", err)
+	island, ok := tt.Find("灵动岛")
+	if !ok {
+		t.Fatal("灵动岛没有渲染出来")
 	}
+	tt.Press(island.X+island.W/2, island.Y+island.H/2)
+	tt.Release(island.X+island.W/2, island.Y+island.H/2)
+	tt.Frame()
 	if !app.InfoOpen {
-		t.Fatal("点头像没有展开信息岛")
+		t.Fatal("全屏下点灵动岛没有展开")
 	}
 }
 
