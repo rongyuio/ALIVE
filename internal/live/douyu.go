@@ -628,7 +628,13 @@ func douyuAvatar(raw string) string {
 	if name == "" || strings.Contains(name, ".") {
 		return full
 	}
-	parsed.Path += "_big.jpg"
+	// acf_avatar 里这种形状实测带一个尾随下划线（...ec_）。直接 += "_big.jpg"
+	// 会得到 __big.jpg 并 404；先去掉尾下划线再拼。
+	name = strings.TrimSuffix(name, "_")
+	if name == "" {
+		return full
+	}
+	parsed.Path = parsed.Path[:strings.LastIndex(parsed.Path, "/")+1] + name + "_big.jpg"
 	return parsed.String()
 }
 

@@ -21,34 +21,32 @@ const (
 // 播放页信息岛的尺寸与节奏。
 //
 // 高度跟画面左上角那颗返回钮对齐（44），所以顶栏 64 高时正好留 10 上下，
-// 和 IslandGap 是一个数。收起宽度直接取首页那枚眼睛岛的宽度——同一个位置
-// 换页面时，岛不该跟着变胖变瘦，两种收起态看起来得是一枚东西。
-// 展开上限 400，窄窗口按 50% 收——顶栏左右两侧还有平台 tab 和图标格，
-// 岛不能把它们盖掉。
+// 和 IslandGap 是一个数。收起态缩成一颗正圆，直径等于岛高——只露头像，
+// 连观看时长一起去掉之后，椭圆胶囊没有信息可装。展开上限 350，窄窗口
+// 按 50% 收——顶栏左右两侧还有平台 tab 和图标格，岛不能把它们盖掉。
 const (
-	islandPlayerCollapsedW float32 = theme.IslandW
-	islandPlayerExpandedW  float32 = 400
-	islandPlayerMinW       float32 = 320
+	islandPlayerCollapsedW float32 = theme.IslandH
+	islandPlayerExpandedW  float32 = 350
+	islandPlayerMinW       float32 = 310
 	islandAutoCollapse             = 4 * time.Second
 )
 
 // Island 是顶部居中的「灵动岛」。
 //
-// 首页里它只报状态：一双会眨的眼睛，hover 不换内容、也不显示数字，
-// 岛只做呼吸，不抢注意力。全部关注面板的入口在顶栏的星标格子上
+// 首页里它是一枚 24 小时制的数字时钟，hover 不换内容，只安静地走秒。
+// 全部关注面板的入口在顶栏的星标格子上
 // （见 follows_panel.go），点岛不放大成任何面板。
 //
 // 播放页里它接的是主播信息：进直播间自动展开成整条（头像、标题、关注），
-// 指针不在岛上、闲置 4 秒之后收成一颗小胶囊——头像加一排跳动的声波，
-// 不写名字，点一下再展开。宽度用弹簧跑，Left 每帧按当前宽度重算，长度是
-// 从中心向两侧长出来的——这是灵动岛的手感来源，不是从左往右推。
+// 指针不在岛上、闲置 4 秒之后收成一枚圆形头像，点一下再展开。宽度用弹簧跑，
+// Left 每帧按当前宽度重算，长度是从中心向两侧长出来的——这是灵动岛的手感
+// 来源，不是从左往右推。
 func (a *App) Island(c *ui.Context) {
 	winW, _ := c.Size()
 	player := a.Router != nil && a.Router.Path() == routePlayer
 
 	if player {
 		a.enterPlayerIsland(c)
-		a.tickWatch(c.Now())
 	} else {
 		// 离开播放页就清掉房间记号：下次进同一个房间也要重新展开一次
 		a.infoRoom = ""
@@ -137,7 +135,6 @@ func (a *App) enterPlayerIsland(c *ui.Context) {
 		return
 	}
 	a.infoRoom = room
-	a.watch, a.watchAt = 0, time.Time{}
 	a.setIslandOpen(c, true)
 }
 
@@ -150,49 +147,10 @@ func (a *App) setIslandOpen(c *ui.Context, open bool) {
 	a.infoOpenAt = c.Now()
 }
 
-// SetWatchForCapture 让观看时长从一个预设值开始走，只给截图验收用
-// （ALIVE_WATCH=2h 这类）。正常运行时时长由 tickWatch 从进房间那一刻累计。
-func (a *App) SetWatchForCapture(d time.Duration) {
-	a.watchSeed = d
-}
-
-// tickWatch 累计这间直播间的观看时长。
-//
-// 每帧只加「距上次的那点差值」，所以结果和帧率无关；暂停时不加——岛上
-// 那个数字说的是「看了多久」，不是「进来多久」。岛的 conic 光环每帧都
-// 请求帧，这个累计不会因为画面静止而停摆。
-func (a *App) tickWatch(now time.Time) {
-	// 截图验收可以从预设值起步（ALIVE_WATCH=2h），只消费一次；生产路径上
-	// watchSeed 恒为 0，时长从进房间那一刻开始累计。
-	if a.watchSeed > 0 {
-		a.watch, a.watchSeed = a.watchSeed, 0
-	}
-	if a.watchAt.IsZero() {
-		a.watchAt = now
-		return
-	}
-	if a.Playing {
-		a.watch += now.Sub(a.watchAt)
-	}
-	a.watchAt = now
-}
-
-// formatWatch 把观看时长写成 05:21，满一小时写 1:05:21。
-func formatWatch(d time.Duration) string {
-	sec := int(d / time.Second)
-	if sec < 0 {
-		sec = 0
-	}
-	if sec < 3600 {
-		return fmt.Sprintf("%02d:%02d", sec/60, sec%60)
-	}
-	return fmt.Sprintf("%d:%02d:%02d", sec/3600, sec%3600/60, sec%60)
-}
-
 // playerIsland 是播放页里岛的内容。
 //
-// 收起态和展开态是两套图层叠在一起，按当前宽度交叉淡化：宽度只有 88 时
-// 只剩头像和声波，宽到 300 以上才轮得到标题和关注。用宽度换算透明度、
+// 收起态和展开态是两套图层叠在一起，按当前宽度交叉淡化：收起时宽 38，
+// 只剩一枚圆形头像，宽到 300 以上才轮得到标题和关注。用宽度换算透明度、
 // 而不是再起一条动画，两层才跟伸缩严丝合缝。
 //
 // w 是这一帧的动画宽度，openW 是展开目标宽度（跟着窗口钳过）。
@@ -210,44 +168,22 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 		}
 	}
 
-	// ---------- 收起层：头像 + 观看时长
+	// ---------- 收起层：一颗圆形头像
 	//
-	// 不写主播名：收起来就该只是一颗头像加一个数字，名字留在展开态。
-	// 右边那格原本是排随声音跳动的声波条，音频链路回归 Media Foundation
-	// 之后它一起没了，整颗胶囊右侧空着五十多像素。补进来的这个数字是真
-	// 信息——这间直播间已经看了多久；暂停时它不涨，换成暂停图标。
+	// 岛本身宽高都收到 38，可用的内容区只有 34（1px 描边 + 两侧各 1px
+	// 的 body inset）。头像用 32，四周各留 1px——用 36 会溢出内容区，
+	// 收缩动画里每帧被布局挤回去，看起来就是头像在抖。和展开态的 32 同尺寸，
+	// 交叉淡化时也不会再变一次大小。名字留在展开态。
 	collapsed := ui.Row(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Padding(0, 4, 0, 6).Gap(8).AlignItems(ui.Center)
+		AlignItems(ui.Center).Justify(ui.Center)
 	collapsed.Opacity(1 - op)
 	if op >= 0.5 {
 		collapsed.PassThrough()
 	}
 	collapsed.Children(func() {
-		ui.Box(c).Size(28, 28).Shrink(0).Children(func() {
-			a.islandAvatar(c, s, 28)
+		ui.Box(c).Size(32, 32).Shrink(0).Children(func() {
+			a.islandAvatar(c, s, 32, false)
 		})
-		// 弹性空白把时长顶到右沿：头像在左、数字在右，中间那格才算用上。
-		ui.Box(c).Grow(1)
-		if a.Playing {
-			// 13 + SemiBold：11/12 在 38 高的胶囊里显得虚，五个字符撑不满
-			// 右边那格。字族换圆体（见 fonts.go），系统字体的数字太方正。
-			//
-			// 小时级会多出两段（1:05:21），字号降一档。100 宽的岛留给数字
-			// 只有 46px（100 − 6 左 − 28 头像 − 8×2 间距 − 4 右），Quicksand
-			// 实测：mm:ss 在 13px 下 34px，h:mm:ss 在 13px 下 38.9px、12px 下
-			// 35.9px。13px 其实撑到 9 小时都没事，但两位数小时（12:05:21）
-			// 要 46.2px，一滴不剩；12px 到 99 小时还有 3px 余量。
-			size := theme.TextSM
-			if a.watch >= time.Hour {
-				size = theme.TextXS
-			}
-			ui.Text(c, formatWatch(a.watch)).Font(FontNumeric).
-				FontSize(size).FontWeight(600).
-				TextColor(theme.TextTertiary).FontFeatures("tnum").
-				SingleLine().LineHeight(1)
-		} else {
-			ui.Icon(c, iconPause).FontSize(12).TextColor(theme.TextTertiary)
-		}
 	})
 
 	// ---------- 展开层：头像 + 标题 / 平台·昵称·ID + 状态 + 关注
@@ -266,7 +202,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 			a.setIslandOpen(c, !a.InfoOpen)
 		}
 		trigger.Children(func() {
-			a.islandAvatar(c, s, 32)
+			a.islandAvatar(c, s, 32, true)
 		})
 
 		ui.Column(c).Gap(2).Grow(1).Children(func() {
@@ -328,11 +264,12 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	}
 }
 
-// islandAvatar 画一枚圆形头像，在播时右下角压一个带深色描边的绿点。
+// islandAvatar 画一枚圆形头像。showLive 控制是否在右下角画在线绿点和呼吸环：
+// 展开态有足够空间，保留这个指示；收起态就是一整颗圆头像，再压绿点会被裁掉。
 // 绿点用 Left/Top 而不是 Right/Bottom：MyGo 里 Right 的基准在缩小后的
 // 祖先上会偏出去，Left/Top 从 padding box 左上角算起，size-d+1 就是
 // 右下角那一格。
-func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32) {
+func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive bool) {
 	if bmp := media.Default.Bitmap(s.AvatarURL, size); bmp != nil {
 		ui.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
 	} else {
@@ -342,7 +279,7 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32) {
 				TextColor(theme.TextSecondary)
 		})
 	}
-	if !s.Live {
+	if !showLive || !s.Live {
 		return
 	}
 	d := float32(10)
@@ -376,24 +313,34 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32) {
 		Background(theme.StatusOnline).Border(2, theme.BgSecondary)
 }
 
-// islandPill 是收起态：只有一双眨着的眼睛，hover 不改变任何内容。
+// islandPill 是首页态：一枚 24 小时制的数字时钟，hover 不改变任何内容。
+//
+// 每秒换一次显示，用 c.After 请求下一帧——岛上的流光本来就在持续请求帧，
+// 但时钟不能依赖它：reduced motion 下流光停了，时间还得走。
+// 秒变化时数字向上滑入并淡入，用 Keyframes 的 Run 绑定 Unix 秒：Run 一变
+// 就重播，中间被别的帧打断也从当前值接着走。reduced motion 下不播动画。
 func (a *App) islandPill(c *ui.Context) {
-	ui.Row(c).Fill().Center().Gap(11).Children(func() {
-		// baseline 的 eye-blink：4.6s ease-in-out 循环，94% 时 scaleY 0.12。
-		// transform-origin 默认居中；reduced motion 下框架直接停在最终值 1。
-		eye := func() {
-			e := ui.Box(c).Width(9).Height(11).Radius(theme.RadiusFull).
-				Background(theme.AccentInk)
-			// 用 Loop 而不是 Keyframes：这版 MyGo 的 RepeatForever 播完
-			// 一次就停，眼睛只会眨一下。reduced motion 下不眨眼。
-			if !c.Preferences().ReduceMotion {
-				sy := blinkScale(e.Loop("blink", 4600*time.Millisecond, ui.Linear))
-				e.Scale(1, sy)
-			}
-		}
-		eye()
-		eye()
-	})
+	// 统一用 c.Now()：生产里就是系统时钟，Tester 里是它自己的时钟，
+	// 显示的秒数和「下一帧」的等待必须同一时基，否则测试里时间不走。
+	now := c.Now()
+	next := time.Second - now.Sub(now.Truncate(time.Second))
+	c.After(next)
+
+	label := now.Format("15:04:05")
+	clock := ui.Text(c, label).
+		FontSize(theme.TextSM).FontWeight(600).FontFeatures("tnum").
+		TextColor(theme.TextPrimary).SingleLine().LineHeight(1)
+	if c.Preferences().ReduceMotion {
+		return
+	}
+	// Run 用「今天过了多少秒」：每秒变一次，且非负（Unix 秒在 Tester 的
+	// 时钟里是负数，转 uint64 会绕一大圈）。
+	run := uint64(now.Hour()*3600 + now.Minute()*60 + now.Second())
+	d := clock.Keyframes("clock-roll", []ui.Keyframe{
+		{Value: 1},
+		{At: 180 * time.Millisecond, Value: 0, Ease: ui.EaseInOut},
+	}, ui.KeyframeOptions{Run: run})
+	clock.Translate(0, d*4).Opacity(1 - d*0.55)
 }
 
 // islandRing 画那圈贴着边缘跑的 conic 流光。
@@ -445,19 +392,6 @@ func livePulse(p float32) (scale, alpha float32) {
 	}
 	e := easeOutUnit(p / 0.7)
 	return 0.75 + e*1.10, 0.9 * (1 - e)
-}
-
-// blinkScale 把 4.6s 的周期相位换成眼睛的 scaleY：
-// 90% 之前睁着，90%–94% 闭到 0.12，94%–100% 睁开。
-func blinkScale(p float32) float32 {
-	switch {
-	case p < 0.90:
-		return 1
-	case p < 0.94:
-		return 1 - (p-0.90)/0.04*0.88
-	default:
-		return 0.12 + (p-0.94)/0.06*0.88
-	}
 }
 
 // easeOutUnit 是 baseline --ease-out 在 0–1 区间上的求值。

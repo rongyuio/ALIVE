@@ -83,16 +83,9 @@ type App struct {
 	// InfoOpen 是播放页灵动岛是否展开：进直播间自动展开，闲置几秒收起，
 	// 点岛可以反复开关。infoOpenAt 是最近一次展开 / 悬停刷新的时刻，
 	// infoRoom 记着当前房间，用来判断「刚进直播间」。
-	InfoOpen   bool
-	infoOpenAt time.Time
-	infoRoom   string
-	// watch 是当前这间直播间已经看了多久，暂停时不走；watchAt 是上一次
-	// 累计的时刻——每帧只加一次差值，结果不受帧率影响。换房间归零。
-	// watchSeed 只在截图验收时预置起始时长（ALIVE_WATCH=2h），tickWatch
-	// 消费一次就清掉；生产路径上它恒为 0。
-	watch       time.Duration
-	watchAt     time.Time
-	watchSeed   time.Duration
+	InfoOpen    bool
+	infoOpenAt  time.Time
+	infoRoom    string
 	Quality     string
 	QualityOpen bool
 	Line        string
@@ -469,13 +462,7 @@ func (a *App) Shell(c *ui.Context) {
 		})
 		// 灵动岛浮在内容之上。两种全屏下整块不画：画面上只留返回钮和控制条，
 		// 岛连同它那圈流光和投影压在满屏画面上纯属干扰。
-		//
-		// 但观看时长照常累计。全屏时没人调 tickWatch，退出全屏那一次
-		// now−watchAt 会把全屏这一段整段补进时长里——中间暂停过的时间也会
-		// 被算进去，所以这里补上这一次调用。
-		if fullscreen {
-			a.tickWatch(c.Now())
-		} else {
+		if !fullscreen {
 			a.Island(c)
 		}
 		// Toast 永远在最上层（数据同步面板是模态，压在它下面一次即可）

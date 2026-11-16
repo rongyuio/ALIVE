@@ -40,6 +40,9 @@ var biliSessionCookies = []string{
 type biliAuthDriver struct {
 	prov *bilibiliProvider
 	lg   *bilibiliLogin.Client
+	// refreshToken 是扫码确认时服务端下发的持久化刷新凭据。
+	// 它只跟着会话文件落盘，不进 AuthState、不进日志。
+	refreshTok string
 }
 
 func (d *biliAuthDriver) beginQR(ctx context.Context) ([]byte, string, time.Duration, error) {
@@ -69,6 +72,11 @@ func (d *biliAuthDriver) pollQR(ctx context.Context, key string) (qrPoll, error)
 	case 86038: // 二维码已失效
 		return qrPoll{state: qrExpired}, nil
 	case 0:
+		// 扫码确认这一刻服务端会回 refresh_token（localStorage 的 ac_time_value）。
+		// 错过这次就没有了——后续 cookie/info 只告诉你「要不要刷」，不含凭据。
+		if poll.RefreshToken != "" {
+			d.refreshTok = poll.RefreshToken
+		}
 		return qrPoll{state: qrConfirmed}, nil
 	default:
 		return qrPoll{}, &UpstreamError{
@@ -110,6 +118,10 @@ func (d *biliAuthDriver) logoutQR() {
 func (d *biliAuthDriver) loadCookies(raw string) { d.prov.api.SetCookiesString(raw) }
 
 func (d *biliAuthDriver) cookieString() string { return d.prov.api.GetCookiesString() }
+
+func (d *biliAuthDriver) refreshToken() string { return d.refreshTok }
+
+func (d *biliAuthDriver) setRefreshToken(token string) { d.refreshTok = token }
 
 // deadBiliCookies 构造一组「立即过期」的 cookie：库的 SetCookies 按名字
 // 匹配删除，MaxAge 为负就会把同名项摘掉。

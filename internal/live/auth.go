@@ -3,6 +3,7 @@ package live
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -99,6 +100,16 @@ type qrDriver interface {
 	cookieString() string
 }
 
+// cookieRenewer 是能续期登录 cookie 的驱动。可选实现：不支持续期的平台
+// 不实现它，qrAuth 就不会碰会话文件。
+//
+// renew 成功时返回新的 cookie 串与可选的刷新凭据（B 站的 refresh_token），
+// 调用方负责落盘；失败原样返回，绝不覆盖存下来的会话——续不上就下次再试，
+// 把好会话删掉才是灾难。
+type cookieRenewer interface {
+	renew(ctx context.Context, sess authSession) (cookies, refreshToken string, err error)
+}
+
 // 扫码节奏：B 站和斗鱼都是 3 秒一次。
 const qrPollInterval = 3 * time.Second
 
@@ -114,10 +125,17 @@ type qrAuth struct {
 	// seq 用来丢弃上一轮扫码的迟到回调：换码 / 退出之后旧 goroutine
 	// 可能还在跑，它写回来的状态必须无效。
 	seq int
+	// renewer 是平台的 cookie 续期实现；nil 表示该平台不支持。
+	renewer cookieRenewer
+	// renewCancel 停掉上一轮续期的定时器，换号 / 退出时调用。
+	renewCancel context.CancelFunc
 }
 
 func newQRAuth(p Platform, drv qrDriver) *qrAuth {
 	a := &qrAuth{platform: p, drv: drv, state: AuthState{Platform: p}}
+	if r, ok := drv.(cookieRenewer); ok {
+		a.renewer = r
+	}
 	a.restore()
 	return a
 }
@@ -169,6 +187,7 @@ func (a *qrAuth) RefreshQRCode() {
 
 // Logout 清掉本地会话和平台 cookie。
 func (a *qrAuth) Logout() {
+	a.stopRenew()
 	a.mu.Lock()
 	if a.cancel != nil {
 		a.cancel()
@@ -252,6 +271,7 @@ func (a *qrAuth) runLogin(ctx context.Context, seq int) {
 				s.Status = ""
 				s.Err = ""
 			})
+			a.scheduleRenew()
 			return
 		}
 	}
@@ -268,6 +288,9 @@ func (a *qrAuth) restore() {
 		return
 	}
 	a.drv.loadCookies(sess.Cookies)
+	if r, ok := a.drv.(interface{ setRefreshToken(string) }); ok {
+		r.setRefreshToken(sess.RefreshToken)
+	}
 	a.mu.Lock()
 	a.state.LoggedIn = true
 	a.state.Name = sess.Name
@@ -285,6 +308,7 @@ func (a *qrAuth) verify() {
 		slog.Info("登录态已失效", "platform", a.platform, "error", err)
 		a.drv.logoutQR()
 		removeAuthSession(a.platform)
+		a.stopRenew()
 		a.mu.Lock()
 		a.state = AuthState{Platform: a.platform}
 		a.mu.Unlock()
@@ -297,6 +321,103 @@ func (a *qrAuth) verify() {
 		s.Name = user.Name
 		s.Avatar = user.Avatar
 	})
+	a.scheduleRenew()
+}
+
+// cookieRenewCheckInterval 是两次续期检查之间的间隔。
+//
+// 具体要不要续由平台的 renew 自己判断（本地读 JWT / SESSDATA 的到期时刻，
+// 零网络）。这里只是定时唤醒：一天一次够用，斗鱼一次续期推 7 天、B 站
+// 推 180 天，留足失败重试的时间。
+const cookieRenewCheckInterval = 24 * time.Hour
+
+// scheduleRenew 启动定时续期。只在已登录且有续期实现时做事。
+func (a *qrAuth) scheduleRenew() {
+	if a.renewer == nil || !a.Auth().LoggedIn {
+		return
+	}
+	a.stopRenew()
+	ctx, cancel := context.WithCancel(context.Background())
+	a.mu.Lock()
+	a.renewCancel = cancel
+	a.mu.Unlock()
+	go a.runRenew(ctx)
+}
+
+func (a *qrAuth) stopRenew() {
+	a.mu.Lock()
+	cancel := a.renewCancel
+	a.renewCancel = nil
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (a *qrAuth) runRenew(ctx context.Context) {
+	// 启动时先检查一次：verify 刚确认会话有效，但 B 站的 SESSDATA 可能
+	// 本来就已经快到期（用户很久没开客户端）。之后按天检查。
+	for {
+		if !a.Auth().LoggedIn {
+			return
+		}
+		a.renewOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(cookieRenewCheckInterval):
+		}
+	}
+}
+
+func (a *qrAuth) renewOnce(ctx context.Context) {
+	sess, ok := loadAuthSession(a.platform)
+	if !ok || sess.Cookies == "" {
+		return
+	}
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cookies, token, changed, err := applyRenew(c, a.renewer, sess)
+	if err != nil {
+		var skip errNoRenewNeeded
+		if errors.As(err, &skip) {
+			return
+		}
+		// 续期失败只记日志：续不上就下次再试，绝不删存下来的会话。
+		slog.Info("cookie 续期失败", "platform", a.platform, "error", err)
+		return
+	}
+	if !changed {
+		return
+	}
+	a.drv.loadCookies(cookies)
+	sess.Cookies = cookies
+	if token != "" {
+		sess.RefreshToken = token
+		if r, ok := a.drv.(interface{ setRefreshToken(string) }); ok {
+			r.setRefreshToken(token)
+		}
+	}
+	a.writeSession(sess)
+	slog.Info("cookie 已续期", "platform", a.platform)
+}
+
+// writeSession 用现成的 authSession 覆盖会话文件（temp + rename）。
+func (a *qrAuth) writeSession(sess authSession) {
+	path := authSessionPath(a.platform)
+	if path == "" {
+		return
+	}
+	data, err := json.Marshal(sess)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		slog.Warn("保存续期后的登录态失败", "platform", a.platform, "error", err)
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func (a *qrAuth) currentSeq() int {
@@ -355,6 +476,9 @@ type authSession struct {
 	UID     string `json:"uid,omitempty"`
 	Name    string `json:"name,omitempty"`
 	Avatar  string `json:"avatar,omitempty"`
+	// RefreshToken 是 B 站 cookie 刷新的持久化凭据；其他平台留空。
+	// 它不是 cookie、绝不能进日志或界面，只跟着会话文件落盘。
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 func authSessionPath(p Platform) string {
@@ -386,11 +510,18 @@ func (a *qrAuth) saveSession(user authUser) {
 	if path == "" {
 		return
 	}
+	// refresh token 存在驱动侧（扫码时写入），不放在 user 里：
+	// 它不是展示信息，只有落盘这一个去处。
+	token := ""
+	if r, ok := a.drv.(interface{ refreshToken() string }); ok {
+		token = r.refreshToken()
+	}
 	data, err := json.Marshal(authSession{
-		Cookies: a.drv.cookieString(),
-		UID:     user.UID,
-		Name:    user.Name,
-		Avatar:  user.Avatar,
+		Cookies:      a.drv.cookieString(),
+		UID:          user.UID,
+		Name:         user.Name,
+		Avatar:       user.Avatar,
+		RefreshToken: token,
 	})
 	if err != nil {
 		return
@@ -447,3 +578,18 @@ func platformDisplayName(p Platform) string {
 
 // errSessionInvalid 是「会话无效」的哨兵错误，驱动用它区分网络错误。
 var errSessionInvalid = fmt.Errorf("会话无效")
+
+// applyRenew 是一次续期的纯逻辑：调驱动、判断有无变化、拼新会话。
+//
+// 单独抽出来是为了测试「失败 / 没变化时不返回新会话」这个不变量——
+// renewOnce 直接读写 %APPDATA%，测试里碰不得真实会话文件。
+func applyRenew(ctx context.Context, r cookieRenewer, sess authSession) (cookies, token string, changed bool, err error) {
+	cookies, token, err = r.renew(ctx, sess)
+	if err != nil {
+		return "", "", false, err
+	}
+	if cookies == "" || cookies == sess.Cookies {
+		return "", "", false, nil
+	}
+	return cookies, token, true, nil
+}

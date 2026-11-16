@@ -207,3 +207,42 @@ curl -H "Referer: ..." -H "User-Agent: ..." "<dir>/<seg>.m4s"      # 应返回 2
 日志用 `id` 关联一轮起播，`ms` 相对本轮起点，包含取流、传输就绪、播放器打开和
 「首帧可用」。首帧可用表示播放器 `Ready()`，不是精确的屏幕呈现时刻。
 首帧记录实际传输模式、编码、上游声明规格和解码尺寸，不记录签名 URL 或请求头。
+
+## 六、登录 cookie 续期
+
+扫码登录的会话存在 `%APPDATA%\alive\<platform>.json`，每平台一份。
+登录态验证通过后，`qrAuth` 起一个每天一次的续期检查；具体要不要续由平台
+驱动自己判断（读本地 token 的到期时刻，零网络），过期前续不上就下次再试。
+
+**失败绝不覆盖会话**：续期失败时只记日志，原会话文件原样保留。写错的代价是
+把用户还能用的登录态删掉——比「多刷一次」严重得多。这条由 `applyRenew` 的
+`changed` 返回值看住，测试 `TestApplyRenew` 覆盖失败 / 跳过 / 无变化 / 成功四态。
+
+### 斗鱼：safeAuth 静默重登
+
+机制来自网页端 `passport.douyu.com/wgapi/member/passport/safeAuth`，
+参考 ryDailyCheckin 的实测（`platform/douyu/keepalive.go`，2026-10-09）：
+带一个真的 `did`（从 did SDK 领的，`acf_devid` 顶替不了）请求，服务端回一整套
+登录 cookie、把票据推到 7 天。三个不能少的条件：callback 参数、真 did、
+原 cookie；手动跟 302，因为 Set-Cookie 分散在跳转链上。
+
+闸门读 `acf_jwt_token` / `acf_dmjwt_token` 的 JWT `exp`（本地 base64），
+剩不到 72 小时才续。读不出来一律当「要续」——省下的只是一次请求，判错的方向
+是断登录。
+
+登录头像取自 cookie 里的 `acf_avatar`（扫码回调 payload 里的头像不稳定）。
+启动时 `verifyQR` 也从这里恢复，否则验证成功后 `saveSession` 会把存下来的头像写空。回 `{"error":0}` 却没下发认证 cookie 时算失败（did 不对就是这个形状），
+不能当成功，否则就是 ryDailyCheckin 文档里记的 2026-10-05 那次静默失效。
+
+### B 站：cookie/refresh 三步
+
+bilibili v0.14.0 的 `login.Client` 提供完整三步：
+`GetWebCookieRefreshInfo`（问服务端要不要刷，拿 timestamp）→
+`GetWebCookieRefreshCsrf`（访问 correspond 页取实时口令）→
+`RefreshCookie`（带 refresh_token 换新 cookie）。
+
+关键在 `refresh_token`：它只在扫码确认成功的那一次响应里返回（对应网页
+localStorage 的 `ac_time_value`），必须立刻存进会话文件。没有它就无法续期，
+只能重新扫码。所以它跟着 `authSession.RefreshToken` 落盘，不进 AuthState、
+不进日志。闸门读 SESSDATA 第二段的服务端到期时刻（实测签发 180 天），
+剩不到 7 天才刷；读不出来时 fail-open。

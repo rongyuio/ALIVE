@@ -180,7 +180,11 @@ func (d *douyuAuthDriver) finishQR(ctx context.Context) (authUser, error) {
 	}
 	d.prov.setAuthCookie(cookie)
 
-	user := authUser{UID: fields["acf_uid"], Name: douyuCookieUserName(cookie)}
+	user := authUser{
+		UID:    fields["acf_uid"],
+		Name:   douyuCookieUserName(cookie),
+		Avatar: douyuCookieAvatar(cookie),
+	}
 	// 回调里偶尔会带昵称和头像，有就用更准的那份。
 	if data, ok := payload["data"].(map[string]any); ok {
 		user.Name = firstNonEmpty(
@@ -188,9 +192,11 @@ func (d *douyuAuthDriver) finishQR(ctx context.Context) (authUser, error) {
 			douyuText(data["nick_name"]), douyuText(data["username"]),
 			douyuText(data["userName"]), user.Name,
 		)
-		user.Avatar = httpsURL(firstNonEmpty(
+		user.Avatar = douyuAvatar(httpsURL(firstNonEmpty(
 			douyuText(data["avatar"]), douyuText(data["avatar_url"]), douyuText(data["avatarUrl"]),
-		))
+			// 回调 payload 不带头像时，登录 cookie 里的 acf_avatar 是稳定来源。
+			user.Avatar,
+		)))
 	}
 	return user, nil
 }
@@ -201,11 +207,34 @@ func (d *douyuAuthDriver) finishQR(ctx context.Context) (authUser, error) {
 // cookie 里有没有那对登录字段。宁可偶尔多留一次过期会话（下次取流会
 // 发现并降级），也不要在启动时多发一个请求去赌风控。
 func (d *douyuAuthDriver) verifyQR(context.Context) (authUser, error) {
-	raw := d.cookieString()
+	return douyuVerifyUser(d.cookieString())
+}
+
+// douyuVerifyUser 从存下来的 cookie 恢复展示信息。
+// 单独抽出来是为了测试：verifyQR 依赖真 provider，测试里造不出来。
+func douyuVerifyUser(raw string) (authUser, error) {
 	if !douyuCookieHasLogin(raw) {
 		return authUser{}, errSessionInvalid
 	}
-	return authUser{Name: douyuCookieUserName(raw)}, nil
+	return authUser{
+		Name:   douyuCookieUserName(raw),
+		Avatar: douyuCookieAvatar(raw),
+	}, nil
+}
+
+// douyuCookieAvatar 从登录 cookie 的 acf_avatar 读头像地址。
+//
+// 扫码回调的 payload 里偶尔也带头像，但那个不稳定；登录 cookie 里
+// acf_avatar 是服务端固定下发的，启动恢复登录态时也能读到，不会把
+// 已存下来的头像写空。值可能是 URL 编码过的，和昵称一样解一层。
+func douyuCookieAvatar(raw string) string {
+	value := douyuParseCookieFields(raw)["acf_avatar"]
+	if decoded, err := url.QueryUnescape(value); err == nil {
+		value = decoded
+	}
+	// acf_avatar 的文件名常以 `_` 结尾、没有扩展名（实测 ...ec_），
+	// 直接用会 404。douyuAvatar 就是为这种形状写的：补 _big.jpg。
+	return douyuAvatar(httpsURL(strings.TrimSpace(value)))
 }
 
 func (d *douyuAuthDriver) logoutQR() { d.prov.setAuthCookie("") }
