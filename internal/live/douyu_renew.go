@@ -73,7 +73,7 @@ func (d *douyuAuthDriver) renew(ctx context.Context, sess authSession) (string, 
 	if issued {
 		cookies["dy_did"] = did
 	}
-	updated := douyuBuildCookieString(cookies, douyuCookieOrder)
+	updated := buildCookieString(cookies, douyuCookieOrder)
 	if cookies["acf_uid"] == "" || cookies["acf_ltkid"] == "" {
 		return "", "", fmt.Errorf("续期后 cookie 缺少 acf_uid/acf_ltkid，登录态已失效")
 	}

@@ -19,6 +19,13 @@ import (
 // 分区树本身很小（斗鱼十几 KB，虎牙和抖音还是随包静态表，根本不发请求），
 // 各平台的 limiter 互相独立，并发拉不会互相拖慢。先拉全的好处是：首次切
 // 平台是瞬时的，不会先闪一下「正在加载分区…」再等网络。
+// StartPrefetch 在窗口就绪时立刻开拉各平台的分区树和首屏列表，
+// 不等首页第一帧渲染。
+//
+// 首帧之前省下的那几百毫秒很值：切平台要用的首屏数据和封面都是从这里
+// 开始下载的，晚一步，用户第一次切过去就正好撞在还没回来的路上。
+func (a *App) StartPrefetch() { a.ensureLiveData() }
+
 func (a *App) ensureLiveData() {
 	if a.liveLoaded == nil {
 		a.liveLoaded = map[string]bool{}
@@ -90,6 +97,16 @@ func (a *App) feedURLs(platform string) map[string]bool {
 		}
 	}
 
+	// 顶栏的登录头像也是常驻图：切走再切回来，它不该重新加载。
+	// 账号按平台隔离，四个平台各一张，都留着。
+	for _, id := range a.PlatformOrder {
+		if auth := authFor(id); auth != nil {
+			if u := auth.Auth().Avatar; u != "" {
+				keep[u] = true
+			}
+		}
+	}
+
 	groups := a.GroupsByPlatform[platform]
 	if len(groups) == 0 || len(groups[0].CategoryIDs) == 0 {
 		return keep
@@ -153,7 +170,7 @@ func (a *App) prefetchFirstPage(platform string) {
 			n := min(len(rooms), prefetchCovers)
 			for i := 0; i < n; i++ {
 				media.Default.Prefetch(a.gridCardW, rooms[i].CoverURL)
-				media.Default.Prefetch(32, rooms[i].AvatarURL)
+				media.Default.PrefetchAvatars(32, rooms[i].AvatarURL)
 			}
 		})
 	}()
@@ -399,9 +416,12 @@ func (a *App) reloadRooms() {
 
 const (
 	listPageSize = 40
-	// prefetchCovers 是预取首屏时连带拉多少张封面：
-	// 覆盖常见的窗口大小（十来列 × 两行），再多就是浪费带宽。
-	prefetchCovers = 24
+	// prefetchCovers 是预取首屏时连带拉多少张封面。
+	//
+	// 取一整页：List 除了可见的那几行，还会多建几行（list.md 的
+	// "the rows in view, and a few beyond"），窗口宽的时候六行就是三十多张。
+	// 只备两三行的话，切过去第一帧会有几张卡空着封面，等下载回来才补上。
+	prefetchCovers = listPageSize
 	// feedTTL 是分区列表的缓存时间：60s 内切回同一个分区直接渲染缓存，
 	// 不重新请求（baseline 的 feedCache 是同一个策略）。
 	feedTTL = 60 * time.Second

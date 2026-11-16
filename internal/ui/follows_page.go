@@ -23,7 +23,11 @@ func (a *App) FollowsPage(c *ui.Context) {
 
 	ui.Column(c).Grow(1).Padding(0, pad, 0, pad).Gap(14).Children(func() {
 		a.followsBar(c)
-		a.followsGrid(c, list)
+		// 换筛选就是换了一份列表，和首页换分区同一个语法：旧的一屏按方向
+		// 退出，新的从同一侧进来。筛选条留在原地，它是这一屏的边框。
+		feed := ui.Column(c).Key(navKey("follows", a.followsSeq)).Grow(1).
+			Transition(feedTransition(c, a.navDir))
+		feed.Children(func() { a.followsGrid(c, list) })
 	})
 }
 
@@ -38,6 +42,24 @@ func (a *App) FollowsPage(c *ui.Context) {
 // 是重复；「N 位主播 · N 正在直播」放进每枚胶囊的悬停提示里，常态这一行
 // 只留筛选和搜索，指针停住才出数字。
 func (a *App) followsBar(c *ui.Context) {
+	// 这一排和分区栏同构：一排并列的选项、一个选中项、一枚滑块。
+	followsIDs := append([]string{""}, a.followsPlatforms()...)
+	followsNames := make([]string, len(followsIDs))
+	for i, id := range followsIDs {
+		followsNames[i] = "全部"
+		if id != "" {
+			followsNames[i] = platformLabel(id)
+		}
+	}
+	box := measureChips(c, followsNames, theme.TextSM, labelWeight, 15, 6, 0)
+	a.followsBox = box
+	followsActive := 0
+	for i, id := range followsIDs {
+		if id == a.FollowsPlatform {
+			followsActive = i
+		}
+	}
+
 	bar := ui.Row(c).Gap(10).Padding(8, 12, 10, 12).
 		Radius(theme.RadiusMD).Background(theme.BgSecondary)
 	// inset 0 1px 0 rgba(255,255,255,.04)：和卡片、订阅条同一套受光边
@@ -46,9 +68,9 @@ func (a *App) followsBar(c *ui.Context) {
 	bar.Children(func() {
 		// 平台胶囊：只列「确实有关注主播」的平台，顺序跟顶栏 tab 一致
 		ui.Row(c).Gap(6).Children(func() {
-			a.followsPlatformChip(c, "", "全部")
-			for _, id := range a.followsPlatforms() {
-				a.followsPlatformChip(c, id, platformLabel(id))
+			slider(c, "follows-slide", box, followsActive, 34, theme.RadiusFull, theme.Accent)
+			for i, id := range followsIDs {
+				a.followsPlatformChip(c, i, id, followsNames[i], box.w[i])
 			}
 		})
 
@@ -181,7 +203,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 	row.Children(func() {
 		wrap := ui.Box(c).Size(40, 40)
 		wrap.Children(func() {
-			if bmp := media.Default.Bitmap(s.AvatarURL, 40); bmp != nil {
+			if bmp := media.Default.Avatar(s.AvatarURL, 40); bmp != nil {
 				ui.Image(c, bmp).Fill().Fit(ui.Cover).Radius(theme.RadiusFull)
 			} else {
 				ui.Box(c).Fill().Radius(theme.RadiusFull).
@@ -362,7 +384,7 @@ func arcPath(cx, cy, rad, from, to float32) ui.Path {
 }
 
 // followsPlatformChip 是筛选条上的一枚平台 chip。id 为空表示「全部」。
-func (a *App) followsPlatformChip(c *ui.Context, id, label string) {
+func (a *App) followsPlatformChip(c *ui.Context, idx int, id, label string, w float32) {
 	active := id == a.FollowsPlatform
 	// 高度 34 和订阅页的 chip 一致：同一条胶囊条里的东西要同一个身高
 	chip := ui.Box(c).Height(34).Padding(0, 15, 0, 15).
@@ -371,17 +393,13 @@ func (a *App) followsPlatformChip(c *ui.Context, id, label string) {
 		// 数据规模不常驻：指针停在这枚胶囊上才出「N 位主播 · N 正在直播」
 		Tooltip(a.followsChipTip(id))
 
-	// baseline 的 .panelFilter 有 transition: background-color / color 190ms；
-	// 切换筛选时整条 chip 是渐变的，硬切会显得列表「跳」一下。
-	bg := theme.FillQuaternary
-	switch {
-	case active:
-		bg = theme.Accent
-	case chip.Hovered():
-		bg = theme.FillTertiary
+	// 选中态由滑块画：同一块材质滑过去，而不是旧的白一下、新的亮一下。
+	// 未选中不画底——底下一有颜色，就会把正在经过的滑块整块盖住。
+	if !active && chip.Hovered() {
+		chip.Background(theme.FillTertiary)
 	}
-	chip.Background(chip.AnimateColor("chip-bg-"+id, bg, theme.EaseOut(followsDur2)))
 	if chip.Clicked() {
+		a.navFlip(&a.followsSeq, a.followsPlatformIndex(), idx)
 		a.FollowsPlatform = id
 	}
 	chip.Children(func() {
@@ -392,13 +410,26 @@ func (a *App) followsPlatformChip(c *ui.Context, id, label string) {
 			col = theme.TextPrimary
 		}
 		txt := ui.Text(c, label).FontSize(theme.TextSM)
-		txt.TextColor(txt.AnimateColor("chip-fg-"+id, col, theme.EaseOut(followsDur2)))
+		txt.TextColor(txt.AnimateColor("chip-fg-"+id, col, theme.Slide()))
 		if active {
 			txt.FontWeight(600)
 		} else {
 			txt.FontWeight(500)
 		}
 	})
+}
+
+// followsPlatformIndex 是筛选条上当前选中项的序号：「全部」占第 0 格。
+func (a *App) followsPlatformIndex() int {
+	if a.FollowsPlatform == "" {
+		return 0
+	}
+	for i, id := range a.followsPlatforms() {
+		if id == a.FollowsPlatform {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // followsChipTip 是一枚筛选项的悬停提示：这组筛选下有多少主播、多少在播。

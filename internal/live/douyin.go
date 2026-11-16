@@ -49,6 +49,11 @@ type douyinProvider struct {
 	ids *cache[douyinRoomRef]
 	lim *limiter
 
+	// 登录态由 webview 登录写入，所有请求自动带上。
+	authMu     sync.RWMutex
+	authCookie string
+	login      *WebLogin
+
 	// 分区表是静态数据，解析一次常驻；catNames 用于给卡片补分类胶囊。
 	catOnce   sync.Once
 	catGroups []CategoryGroup
@@ -57,7 +62,7 @@ type douyinProvider struct {
 }
 
 func newDouyin() *douyinProvider {
-	return &douyinProvider{
+	p := &douyinProvider{
 		api:   newAPIClient(Douyin, douyinReferer),
 		areas: newCache[[]CategoryGroup](),
 		rooms: newCache[Page](),
@@ -67,6 +72,12 @@ func newDouyin() *douyinProvider {
 		// 一旦拿到验证页，wrap 里的 block() 会把整个平台冷下来兜住。
 		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
+	p.api.cookies = p.authCookieString
+	// 抖音的 verify 留空：用户信息接口同样要 secsdk 签名，与其在启动时
+	// 赌一次风控，不如信 cookie——会话坏了取流会自己失败。
+	p.login = newWebLogin(Douyin, douyinWebLoginSpec(), douyinVerifyCookie, douyinCookieOrder)
+	p.login.Restore()
+	return p
 }
 
 func (p *douyinProvider) Platform() Platform { return Douyin }

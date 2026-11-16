@@ -33,6 +33,10 @@ type apiClient struct {
 	http     *http.Client
 	ua       string
 	referer  string
+	// cookies 在每次请求时取一次 Cookie 头，nil 表示不带。
+	// 登录态是进程内可变的（扫码完成、续期、退出），所以这里取函数
+	// 而不是字符串，免得每次换号都要重建 client。
+	cookies func() string
 }
 
 func newAPIClient(platform Platform, referer string) *apiClient {
@@ -127,6 +131,13 @@ func (c *apiClient) apply(req *http.Request, h header) {
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	if c.referer != "" {
 		req.Header.Set("Referer", c.referer)
+	}
+	// 先上默认登录态，再让调用方的头覆盖：单次请求要带别的 cookie 时
+	// 直接传 "Cookie"，不用改 client。
+	if c.cookies != nil {
+		if v := c.cookies(); v != "" {
+			req.Header.Set("Cookie", v)
+		}
 	}
 	for k, v := range h {
 		req.Header.Set(k, v)

@@ -257,3 +257,55 @@ localStorage 的 `ac_time_value`），必须立刻存进会话文件。没有它
 只能重新扫码。所以它跟着 `authSession.RefreshToken` 落盘，不进 AuthState、
 不进日志。闸门读 SESSDATA 第二段的服务端到期时刻（实测签发 180 天），
 剩不到 7 天才刷；读不出来时 fail-open。
+
+## 七、浏览器登录：虎牙与抖音
+
+这两家没有能在纯 HTTP 里复现的扫码协议，所以登录交给系统 webview
+（Windows 上是 WebView2，由 MyGo 的 `Window.NewWebView` 提供）：
+
+| 平台 | 卡在哪 |
+|---|---|
+| 虎牙 | UDB 扫码确认要求 `sdid` 是 hydevice 从 canvas / audio / 字体算出的设备指纹；拿随机串顶替，手机端点确认时服务端直接拒 |
+| 抖音 | `check_qrconnect` 要 passport 的 `sign` + `qs` 和 secsdk 的签名头，缺一个就是 `error_code 4031` |
+
+两者都在 `internal/live/web_login.go` 的 `WebLogin` 里，界面侧在
+`internal/ui/login_webview.go`。
+
+**主区域直接显示平台登录页**：点登录后，卡片网格整个换成 webview，
+页面原样铺开，注入的脚本只负责把平台自己的登录入口点开。扫码、点
+「获取验证码」、填码、点确定全由用户在真页面上完成。
+
+为什么不做「程序代点」：抖音的验证流程分支多（要不要点获取验证码、
+点完是否自动发送、要不要再点一次），代点一改版就整条失效，而且失败了
+程序察觉不到。交给真页面，只有平台改版才需要动，动的也只是「点哪个
+入口」这一处。
+
+登录页地址挑过：抖音用 `www.douyin.com/user/self`（个人主页，不是直播
+首页——那边会自动播放视频出声）；虎牙用 `www.huya.com/myfollow`（未登录
+访问必然要求登录，页面也轻）。登录用的 webview 一律 `SetAudioMuted(true)`
+兜底。
+
+**加载完成前盖一层 loading**：判断只看 `document.readyState ===
+'complete'`，不管登录框长什么样。之前按「登录框元素出现」判断，既慢
+又脆——平台换个容器就永远等不到。
+
+**持久会话，缓存留着**：用固定名字的 `mygo.NewSession("alive-login")`，
+两个平台共用一个 profile。登录页第一次要十几秒，之后走 HTTP / JS 缓存
+一两秒就出来。会话 cookie 也不清：平台页面加载时会自己把它续上。
+
+**自动续期**：启动校验判定会话失效时，不直接删会话文件，而是用同一个
+profile 在后台开一次页面（不显示、静音），20 秒后读回 cookie——平台
+自己可能就把它续上了；续不上才清掉，让用户重新登录。
+
+**校验的边界**：只有平台明确回「不认这个会话」才走续期/删除。超时、
+DNS、风控这类一次性失败必须保留会话，否则用户要重新扫码。
+
+**续期的实情**：虎牙没有续期接口——`udb_web/udbport2.php?do=checkLogin`
+只回登录态、不下发新 cookie，`udb_biztoken` 本身就是长期票据；抖音
+`sessionid` 同理。所以不走「读到期时刻再刷新」那套，而是启动时校验，
+失效了用 webview 试一次（见上）。
+
+**昵称与头像**：虎牙要单独问 `checkUserNick` 和 `user/getUserInfo`，
+`checkLogin` 的 `userNick` 常年是空的；抖音走 `profile/self`（复用
+`a_bogus` 签名），部分账号返回的是打码昵称（`U+FFF4` 这类不可见字符），
+`visibleName` 过滤后退回空串，界面显示「抖音账号」。

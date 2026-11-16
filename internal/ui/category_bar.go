@@ -97,6 +97,7 @@ func (a *App) selectGroup(i int) {
 	if i < 0 || i >= len(a.Groups) {
 		return
 	}
+	a.navFlip(&a.navSeq, a.GroupIndex, i)
 	// baseline：切一级分区时自动选中它的第一个二级分区，三级回到「全部」
 	a.GroupIndex = i
 	a.CategoryIndex = 0
@@ -106,6 +107,7 @@ func (a *App) selectGroup(i int) {
 }
 
 func (a *App) selectCategory(i int) {
+	a.navFlip(&a.navSeq, a.CategoryIndex, i)
 	a.CategoryIndex = i
 	a.SubCatIndex = -1
 	a.MoreOpen = false
@@ -200,27 +202,46 @@ func (a *App) categoryBar(c *ui.Context) {
 
 // primaryRow 是一级分区行：左侧可横滑的分组 tab，右侧分区搜索框。
 func (a *App) primaryRow(c *ui.Context) {
+	names := make([]string, len(a.Groups))
+	for i, g := range a.Groups {
+		names[i] = g.Name
+	}
+	// 滑块要有一个跟着内容走的定位基准，所以横滑容器里再套一层 Row：
+	// 绝对定位的元素量的是它父级的边，挂在 ScrollHorizontal 上会在
+	// 滚动时和内容错开。
+	box := measureRow(c, names, groupFont, labelWeight, groupTabPadH, groupGap, 0)
+
 	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
 		// baseline 的这两行是 overflow-x:auto + 隐藏滚动条，只是能横滑
-		ui.ScrollHorizontal(c).Scrollbars(false).Gap(groupGap).Grow(1).Padding(2).Children(func() {
-			for i, g := range a.Groups {
-				a.groupTab(c, i, g.Name)
-			}
+		ui.ScrollHorizontal(c).Scrollbars(false).Grow(1).Padding(2).Children(func() {
+			ui.Row(c).Gap(groupGap).Children(func() {
+				slider(c, "group-slide", box, a.GroupIndex, groupTabH, theme.RadiusMD, theme.AccentSoft)
+				for i, g := range a.Groups {
+					a.groupTab(c, i, g.Name, box.w[i])
+				}
+			})
 		})
 		a.categorySearch(c)
 	})
 }
 
-func (a *App) groupTab(c *ui.Context, i int, name string) {
+// labelWeight 是给分区标签量宽度时用的字重：按最宽的那个状态量。
+//
+// 选中态是 600、其余 500。必须按 600 量——按 500 量的话，一选中字就变宽，
+// 单行文字会被自己的容器截成「鸣…」，而滑块还停在正确的格子上，很难对上号。
+// 宽度定死之后，选中不再改变格子大小，后面的项也不会跟着挪。
+const labelWeight float32 = 600
+
+func (a *App) groupTab(c *ui.Context, i int, name string, w float32) {
 	selected := i == a.GroupIndex
 	// 自绘 Box 不进无障碍树，没有 Label 时自动化只能按坐标点。
-	tab := ui.Box(c).Height(groupTabH).Padding(0, groupTabPadH, 0, groupTabPadH).
+	tab := ui.Box(c).Height(groupTabH).
+		Padding(0, groupTabPadH, 0, groupTabPadH).
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).Label("分区:" + name)
-	hovered := tab.Hovered()
-	switch {
-	case selected:
-		tab.Background(theme.AccentSoft)
-	case hovered:
+	// 选中态的底色由下面的滑块画：同一块材质移过去，而不是旧的白一下、
+	// 新的亮一下。这里只留 hover 的反应，而且选中项不叠 hover 底，
+	// 否则会把滑块盖掉半块。
+	if !selected && tab.Hovered() {
 		tab.Background(theme.FillQuaternary)
 	}
 	if tab.Clicked() {
@@ -230,11 +251,14 @@ func (a *App) groupTab(c *ui.Context, i int, name string) {
 		txt := ui.Text(c, name).FontSize(groupFont)
 		switch {
 		case selected:
-			txt.FontWeight(600).TextColor(theme.AccentInk)
-		case hovered:
-			txt.FontWeight(500).TextColor(theme.TextPrimary)
+			txt.FontWeight(600).
+				TextColor(txt.AnimateColor("group-ink", theme.AccentInk, theme.Slide()))
+		case tab.Hovered():
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("group-ink", theme.TextPrimary, theme.Slide()))
 		default:
-			txt.FontWeight(500).TextColor(theme.TextSecondary)
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("group-ink", theme.TextSecondary, theme.Slide()))
 		}
 	})
 }
@@ -393,6 +417,12 @@ func (a *App) categoryHits() []categoryHit {
 }
 
 func (a *App) pickCategoryHit(h categoryHit) {
+	// 从搜索里跳过去也要有方向：先看一级分区换没换，两级都没换才原地淡入。
+	if h.GroupIndex != a.GroupIndex {
+		a.navFlip(&a.navSeq, a.GroupIndex, h.GroupIndex)
+	} else {
+		a.navFlip(&a.navSeq, a.CategoryIndex, h.CategoryIndex)
+	}
 	a.GroupIndex = h.GroupIndex
 	a.CategoryIndex = h.CategoryIndex
 	a.SubCatIndex = -1
@@ -442,14 +472,24 @@ func (a *App) categorySearchItem(c *ui.Context, i int, h categoryHit) {
 func (a *App) secondaryRow(c *ui.Context) {
 	winW, _ := c.Size()
 	avail := winW - 2*14 - a.subscribeWidth(c) - 12
-	overflow := a.chipsOverflow(c, avail)
+
+	cats := a.currentCategories()
+	// 二级分区是这一套里最"重"的一层：滑块是实心的 accent，
+	// 一级和三级都是柔底。层的轻重按它在信息结构里的分量来，不都画成一样。
+	box := measureChips(c, cats, theme.TextSM, labelWeight, chipPadH, chipGap, chipMaxW)
+	a.navBox = box
+	// 是否溢出直接问同一份格子：另写一遍量法，改一处忘另一处就会错。
+	overflow := box.last()+4 > avail
 
 	row := ui.Row(c).Gap(12).AlignItems(ui.Center)
 	row.Children(func() {
-		ui.ScrollHorizontal(c).Scrollbars(false).Gap(chipGap).Grow(1).Padding(2).Children(func() {
-			for i, name := range a.currentCategories() {
-				a.categoryChip(c, i, name)
-			}
+		ui.ScrollHorizontal(c).Scrollbars(false).Grow(1).Padding(2).Children(func() {
+			ui.Row(c).Gap(chipGap).Children(func() {
+				slider(c, "chip-slide", box, a.CategoryIndex, chipH, theme.RadiusMD, theme.Accent)
+				for i, name := range cats {
+					a.categoryChip(c, i, name, box.w[i])
+				}
+			})
 		})
 		if overflow {
 			a.moreButton(c, row)
@@ -458,19 +498,18 @@ func (a *App) secondaryRow(c *ui.Context) {
 	})
 }
 
-func (a *App) categoryChip(c *ui.Context, i int, name string) {
+func (a *App) categoryChip(c *ui.Context, i int, name string, w float32) {
 	selected := i == a.CategoryIndex
-	chip := ui.Box(c).Height(chipH).Padding(0, chipPadH, 0, chipPadH).
+	chip := ui.Box(c).Height(chipH).
+		Padding(0, chipPadH, 0, chipPadH).MaxWidth(chipMaxW).
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).
-		Border(1, ui.Transparent).MaxWidth(chipMaxW).Label("分类:" + name)
+		Border(1, ui.Transparent).Label("分类:" + name)
+	// 底部那层淡色底不画：滑块就在这一层下面滑过去，chip 一旦有自己的底色，
+	// 就会把正在经过的滑块整块盖住——切换时看起来像被吃掉。
+	// 高亮只由滑块这一块材质承担，未选中就什么都不画。
 	hovered := chip.Hovered()
-	switch {
-	case selected:
-		chip.Background(theme.Accent)
-	case hovered:
+	if !selected && hovered {
 		chip.Background(theme.FillTertiary)
-	default:
-		chip.Background(theme.FillQuaternary)
 	}
 	if chip.Clicked() {
 		a.selectCategory(i)
@@ -479,11 +518,14 @@ func (a *App) categoryChip(c *ui.Context, i int, name string) {
 		txt := ui.Text(c, name).FontSize(theme.TextSM).SingleLine()
 		switch {
 		case selected:
-			txt.FontWeight(600).TextColor(theme.AccentText)
+			txt.FontWeight(600).
+				TextColor(txt.AnimateColor("chip-ink", theme.AccentText, theme.Slide()))
 		case hovered:
-			txt.FontWeight(500).TextColor(theme.TextPrimary)
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("chip-ink", theme.TextPrimary, theme.Slide()))
 		default:
-			txt.FontWeight(500).TextColor(theme.TextSecondary)
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("chip-ink", theme.TextSecondary, theme.Slide()))
 		}
 	})
 }
@@ -496,23 +538,6 @@ func (a *App) subscribeWidth(c *ui.Context) float32 {
 		label = "已订阅"
 	}
 	return 26 + 2 + 13 + 6 + textWidth(c, label, theme.TextSM, 600)
-}
-
-// chipsOverflow 复刻 baseline 的 `scrollWidth - clientWidth > 2`：
-// 把每个 chip 的文字宽度加 padding、边框，再加上 gap 与容器 padding，和可用宽度比。
-func (a *App) chipsOverflow(c *ui.Context, avail float32) bool {
-	total := float32(4) // chipScroll 的 padding: 2 + 2
-	for i, name := range a.currentCategories() {
-		w := textWidth(c, name, theme.TextSM, 500) + 2*chipPadH + 2
-		if w > chipMaxW {
-			w = chipMaxW
-		}
-		if i > 0 {
-			total += chipGap
-		}
-		total += w
-	}
-	return total > avail
 }
 
 // moreButton 是二级分区放不下时出现的「全部」入口，展开该分组的全部分区。
@@ -659,32 +684,40 @@ func (a *App) subscribeButton(c *ui.Context) {
 // tertiaryRow 是三级分区行（仅斗鱼）：一条上分隔线 + 一行 chip，
 // 第一个固定是「全部」（= 二级分区维度）。
 func (a *App) tertiaryRow(c *ui.Context) {
+	// 第一项永远存在，所以这里没有"没有选中"的中间态：SubCatIndex 的
+	// -1（全部）正好落在第 0 格。
+	names := append([]string{"全部"}, a.currentSubs()...)
+	box := measureRow(c, names, theme.TextXS, labelWeight, subChipPadH, 8, subChipMaxW)
+
 	ui.Column(c).Gap(10).Children(func() {
 		ui.Box(c).Height(1).Background(theme.Border)
-		ui.ScrollHorizontal(c).Scrollbars(false).Gap(8).Children(func() {
-			a.subChip(c, -1, "全部")
-			for i, name := range a.currentSubs() {
-				a.subChip(c, i, name)
-			}
+		ui.ScrollHorizontal(c).Scrollbars(false).Children(func() {
+			ui.Row(c).Gap(8).Children(func() {
+				slider(c, "sub-slide", box, a.SubCatIndex+1, subChipH, theme.RadiusXS, theme.AccentSoft)
+				a.subChip(c, -1, names[0], box.w[0])
+				for i, name := range a.currentSubs() {
+					a.subChip(c, i, name, box.w[i+1])
+				}
+			})
 		})
 	})
 }
 
-func (a *App) subChip(c *ui.Context, i int, name string) {
+func (a *App) subChip(c *ui.Context, i int, name string, w float32) {
 	// SubCatIndex 的 -1 表示「全部」，正好对应第一个 chip
 	active := i == a.SubCatIndex || (i == -1 && a.SubCatIndex < 0)
-	chip := ui.Box(c).Height(subChipH).Padding(0, subChipPadH, 0, subChipPadH).
+	chip := ui.Box(c).Height(subChipH).
+		Padding(0, subChipPadH, 0, subChipPadH).MaxWidth(subChipMaxW).
 		Radius(theme.RadiusXS).Center().Cursor(ui.CursorPointer).
-		MaxWidth(subChipMaxW).Label("子分类:" + name)
+		Label("子分类:" + name)
 	hovered := chip.Hovered()
-	switch {
-	case active:
-		chip.Background(theme.AccentSoft)
-	case hovered:
+	if !active && hovered {
 		chip.Background(theme.FillQuaternary)
 	}
 	if chip.Clicked() {
 		if i != a.SubCatIndex {
+			// 三级也是换了一份内容，方向按格子差算：往右点就从右来。
+			a.navFlip(&a.navSeq, a.SubCatIndex+1, i+1)
 			a.SubCatIndex = i
 			// 三级分区是列表的第三维，换了就要重新拉（feedKey 里带着它）
 			a.reloadRooms()
@@ -694,11 +727,14 @@ func (a *App) subChip(c *ui.Context, i int, name string) {
 		txt := ui.Text(c, name).FontSize(theme.TextXS).SingleLine()
 		switch {
 		case active:
-			txt.FontWeight(600).TextColor(theme.AccentInk)
+			txt.FontWeight(600).
+				TextColor(txt.AnimateColor("sub-ink", theme.AccentInk, theme.Slide()))
 		case hovered:
-			txt.FontWeight(500).TextColor(theme.TextPrimary)
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("sub-ink", theme.TextPrimary, theme.Slide()))
 		default:
-			txt.FontWeight(500).TextColor(theme.TextTertiary)
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("sub-ink", theme.TextTertiary, theme.Slide()))
 		}
 	})
 }

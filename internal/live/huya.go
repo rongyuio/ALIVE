@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,10 +43,15 @@ type huyaProvider struct {
 	rooms  *cache[Page]
 	search *cache[[]Room]
 	lim    *limiter
+
+	// 登录态是进程内可变的：webview 登录完成、退出登录都会换掉它。
+	authMu     sync.RWMutex
+	authCookie string
+	login      *WebLogin
 }
 
 func newHuya() *huyaProvider {
-	return &huyaProvider{
+	p := &huyaProvider{
 		// 虎牙接口要求 Referer 来自站内页面，缺了容易拿到空响应。
 		api:    newAPIClient(Huya, "https://www.huya.com/"),
 		areas:  newCache[[]CategoryGroup](),
@@ -55,6 +61,11 @@ func newHuya() *huyaProvider {
 		// 60ms 间隔只防同一瞬间齐发，风控冷却机制照常生效。
 		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
+	// 登录态由 webview 登录写入，所有请求自动带上。
+	p.api.cookies = p.authCookieString
+	p.login = newWebLogin(Huya, huyaWebLoginSpec(), huyaVerifyCookie, huyaCookieOrder)
+	p.login.Restore()
+	return p
 }
 
 func (p *huyaProvider) Platform() Platform { return Huya }

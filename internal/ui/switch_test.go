@@ -75,3 +75,35 @@ func TestStaleCacheRefreshKeepsCards(t *testing.T) {
 		t.Fatalf("渲染过期缓存时重播了入场：EnterSeq %d → %d, CardsIn=%v", before, a.EnterSeq, a.CardsIn)
 	}
 }
+
+// 首屏封面还没解码完，不该拦住切平台。
+//
+// 卡片的封面位本来就有同尺寸的渐变占位（coverArt），图晚到只是从渐变
+// 换成真图，版式不跳。platformSwitchReady 却要求首屏每一张封面都有纹理，
+// 只要有一张在路上就白等满 700ms：点完 tab 滑块已经过去了，内容一动不动。
+func TestPlatformSwitchDoesNotWaitForCovers(t *testing.T) {
+	a := NewMockApp()
+	a.LiveMode = true
+	a.Platform = "bilibili"
+	a.GroupsByPlatform["douyu"] = []CategoryGroup{{
+		ID: "1", Name: "网游",
+		Categories: []string{"英雄联盟"}, CategoryIDs: []string{"86"},
+	}}
+	a.feedCache["douyu|86|-1"] = feedEntry{
+		rooms: []Streamer{
+			{Platform: "douyu", RoomID: "1", Name: "甲", CoverURL: "https://example.invalid/a.jpg"},
+			{Platform: "douyu", RoomID: "2", Name: "乙", CoverURL: "https://example.invalid/b.jpg"},
+		},
+		page: 1,
+		at:   time.Now(),
+	}
+
+	a.switchTab("douyu")
+
+	if a.pendingSwitch != "" {
+		t.Fatalf("封面没到就挂起了切换：pending=%q", a.pendingSwitch)
+	}
+	if a.Platform != "douyu" {
+		t.Fatalf("平台还是 %s，期望 douyu", a.Platform)
+	}
+}

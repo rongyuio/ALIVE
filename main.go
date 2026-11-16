@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,14 @@ import (
 )
 
 func main() {
+	// 头像的磁盘缓存放 %LOCALAPPDATA%\alive\images。
+	//
+	// 和状态（%APPDATA%）分开：缓存丢了不丢任何配置，系统清理工具也能
+	// 安全清掉。拿不到目录就只走内存，不是错误。
+	if dir, err := os.UserCacheDir(); err == nil && dir != "" {
+		media.Default.SetDiskDir(filepath.Join(dir, "alive", "images"))
+	}
+
 	app := appui.NewApp()
 	// ALIVE_ROUTE 只在截图验收时用：直接从某个页面启动
 	// 只收 subscribe / player 这种不带斜杠的名字：Git Bash 会把以 / 开头的
@@ -144,6 +153,9 @@ func main() {
 		}
 		// 图片解码必须回到主线程，缓存拿窗口来触发重绘
 		media.Default.SetWindow(win)
+		// 窗口一就绪就开始拉数据，不等首页第一帧：
+		// 各平台的首屏列表和封面都要时间，早发出去，用户切平台时才是现成的。
+		win.Update(func() { app.StartPrefetch() })
 
 		// 关注列表的在线状态：等首屏起来再刷新一次，
 		// 别跟首屏那批分区/列表请求抢带宽（baseline 也是 1.2s 后自动刷）。

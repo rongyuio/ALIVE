@@ -45,11 +45,23 @@ var mockNicks = []string{
 type mockProvider struct {
 	platform Platform
 	mode     string
+	login    *WebLogin
 }
 
 func newMockProvider(p Platform, mode string) *mockProvider {
-	return &mockProvider{platform: p, mode: mode}
+	m := &mockProvider{platform: p, mode: mode}
+	// 假登录：永远停在「加载中」，用来单独看登录界面的加载态，不碰网络。
+	m.login = newWebLogin(p, WebLoginSpec{
+		URL:         "about:blank",
+		Domain:      "mock.invalid",
+		ReadyScript: `'no'`,
+		Detect:      func(map[string]string) (BrowserUser, bool) { return BrowserUser{}, false },
+	}, nil, nil)
+	return m
 }
+
+// webLogin 让 mock 也有登录入口，界面可以单独验加载态。
+func (m *mockProvider) webLogin() *WebLogin { return m.login }
 
 func (m *mockProvider) Platform() Platform { return m.platform }
 

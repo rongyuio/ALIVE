@@ -24,12 +24,37 @@ const (
 // 不写死间距：顶栏右侧那颗登录头像也是垂直居中的，岛必须和它在同一条
 // 水平线上，否则顶栏中间那颗东西看起来是浮着的。
 //
-// 收起态缩成一颗正圆，直径等于岛高——只露头像。展开上限 350，窄窗口按
-// 50% 收——顶栏左右两侧还有平台 tab 和图标格，岛不能把它们盖掉。
+// 收起态缩成一颗正圆，直径等于岛高——只露头像。展开宽度按内容量出来：
+// 主播名和标题短就窄、长就宽，只在 [MinW, MaxW] 之间钳，并且不超过窗口
+// 的一半——顶栏左右两侧还有平台 tab 和图标格，岛不能把它们盖掉。
 const (
 	islandPlayerCollapsedW float32 = theme.IslandH
-	islandPlayerExpandedW  float32 = 350
-	islandPlayerMinW       float32 = 310
+	// islandPlayerMaxW 是展开上限：再长会压住顶栏两端的 tab 与图标格。
+	//
+	// 360 而不是 350：文字量出来的宽度就是排版宽度，绘制时亚像素取整还会
+	// 上下浮动一两像素。上限正好卡在标题末端时，同一个标题会一会儿完整、
+	// 一会儿以省略号收尾。多出的这 10px 就是留给那一刻的缓冲。
+	islandPlayerMaxW float32 = 360
+	// islandPlayerMinW 是展开下限：内容再短也留出这条，免得关注键贴着文字。
+	//
+	// 180 大约是「头像 + 一行四五个字 + 关注键」的宽度；再往下文字列就只剩
+	// 一条缝，标题和平台名会连着省略号一起消失。
+	islandPlayerMinW float32 = 180
+)
+
+// 展开层的排版数值。宽度测量和实际布局必须用同一套数，否则量出来的岛
+// 和画出来的内容会差几像素，短标题那侧就会露出多余的空白或省略号。
+const (
+	islandPlayerPadX    float32 = 4
+	islandPlayerGap     float32 = 10
+	islandPlayerFollowW float32 = 26
+	// islandPlayerTextSlack 给量出来的文字宽度补一点余量：排版和绘制对
+	// 亚像素的取整不同，正好等宽时最后一个字偶尔会被省略号顶掉，同一个
+	// 标题于是有了两种状态。
+	//
+	// 8 是量出来之后仍然稳定不截断的余量（约半个汉字）；再大就只是在
+	// 关注键和文字之间多留一段空白。
+	islandPlayerTextSlack float32 = 8
 )
 
 // islandTop 是 island 的绝对上边距：在 64 高的顶栏里垂直居中。
@@ -40,16 +65,16 @@ const islandTop = (theme.NavbarHeight - theme.IslandH) / 2
 
 // islandListenAvatar 是后台收听态里那颗头像的直径。
 //
-// 岛高 38，body 让出 1px 描边之后内容区 36。这里取 36 正好填满内容区——
-// 后台收听的岛就是一颗实心的圆，头像和环之间不该露出一圈底色（那会读成
-// 三层圆）。用 37 会顶到 body 的描边上，看着像被裁过。
-const islandListenAvatar float32 = theme.IslandH - 2
+// 必须取 34（= 岛高 - 4），不是 36。island 的 1px 描边占的是内容盒，
+// body 再往里缩 1px，两头都要算：38 - 2×1 - 2×1 = 34。取 36 会在上下左右
+// 各溢出 1px，被 body 切掉——圆的四条边各有一段直线，收缩收尾那一帧裁切量
+// 骤变，看起来就是「缩成圆以后头像跳了一下」。
+const islandListenAvatar float32 = theme.IslandH - 4
 
 // islandPlayerAvatar 是播放页展开态里那颗头像的直径。
 //
-// 比后台收听那颗小 4：展开态的岛是 350 宽的整条，头像左边贴着岛沿、
-// 右边接标题和关注键，上下必须留出呼吸。取 36 会正好顶满内容区，
-// 圆形的上下两端压着描边，看着像被裁掉一块——32 上下各留 2 才成立。
+// 比后台收听那颗小 2：展开态的岛是整条，头像左边贴着岛沿、右边接标题和
+// 关注键，上下留一点呼吸。内容区 34，32 上下各留 1。
 const islandPlayerAvatar float32 = theme.IslandH - 6
 
 // Island 是顶部居中的「灵动岛」，三种形态：
@@ -82,13 +107,7 @@ func (a *App) Island(c *ui.Context) {
 	openW := float32(0)
 	switch {
 	case player:
-		openW = islandPlayerExpandedW
-		if limit := winW * 0.5; limit < openW {
-			openW = limit
-		}
-		if openW < islandPlayerMinW {
-			openW = islandPlayerMinW
-		}
+		openW = islandPlayerContentW(c, a.current(), winW)
 		// 展开态常驻：不再有 InfoOpen 这一档收起
 		targetW = openW
 	case listening:
@@ -105,6 +124,16 @@ func (a *App) Island(c *ui.Context) {
 		Border(1, theme.Border)
 
 	w := island.AnimateTo("island-w", targetW, ui.Snappy)
+	// 圆形是这颗岛的最小形态，弹簧的回弹不该把它压到自己的直径以下。
+	//
+	// 从展开收缩到 38 时，Snappy 会过冲到 37.1 再弹回来（约 0.9 秒）。
+	// 宽度一小于 38，内容区就窄于 34，那颗正好填满内容区的头像会被 body
+	// 的圆角裁掉一条边——头像边缘在回弹期间一帧宽一帧窄，看起来是头像
+	// 自己在抖，而不是岛在弹。钳住下限，收缩收尾就是干干净净地停在 38。
+	// 展开方向不受影响：那里的过冲是超出目标，头像居中，裁不到。
+	if targetW <= islandPlayerCollapsedW && w < islandPlayerCollapsedW {
+		w = islandPlayerCollapsedW
+	}
 	island.Width(w).Left((winW - w) / 2)
 
 	// ---------- 投影：baseline 深浅两套（.sidebar 与 [data-theme="light"] .sidebar）。
@@ -242,6 +271,51 @@ func (a *App) listeningIsland(c *ui.Context) {
 	})
 }
 
+// islandPlayerContentW 量出播放页展开态真正需要的宽度。
+//
+// 文字交给 c.MeasureText 按真实字体量，而不是按字数估：中英文混排、
+// 平台名与 ID 数字的宽度差很多，估算会让岛两头多出或少掉一截空白。
+func islandPlayerContentW(c *ui.Context, s Streamer, winW float32) float32 {
+	titleW, _ := c.MeasureText(0, ui.Span{Text: s.Title, Size: theme.TextSM, Weight: 600})
+	metaW, _ := c.MeasureText(0, ui.Span{Text: islandPlayerMeta(s), Size: theme.Text2XS})
+	return islandPlayerWidth(titleW, metaW, winW)
+}
+
+// islandPlayerWidth 把量出的两行文字宽度换成岛的目标宽度。
+//
+// 组成：岛 1px 描边 × 2 + 左右内边距 + 头像 + 两段间距 + 较宽的那行文字 +
+// 文字缓冲 + 关注键。结果再钳进 [下限, 上限] 和窗口一半：顶栏两侧还有平台
+// tab 与图标格，岛不能把它们盖掉；内容再短也不能缩到文字列只剩一条缝。
+//
+// 宽度只在这几个数之间确定，不依赖当前帧的动画值——同一份内容永远得到
+// 同一个目标宽度，弹簧怎么回弹都不会改变最终长度。
+func islandPlayerWidth(titleW, metaW, winW float32) float32 {
+	textW := titleW
+	if metaW > textW {
+		textW = metaW
+	}
+	w := 2*islandBodyInset + 2*islandPlayerPadX + islandPlayerAvatar +
+		2*islandPlayerGap + textW + islandPlayerTextSlack + islandPlayerFollowW
+	if limit := winW * 0.5; limit < w {
+		w = limit
+	}
+	if w > islandPlayerMaxW {
+		w = islandPlayerMaxW
+	}
+	if w < islandPlayerMinW {
+		w = islandPlayerMinW
+	}
+	return w
+}
+
+// islandPlayerMeta 是岛上的第二行：平台 · 主播 · 房间号。
+//
+// 测量和绘制共用这一处：两边各拼一次字符串，改文案时量出来的宽度就会
+// 和画出来的对不上。
+func islandPlayerMeta(s Streamer) string {
+	return fmt.Sprintf("%s · %s · ID:%s", platformLabel(s.Platform), s.Name, s.RoomID)
+}
+
 // playerIsland 是播放页里岛的内容。
 //
 // 收起态和展开态是两套图层叠在一起，按当前宽度交叉淡化：收起时宽 38，
@@ -272,7 +346,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	// 头像和关注键的留白差了 6px，整条信息看着是往左偏的。收到 4 之后两边
 	// 都贴着岛的边缘，和头像上下各 1px 的留白是同一档。
 	expanded := ui.Row(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Padding(0, 4).Gap(10).AlignItems(ui.Center)
+		Padding(0, islandPlayerPadX).Gap(islandPlayerGap).AlignItems(ui.Center)
 	expanded.Opacity(op)
 	if op < 0.5 {
 		expanded.PassThrough()
@@ -289,8 +363,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 		ui.Column(c).Gap(2).Grow(1).Children(func() {
 			ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
 				SingleLine().TextColor(theme.TextPrimary).LineHeight(1.3)
-			ui.Text(c, fmt.Sprintf("%s · %s · ID:%s",
-				platformLabel(s.Platform), s.Name, s.RoomID)).
+			ui.Text(c, islandPlayerMeta(s)).
 				FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
 				TextColor(theme.TextTertiary)
 		})
@@ -302,7 +375,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 		if followed {
 			label = "取消关注"
 		}
-		btn := ui.Box(c).Size(26, 26).Radius(theme.RadiusFull).
+		btn := ui.Box(c).Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
 			Center().Cursor(ui.CursorPointer).Shrink(0).Label(label)
 		if followed {
 			btn.Background(theme.StatusOnline.Alpha(0.16)).
@@ -338,7 +411,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 // 祖先上会偏出去，Left/Top 从 padding box 左上角算起，size-d+1 就是
 // 右下角那一格。
 func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive bool) {
-	if bmp := media.Default.Bitmap(s.AvatarURL, size); bmp != nil {
+	if bmp := media.Default.Avatar(s.AvatarURL, size); bmp != nil {
 		ui.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
 	} else {
 		ui.Box(c).Size(size, size).Radius(size / 2).

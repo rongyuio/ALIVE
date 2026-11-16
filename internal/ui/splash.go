@@ -104,6 +104,41 @@ func (a *App) splashReady() bool {
 			return false
 		}
 	}
+
+	// 四个平台的首屏列表也要到齐。
+	//
+	// 切平台时目标平台的首屏数据不在缓存里，界面就得先摆骨架、再摆空封面
+	// 卡、等图回来才成形——三次跳变，用户看到的就是「一大片闪」。
+	// 首页第一帧就在预取这些数据，启动层多等它一下，换的是每次切平台
+	// 都不再有这个过渡。网络卡住时仍由 splashMax 兜底。
+	for _, id := range a.PlatformOrder {
+		if id == a.Platform {
+			continue // 当前平台的首屏封面在上面等过了
+		}
+		groups := a.GroupsByPlatform[id]
+		if len(groups) == 0 || len(groups[0].CategoryIDs) == 0 {
+			return false
+		}
+		if _, ok := a.feedCache[id+"|"+groups[0].CategoryIDs[0]+"|-1"]; !ok {
+			return false
+		}
+	}
+
+	// 各平台的登录头像也要到齐。
+	//
+	// 顶栏头像在切平台的第一步就要换人。冷启动后头像和首屏封面抢同一组
+	// 下载槽，撤层时头像常常还排在路上——用户这时候点另一个平台，看到
+	// 的就是先画灰色人形、再跳回真头像的那一下。头像一共四张，等齐再撤。
+	// 加载失败的 Ready 也返回 true，死链不会把启动层拖住。
+	for _, id := range a.PlatformOrder {
+		auth := authFor(id)
+		if auth == nil {
+			continue
+		}
+		if u := auth.Auth().Avatar; u != "" && !media.Default.Ready(u, authAvatarW) {
+			return false
+		}
+	}
 	return true
 }
 

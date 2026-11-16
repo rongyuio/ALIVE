@@ -15,7 +15,52 @@ const (
 	// authQRSize 是二维码白底的边长。图本身留出内边距，扫码识别需要
 	// 四周有一圈静区，贴边画会扫不出来。
 	authQRSize = 168
+	// authAvatarW 是顶栏头像的解码宽度：常态外框 38 减 12，窄屏 34 减 12。
+	// 两级都落在同一个解码档（targetPixels 把小于 64px 的抬到 64），
+	// 所以预取一次就够两种宽度用。
+	authAvatarW float32 = 26
 )
+
+// authFor 返回某个平台的登录入口（扫码或 webview），没有则 nil。
+//
+// 与 currentAuth 的区别只在于平台由调用方给：切平台时要预取的是
+// 「所有平台」的头像，而不只是当前这个。
+func authFor(platform string) live.Authenticator {
+	p := live.Platform(platform)
+	if auth, ok := live.AuthFor(p); ok {
+		return auth
+	}
+	if wl, ok := live.BrowserAuthFor(p); ok {
+		return wl
+	}
+	return nil
+}
+
+// syncAuthAvatars 把各平台已登录账号的头像提前备进图片缓存。
+//
+// 顶栏头像只画当前平台那一个，切平台就换人。换过去的那一帧，新平台的
+// 头像通常还没进 L1，只能先画灰色人形占位，等下载和解码回来再跳成真
+// 头像——这就是「切平台闪一下」里剩下的那部分（封面和主播头像都已预取）。
+// 一共四个平台、各一张，全备好，切谁都是瞬时的。
+//
+// 每帧调用只是查表：只有头像地址变了（刚登录、换号）才真的发请求。
+func (a *App) syncAuthAvatars() {
+	if a.Win == nil {
+		return // 视图测试不发真实请求
+	}
+	for _, id := range a.PlatformOrder {
+		auth := authFor(id)
+		if auth == nil {
+			continue
+		}
+		url := auth.Auth().Avatar
+		if url == "" || a.authAvatarPrefetched[id] == url {
+			continue
+		}
+		a.authAvatarPrefetched[id] = url
+		media.Default.PrefetchAvatars(authAvatarW, url)
+	}
+}
 
 // authButton 是顶栏右上角的登录入口。
 //
@@ -58,10 +103,14 @@ func (a *App) authButton(c *ui.Context) {
 			auth.BeginLogin()
 		}
 	}
+	// 面板关掉就把登录窗口一起收了：webview 常驻会白占一整套渲染进程。
+	if !a.AuthOpen && a.loginPage != nil {
+		a.destroyLoginWebView()
+	}
 
 	btn.Children(func() {
 		if st.LoggedIn && st.Avatar != "" {
-			if bmp := media.Default.Bitmap(st.Avatar, dia); bmp != nil {
+			if bmp := media.Default.Avatar(st.Avatar, dia); bmp != nil {
 				ui.Image(c, bmp).Size(dia, dia).Radius(dia / 2).Fit(ui.Cover)
 				return
 			}
@@ -77,6 +126,11 @@ func (a *App) authButton(c *ui.Context) {
 		})
 	})
 
+	// 浏览器登录不走浮层：主体区域整个换成登录页。
+	if _, ok := a.currentWebLogin(); ok && !st.LoggedIn {
+		return
+	}
+
 	ui.PopoverBase(c, btn, &a.AuthOpen, func(panel ui.Element) {
 		// 用 MinWidth 而不是 Width：内容（二维码 / 长一点的错误文案）
 		// 比这个宽时要能自己撑开，写死宽度会把二维码右侧裁掉。
@@ -89,14 +143,18 @@ func (a *App) authButton(c *ui.Context) {
 			AttachTo(btn, ui.AnchorBottomRight, ui.AnchorTopRight)
 		if st.LoggedIn {
 			a.authAccountPanel(c, auth, st)
-		} else {
-			a.authScanPanel(c, auth, st, key)
+			return
 		}
+		a.authScanPanel(c, auth, st, key)
 	})
 }
 
 // authScanPanel 是未登录时的扫码面板。
+//
+// 虎牙和抖音没有能纯 HTTP 复现的扫码协议，二维码由隐藏的 webview 提供：
+// 这里只负责把引擎起起来，图片照样走下面那套渲染。
 func (a *App) authScanPanel(c *ui.Context, auth live.Authenticator, st live.AuthState, key string) {
+
 	// 二维码是 PNG，解一次缓存起来；每帧重解码是白烧 CPU。
 	// 解码要在主线程做（会建纹理），所以放在这里而不是后台。
 	if st.QRSeq != a.authQRSeq[key] {
@@ -146,7 +204,7 @@ func (a *App) authScanPanel(c *ui.Context, auth live.Authenticator, st live.Auth
 func (a *App) authAccountPanel(c *ui.Context, auth live.Authenticator, st live.AuthState) {
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			if bmp := media.Default.Bitmap(st.Avatar, 36); bmp != nil {
+			if bmp := media.Default.Avatar(st.Avatar, 36); bmp != nil {
 				ui.Image(c, bmp).Size(36, 36).Radius(18).Fit(ui.Cover)
 			} else {
 				ui.Box(c).Size(36, 36).Radius(18).Background(theme.FillTertiary).

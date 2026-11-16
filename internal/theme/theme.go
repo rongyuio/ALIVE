@@ -152,6 +152,24 @@ func EaseInOut(d time.Duration) ui.Animation {
 	return ui.Animation{Duration: d, Ease: ui.CubicBezier(0.4, 0, 0.2, 1)}
 }
 
+// Slide 是「换了一个选项」这一族动效的弹簧：滑块移动、标签着色、内容换向。
+//
+// 为什么不沿用 EaseOut：曲线在目标变化时只能从当前位置重新起跑，速度归零；
+// 连点两下 tab，滑块会先顿住再走。弹簧把当前速度带进新目标，折返是连续的。
+//
+// 参数取临界阻尼附近（2√460 ≈ 42.9）：停得干脆、不过冲。EaseOut 的注释说
+// 弹簧尾段拖得长，那是 Duration/Bounce 那一组的默认尾段；这里的刚度更高、
+// 阻尼更贴临界，一格 tab 的距离（60 上下）实测 250ms 内停稳。
+func Slide() ui.Animation {
+	return ui.Animation{Spring: ui.SpringOptions{Stiffness: 460, Damping: 42, Mass: 1}}
+}
+
+// SlideFar 是滑块跨过整行时的同一枚弹簧，只是慢一点：
+// 从第一个分区跳到第二十个，距离长了，同样的刚度会显得暴冲。
+func SlideFar() ui.Animation {
+	return ui.Animation{Spring: ui.SpringOptions{Stiffness: 260, Damping: 32, Mass: 1}}
+}
+
 // Theme 按当前配色返回控件主题：窗口背景、正文色与控件度量都对齐 baseline。
 func Theme() *ui.Theme {
 	t := ui.DarkTheme()

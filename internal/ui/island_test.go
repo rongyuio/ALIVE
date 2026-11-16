@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,13 +47,73 @@ func TestPlayerIslandStaysExpanded(t *testing.T) {
 		t.Fatal("闲置 10 秒之后信息岛收起了：展开态应当常驻")
 	}
 
-	// 宽度也是展开宽，不是收起那枚圆。
+	// 宽度也必须是展开态，不是收起那枚圆。
 	b, ok := tt.Find("灵动岛")
 	if !ok {
 		t.Fatal("灵动岛没有渲染出来")
 	}
 	if b.W < islandPlayerMinW-1 {
-		t.Fatalf("岛宽 %v，期望接近展开宽 %v", b.W, islandPlayerExpandedW)
+		t.Fatalf("岛宽 %v，比最小展开宽 %v 还窄", b.W, islandPlayerMinW)
+	}
+}
+
+// islandWidth 按给定的主播与窗口宽度渲染一帧播放页，返回灵动岛的宽度。
+//
+// 状态在建 Tester 之前就摆好：岛的宽度是 AnimateTo 从目标值起步的，
+// 先摆状态再建视图，拿到的是终值本身，不必再推进时钟等弹簧停下。
+func islandWidth(t *testing.T, s Streamer, winW int) float32 {
+	t.Helper()
+	app := NewMockApp()
+	app.Player = s
+	app.Router.Push(routePlayer)
+	tt := ui.NewTester(app.Shell, winW, 900)
+	tt.Frame()
+	b, ok := tt.Find("灵动岛")
+	if !ok {
+		t.Fatal("灵动岛没有渲染出来")
+	}
+	return b.W
+}
+
+// 直播间标题有长有短：岛宽跟着内容走，短标题收窄，长标题撑开。
+//
+// 固定的 350 在这个场景里会同时给两种标题一样宽——短标题右边空一大截，
+// 长标题又要靠省略号硬裁。宽度必须是量出来的，不是写死的。
+func TestPlayerIslandWidthFollowsContent(t *testing.T) {
+	base := Streamer{Platform: "douyu", RoomID: "1", Name: "甲"}
+	short := base
+	short.Title = "短"
+	long := base
+	long.Title = "这是一个明显更长的直播间标题"
+
+	shortW := islandWidth(t, short, 1440)
+	longW := islandWidth(t, long, 1440)
+	if longW <= shortW {
+		t.Fatalf("长标题岛宽 %v、短标题 %v：宽度没有跟着内容走", longW, shortW)
+	}
+	if shortW >= islandPlayerMaxW-1 {
+		t.Fatalf("短标题岛宽 %v 顶到了上限 %v：没有按内容收窄", shortW, islandPlayerMaxW)
+	}
+}
+
+// 内容再短也不能缩成一颗胶囊，再长也不能把顶栏两端盖掉。
+func TestPlayerIslandWidthClamped(t *testing.T) {
+	tiny := Streamer{Platform: "douyu", RoomID: "1", Name: "甲"}
+	if w := islandWidth(t, tiny, 1440); w < islandPlayerMinW-0.5 {
+		t.Fatalf("极短内容的岛宽 %v 小于下限 %v", w, islandPlayerMinW)
+	}
+
+	huge := Streamer{
+		Platform: "douyu",
+		RoomID:   "1",
+		Name:     "甲",
+		Title:    strings.Repeat("很长很长的直播间标题", 20),
+	}
+	if w := islandWidth(t, huge, 1440); w > islandPlayerMaxW+0.5 {
+		t.Fatalf("超长内容的岛宽 %v 超过上限 %v", w, islandPlayerMaxW)
+	}
+	if w := islandWidth(t, huge, 600); w > float32(600)*0.5+0.5 {
+		t.Fatalf("窄窗口里岛宽 %v 超过了窗口一半", w)
 	}
 }
 
@@ -102,10 +164,100 @@ func TestPlayerIslandCollapsedIsCircle(t *testing.T) {
 	}
 }
 
-// 展开宽度是产品尺寸，400 太长会压住顶栏两端。用常量钉住，改这里必须先截图确认。
-func TestPlayerIslandExpandedWidth(t *testing.T) {
-	if islandPlayerExpandedW != 350 {
-		t.Fatalf("展开宽 %v，期望 350", islandPlayerExpandedW)
+// 圆形态里的头像必须正好填满内容区。
+//
+// 内容区不是岛高减 2：island 的 1px 描边占的是内容盒，body 再往里缩 1px，
+// 实际是 38 - 2×1 - 2×1 = 34。头像取 36 会上下左右各溢出 1px，被 body 的
+// 圆角裁掉一圈，收缩收尾时裁切量骤变，看起来是头像在抖。
+//
+// 直接拿热区的实测尺寸作参照，而不是自己再算一遍公式：热区铺满内容区，
+// 它量出来是几，内容区就是几。
+func TestListeningAvatarFillsContentBox(t *testing.T) {
+	app := NewMockApp()
+	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+	app.media.background = true
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Advance(3 * time.Second)
+
+	hit, ok := tt.Find("回到直播间")
+	if !ok {
+		t.Fatal("后台收听态没有画出回到直播间的入口")
+	}
+	if islandListenAvatar != hit.W {
+		t.Fatalf("头像直径 %v、内容区 %v：溢出的部分会被 body 的圆角裁掉",
+			islandListenAvatar, hit.W)
+	}
+}
+
+// 从展开态收缩到圆形态，宽度不该被弹簧的回弹压到 38 以下。
+//
+// Snappy 会过冲到 37.1 再弹回。宽度一小于 38，内容区就窄于头像，圆边每帧
+// 被裁掉一条——屏幕上看到的是头像在颤。改动前这条的最小值是 37.11。
+func TestListeningIslandShrinkDoesNotUndershoot(t *testing.T) {
+	app := NewMockApp()
+	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+	app.Router.Push(routePlayer)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	// 离开播放页，岛从展开宽度收缩到圆
+	app.media.background = true
+	app.Router.Push(routeHome)
+	tt.Frame()
+
+	minW := float32(math.MaxFloat32)
+	for i := 0; i < 180; i++ {
+		tt.Advance(16 * time.Millisecond)
+		b, ok := tt.Find("灵动岛")
+		if !ok {
+			t.Fatalf("第 %d 帧岛不见了", i)
+		}
+		if b.W < minW {
+			minW = b.W
+		}
+	}
+	if minW < islandPlayerCollapsedW-0.01 {
+		t.Fatalf("收缩过程中岛宽最低到 %v，低于圆形态的 %v：头像会被裁",
+			minW, islandPlayerCollapsedW)
+	}
+	if b, _ := tt.Find("灵动岛"); b.W != islandPlayerCollapsedW {
+		t.Fatalf("收缩结束岛宽 %v，期望 %v", b.W, islandPlayerCollapsedW)
+	}
+}
+
+// 岛宽由文字宽度算出：取较宽的那行，加一圈固定开销与缓冲，再钳进范围。
+//
+// 关键的一行是「贴着旧上限」那条：文字宽 262 时，旧实现被 350 卡住，
+// 画出来正好把标题末端裁掉——同一标题于是有了完整和省略号两种状态。
+func TestPlayerIslandWidthFromText(t *testing.T) {
+	cases := []struct {
+		name          string
+		titleW, metaW float32
+		winW, want    float32
+	}{
+		{"内容极短抬到下限", 10, 10, 1440, islandPlayerMinW},
+		{"按较宽的那行算", 100, 60, 1440, 196},
+		{"第二行更宽时按第二行", 50, 200, 1440, 296},
+		{"贴着旧上限也不裁字", 262, 100, 1440, 358},
+		{"超过上限", 400, 100, 1440, islandPlayerMaxW},
+		{"窄窗口按一半", 400, 100, 600, 300},
+		{"窗口再窄也保住下限", 10, 10, 200, islandPlayerMinW},
+	}
+	for _, tc := range cases {
+		if got := islandPlayerWidth(tc.titleW, tc.metaW, tc.winW); got != tc.want {
+			t.Errorf("%s：宽 %v，期望 %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// 上限是产品尺寸，360 再往上会压住顶栏两端。用常量钉住，改这里必须先截图确认。
+//
+// 360 而不是 350：文字量出来的宽度就是排版宽度，画的时候亚像素取整还会
+// 上下浮动一两像素。上限正好卡在标题末端时，同一个标题会在「完整」和
+// 「省略号」之间来回跳——抬高这 10px 就是给那一刻留的缓冲。
+func TestPlayerIslandMaxWidth(t *testing.T) {
+	if islandPlayerMaxW != 360 {
+		t.Fatalf("展开上限 %v，期望 360", islandPlayerMaxW)
 	}
 }
 

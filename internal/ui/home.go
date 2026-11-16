@@ -161,9 +161,49 @@ type App struct {
 	AuthOpen bool
 	// authLogged 记住各平台上一次看到的登录状态，用来判断「刚登录成功」。
 	authLogged map[string]bool
+	// pendingSwitch 是点了但还没真正切过去的平台。
+	//
+	// 切平台不立刻换内容：目标平台的首屏列表和封面通常已经在缓存里，
+	// 这时是瞬时的；没赶上的话等它一下，也好过先摆骨架、再摆空封面卡、
+	// 等图回来才成形——三次跳变叠在一起，就是用户说的「一大片闪」。
+	pendingSwitch string
+	pendingAt     time.Time
+	// navDir / navSeq 是内容层换向的代次：每次真的换了一份内容
+	// （平台、一级、二级、三级分区），序号 +1，方向按选项索引差算。
+	// 内容层以序号为 key，旧的一屏按当次方向退出，新的从同一侧进来。
+	navDir navDir
+	// navSeq / followsSeq / subFeedSeq 分别是首页、关注页、订阅页内容的代次。
+	navSeq     int
+	followsSeq int
+	subFeedSeq int
+	// navBox / followsBox / subsBox 是三条选项轨道量出来的格子。
+	//
+	// 滑块的位置和宽度都从这里来，所以它必须和真实布局重合；留着它，
+	// 测试才能把「算出来的格子」和「布局摆出来的位置」摆在一起对账。
+	// 三条轨道的量法各不相同（一级纯文字、二级胶囊、订阅 chip 塞三样），
+	// 错一项就是滑块停在半格上。
+	navBox     rowBox
+	followsBox rowBox
+	subsBox    rowBox
+	// authAvatarPrefetched 记住每个平台已经预取过的头像地址。
+	// 切平台要换头像，四个平台各一张，提前备好才不会有占位的空窗。
+	authAvatarPrefetched map[string]string
 	// authQR / authQRSeq 是按平台缓存的二维码纹理：换码才重新解码。
 	authQR    map[string]*ui.Bitmap
 	authQRSeq map[string]int
+
+	// 浏览器登录：虎牙和抖音没有能纯 HTTP 复现的扫码协议，登录面板里
+	// 挂一个系统 webview 完成登录，登录成功读走 cookie 就把窗口销毁。
+	//
+	// 只在面板打开期间存在。loginSess 是临时会话（InPrivate），cookie
+	// 不落盘；loginStop 停掉轮询的 goroutine。
+	loginPage *mygo.WebView
+	loginSess *mygo.Session
+	loginKey  string
+	loginStop chan struct{}
+	// loginReady 表示登录页已经渲染好。在那之前主区域盖一层 loading，
+	// 免得用户看到白屏或者半渲染的中间态。
+	loginReady bool
 
 	// 「全部关注」页是一等页面（顶栏 tab 组第一格），和首页 / 订阅页同级。
 	// 这三个字段是它自己的筛选状态，切走再回来还留着。
@@ -303,10 +343,11 @@ func newApp() *App {
 		DanmuPanelW:   196,
 		SubCatIndex:   -1,
 
-		GroupsByPlatform: map[string][]CategoryGroup{},
-		liveLoaded:       map[string]bool{},
-		feedCache:        map[string]feedEntry{},
-		subCategories:    map[string][]string{},
+		GroupsByPlatform:     map[string][]CategoryGroup{},
+		liveLoaded:           map[string]bool{},
+		feedCache:            map[string]feedEntry{},
+		subCategories:        map[string][]string{},
+		authAvatarPrefetched: map[string]string{},
 	}
 	// 顶栏这些 tab 是同一层级的横向页面，没有谁是「进入谁的下一层」。
 	// Router 按路径层级决定往哪边滑，在这套结构上只会滑出三种不一样的结果，
@@ -343,19 +384,32 @@ func NewMockApp() *App {
 	return a
 }
 
-// bindAuth 给每个支持扫码登录的平台各挂一个状态监听。
+// bindAuth 给每个支持登录的平台各挂一个状态监听。
 //
 // 不是一个「全局登录」：每个平台一份会话、一份监听，互不影响。
+// B 站和斗鱼走扫码，虎牙和抖音走系统 webview。
 func (a *App) bindAuth() {
 	a.authLogged = map[string]bool{}
 	a.authQR = map[string]*ui.Bitmap{}
 	a.authQRSeq = map[string]int{}
 	for _, p := range []live.Platform{live.Bilibili, live.Douyu, live.Huya, live.Douyin} {
-		auth, ok := live.AuthFor(p)
-		if !ok {
+		if auth, ok := live.AuthFor(p); ok {
+			a.bindPlatformAuth(p, auth)
 			continue
 		}
-		a.bindPlatformAuth(p, auth)
+		if wl, ok := live.BrowserAuthFor(p); ok {
+			a.bindPlatformAuth(p, wl)
+			// 会话失效时不急着重登：先用同一个 profile 起一次后台页面，
+			// 平台自己可能就把它续上了。
+			login := wl
+			wl.SetInvalidHandler(func() bool {
+				if a.Win == nil {
+					return false
+				}
+				a.renewLoginSession(login)
+				return true
+			})
+		}
 	}
 }
 
@@ -394,12 +448,15 @@ func (a *App) onAuthChange(p live.Platform, auth live.Authenticator) {
 }
 
 // currentAuth 返回当前平台的登录入口；该平台不支持登录时返回 nil。
+//
+// 扫码和浏览器登录都满足 Authenticator，界面不关心会话是怎么拿到的。
 func (a *App) currentAuth() live.Authenticator {
-	auth, ok := live.AuthFor(live.Platform(a.Platform))
-	if !ok {
-		return nil
-	}
-	return auth
+	return authFor(a.Platform)
+}
+
+// currentWebLogin 返回当前平台的浏览器登录入口，没有则 false。
+func (a *App) currentWebLogin() (*live.WebLogin, bool) {
+	return live.BrowserAuthFor(live.Platform(a.Platform))
 }
 
 // Shell 是窗口的根视图：地面 + 主区（顶栏 + 内容）+ 悬浮灵动岛。
@@ -417,6 +474,11 @@ func (a *App) Shell(c *ui.Context) {
 	// 每帧开头按当前配色重写包级颜色，之后所有绘制读到的就是这套色
 	theme.Apply(a.PaletteID)
 	c.SetTheme(theme.Theme())
+
+	// 各平台登录头像提前进缓存：切平台换头像时才不会先画灰人再跳图。
+	a.syncAuthAvatars()
+	// 挂起的切平台在这里收尾：目标平台的首屏数据和封面齐了才换。
+	a.tickPlatformSwitch()
 
 	// baseline：Ctrl/Cmd + K 唤起搜索；输入框里打字时不抢
 	// 没有平台上下文的页面连搜索入口都没有，快捷键也不该把它打开。
@@ -505,12 +567,34 @@ func (a *App) Home(c *ui.Context) {
 	if a.LiveMode {
 		a.ensureLiveData()
 	}
+	// 浏览器登录：主体区域整个换成登录页。页面原样铺开，登录框由平台
+	// 自己弹出——不裁剪、不代点，页面改版也不影响这里。
+	if wl, ok := a.currentWebLogin(); ok && a.AuthOpen && !wl.Auth().LoggedIn {
+		if page := a.ensureLoginWebView(wl); page != nil {
+			ui.Box(c).Grow(1).Children(func() {
+				ui.WebView(c, page).Fill().Radius(theme.RadiusXL)
+				// 页面画好之前盖住：标题栏、空白、半渲染的骨架都不给看。
+				if !a.loginReady {
+					ui.Box(c).Absolute().Fill().Radius(theme.RadiusXL).
+						Background(theme.BgPrimary).Center().Children(func() {
+						a.loginLoading(c)
+					})
+				}
+			})
+			return
+		}
+	}
 	pad := a.bodyPadX(c)
 	// 换分区就回到顶部；同一个分区内（去播放页再回来）位置由 ListState 自己记住。
 	key := fmt.Sprintf("%s|%d|%d|%d", a.Platform, a.GroupIndex, a.CategoryIndex, a.SubCatIndex)
 	if a.scrollKey != key {
 		a.scrollKey = key
-		a.HomeList.ScrollTo(0, ui.Start)
+		// 换的是另一套行，整份状态从头开始，而不是只把偏移挪到 0。
+		// ScrollTo(0) 只改位置：第一帧仍会带着旧的分区位置去铺新数据，
+		// 屏幕先闪一下列表中间那几行（那些封面多半还没预取），下一帧才
+		// 跳回顶部；旧的可见范围还会顺手触发一次「加载更多」。MyGo 的
+		// list.md 对这种情况写得很清楚：换一套行就 `ListState{}`。
+		a.HomeList = ui.ListState{}
 	}
 	ui.Column(c).Grow(1).Padding(0, pad, 0, pad).Gap(14).Children(func() {
 		// 分区树还没到时给一块同高的占位，避免列表区先铺满、再被分区栏顶下去。
@@ -522,7 +606,13 @@ func (a *App) Home(c *ui.Context) {
 		if a.ErrText != "" {
 			a.errorBar(c)
 		}
-		a.grid(c, a.feed(), &a.HomeList, a.loadMoreRooms)
+		// 内容层单独换代：切平台 / 分区时旧的一屏按方向退出、新的从同一侧
+		// 进来。分区栏和错误条留在原地——它们是这一屏的边框，不是内容。
+		feed := ui.Column(c).Key(a.navFeedKey()).Grow(1).
+			Transition(feedTransition(c, a.navDir))
+		feed.Children(func() {
+			a.grid(c, a.feed(), &a.HomeList, a.loadMoreRooms)
+		})
 	})
 }
 
@@ -668,6 +758,12 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 
 	// 行数 + 1：最后一行是页脚（「正在加载更多…」/「继续下滑加载更多」/「已显示最近 N 条」），
 	// 它跟着内容一起滚，位置和 baseline 一样在列表末尾。
+	// 触底补页交给 EndReached：它在用户真的滚到末尾附近时调用一次，
+	// 不像自己读 Visible 那样，换数据源的头一帧就被旧的可见范围触发。
+	if onMore != nil && a.LiveMode {
+		ls.NearEnd = 2
+		ls.EndReached = func(int) { onMore() }
+	}
 	ui.List(c, ls, rows+1, func(r int) {
 		if r == rows {
 			a.gridFooter(c, avail, len(list))
@@ -708,15 +804,10 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 		// 同一个 URL 在缓存里有去重，这里每帧重复调用只是几次 map 查找。
 		for i := (last + 1) * cols; i < min(len(list), (last+3)*cols); i++ {
 			media.Default.Prefetch(cardW, list[i].CoverURL)
-			media.Default.Prefetch(32, list[i].AvatarURL)
+			media.Default.PrefetchAvatars(32, list[i].AvatarURL)
 		}
 	}
 
-	// 触底补页：还剩两行就拉下一页。List 的 Visible 是上一帧构建过的行范围，
-	// 本来就是虚拟化的产物，不用自己去量滚动距离。
-	if onMore != nil && a.LiveMode && last >= rows-2 {
-		onMore()
-	}
 }
 
 // skeletonGrid 是首屏骨架：12 张卡片，封面 16:9，信息条与真卡片同尺寸。
@@ -861,7 +952,15 @@ func (a *App) Navbar(c *ui.Context) {
 				a.paletteButton(c)
 				// 登录头像和上面三颗在同一个胶囊里：顶栏右侧本来就是一组
 				// 工具，单独拎出去会多出一层视觉噪音。
-				a.authButton(c)
+				//
+				// 只在某一家平台的页面里画：账号是**按平台**的，而「全部关注」
+				// 和「订阅」这两个页面聚合的是好几家的主播。在那种页面上摆
+				// 一家的头像，等于暗示这里的操作以那家身份进行——用户点开
+				// 还会看到另一家的二维码，前后对不上。登录入口回到对应平台
+				// 的 tab 再点。
+				if a.authAvailable() {
+					a.authButton(c)
+				}
 			})
 
 			ui.Box(c).Width(1).Height(24).Background(theme.Separator)
@@ -968,6 +1067,10 @@ func (a *App) narrow(c *ui.Context) bool {
 // 「订阅」和「全部关注」不是平台，但和平台同级：在对应页面时高亮它们，
 // 其余按当前平台。
 func (a *App) activeTab() string {
+	// 挂起的切换先占住高亮：点了就要有回应，内容等就绪再换。
+	if a.pendingSwitch != "" {
+		return a.pendingSwitch
+	}
 	switch a.Router.Path() {
 	case routeFollows:
 		return "follows"
@@ -999,13 +1102,76 @@ func tabName(id string) string {
 func (a *App) switchTab(id string) {
 	switch id {
 	case "follows":
+		a.pendingSwitch = ""
 		a.Router.Push(routeFollows)
 		return
 	case "subscribe":
+		a.pendingSwitch = ""
 		a.resetCards()
 		a.Router.Push(routeSubscribe)
 		return
 	}
+	if id == a.Platform {
+		// 平台没换，但页面可能在别处：从关注 / 订阅 / 播放页点回当前平台的
+		// tab，要回首页。平台本身没换，所以内容不播换向。
+		if a.Router.Path() == routeHome {
+			return
+		}
+		a.pendingSwitch = ""
+		a.Router.Push(routeHome)
+		return
+	}
+	if a.platformSwitchReady(id) {
+		a.commitPlatformSwitch(id)
+		return
+	}
+	// 目标平台的首屏还没到位：先挂起，界面保持原样，由 tickPlatformSwitch
+	// 在就绪（或等够）时收尾。等待期间不摆任何中间态，用户看到的就是
+	// 上一家的完整画面，直到下一家的完整画面接上。
+	a.pendingSwitch = id
+	a.pendingAt = time.Now()
+}
+
+// platformSwitchWait 是切平台时等目标平台首屏就绪的上限。
+//
+// 超过它就不再等：宁可闪一次，也不能让点击几百毫秒没有内容上的回应。
+const platformSwitchWait = 700 * time.Millisecond
+
+// platformSwitchReady 报告切到 id 时该有的东西是不是都准备好了：首屏列表在缓存里。
+//
+// 只看列表，不看封面。卡片的封面位本来就有一块同尺寸的渐变占位
+// （coverArt），图晚到是从渐变换成真图，版式不动；把它当前置条件，
+// 代价是只要有一张封面还在路上，点击之后界面就要静止整整 700ms——
+// 滑块已经滑到目标，内容一动不动，这就是「切平台要一秒」的来源。
+func (a *App) platformSwitchReady(id string) bool {
+	if id == a.Platform {
+		return true
+	}
+	groups := a.GroupsByPlatform[id]
+	if len(groups) == 0 || len(groups[0].CategoryIDs) == 0 {
+		return false
+	}
+	entry, ok := a.feedCache[id+"|"+groups[0].CategoryIDs[0]+"|-1"]
+	return ok && len(entry.rooms) > 0
+}
+
+// tickPlatformSwitch 在挂起的切换就绪（或等够了）时真正切过去。
+func (a *App) tickPlatformSwitch() {
+	if a.pendingSwitch == "" {
+		return
+	}
+	id := a.pendingSwitch
+	if !a.platformSwitchReady(id) && time.Since(a.pendingAt) < platformSwitchWait {
+		return
+	}
+	a.pendingSwitch = ""
+	a.commitPlatformSwitch(id)
+}
+
+// commitPlatformSwitch 执行真正的切换：换数据源、换显存、换路由。
+func (a *App) commitPlatformSwitch(id string) {
+	// 方向在换之前算：顶栏里往右点，内容就从右边来。
+	a.navFlip(&a.navSeq, a.tabIndex(a.Platform), a.tabIndex(id))
 	a.Platform = id
 	// 账号是分平台的，头像浮层里的内容会跟着换人；换 tab 就关掉，
 	// 别让上一家的二维码和昵称留在屏幕上。
@@ -1033,9 +1199,13 @@ func (a *App) platformTabs(c *ui.Context) {
 	// 顺序读 a.PlatformOrder：baseline 的 tab 顺序可拖拽重排并持久化。
 	// 前两格固定：「全部关注」和「订阅」——它们不是平台，但和平台同级。
 	type tabItem struct{ id, label string }
-	tabs := []tabItem{{"follows", ""}, {"subscribe", ""}}
-	for _, id := range a.PlatformOrder {
-		tabs = append(tabs, tabItem{id, platformLabel(id)})
+	tabs := make([]tabItem, 0, len(a.tabIDs()))
+	for _, id := range a.tabIDs() {
+		label := ""
+		if id != "follows" && id != "subscribe" {
+			label = platformLabel(id)
+		}
+		tabs = append(tabs, tabItem{id, label})
 	}
 
 	tabW := float32(64)
@@ -1068,8 +1238,9 @@ func (a *App) platformTabs(c *ui.Context) {
 			// 滑块先画，压在 tab 下面
 			slider := ui.Box(c).Absolute().Top(0).Width(tabW).Height(tabH).
 				Radius(theme.RadiusFull).Background(theme.Accent)
-			x := slider.AnimateTo("tab-x", float32(selected)*tabW, theme.EaseOut(220*time.Millisecond))
-			slider.Left(x)
+			// 滑块走弹簧：连点两个 tab，它带着当前速度从当前位置折返，
+			// 而不是先停在前一个目标再重新起步。曲线做不到这一点。
+			slider.Left(slider.AnimateTo("tab-x", float32(selected)*tabW, theme.Slide()))
 
 			// tab 行要压在滑块上面：绝对定位的滑块默认在普通子元素之后绘制，
 			// 不抬层级会把选中的 tab 文字整块盖住（截图里只剩一块青柠胶囊）。

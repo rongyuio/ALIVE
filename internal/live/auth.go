@@ -36,6 +36,9 @@ type AuthState struct {
 	QRSeq  int
 	Status string
 	Err    string
+	// NeedCode 表示平台要求填短信验证码：界面这时显示输入框而不是二维码。
+	// 目前只有抖音的扫码登录会走到这里。
+	NeedCode bool
 }
 
 // Authenticator 是能进入登录流程的平台。
@@ -403,8 +406,11 @@ func (a *qrAuth) renewOnce(ctx context.Context) {
 }
 
 // writeSession 用现成的 authSession 覆盖会话文件（temp + rename）。
-func (a *qrAuth) writeSession(sess authSession) {
-	path := authSessionPath(a.platform)
+func (a *qrAuth) writeSession(sess authSession) { writeAuthSession(a.platform, sess) }
+
+// writeAuthSession 是各登录实现共用的会话落盘。
+func writeAuthSession(p Platform, sess authSession) {
+	path := authSessionPath(p)
 	if path == "" {
 		return
 	}
@@ -414,7 +420,7 @@ func (a *qrAuth) writeSession(sess authSession) {
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		slog.Warn("保存续期后的登录态失败", "platform", a.platform, "error", err)
+		slog.Warn("保存登录态失败", "platform", p, "error", err)
 		return
 	}
 	_ = os.Rename(tmp, path)
@@ -535,7 +541,11 @@ func (a *qrAuth) saveSession(user authUser) {
 		slog.Warn("保存登录态失败", "platform", a.platform, "error", err)
 		return
 	}
-	_ = os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		slog.Warn("登录态落盘失败", "platform", a.platform, "error", err)
+		return
+	}
+	slog.Info("登录态已落盘", "platform", a.platform, "path", path)
 }
 
 func removeAuthSession(p Platform) {
@@ -543,7 +553,9 @@ func removeAuthSession(p Platform) {
 	if path == "" {
 		return
 	}
-	_ = os.Remove(path)
+	if err := os.Remove(path); err == nil {
+		slog.Info("登录态已删除", "platform", p, "path", path)
+	}
 }
 
 // ---------------------------------------------------------------- 对外入口

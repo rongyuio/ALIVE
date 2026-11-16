@@ -174,7 +174,7 @@ func (d *douyuAuthDriver) finishQR(ctx context.Context) (authUser, error) {
 	if fields["acf_did"] == "" {
 		fields["acf_did"] = d.prov.did
 	}
-	cookie := douyuBuildCookieString(fields, douyuCookieOrder)
+	cookie := buildCookieString(fields, douyuCookieOrder)
 	if !douyuCookieHasLogin(cookie) {
 		return authUser{}, fmt.Errorf("登录成功但未拿到有效 Cookie")
 	}
@@ -284,7 +284,7 @@ func (p *douyuProvider) douyuCookieHeader(did string) string {
 	fields := douyuParseCookieFields(p.authCookieString())
 	fields["dy_did"] = did
 	fields["acf_did"] = did
-	return douyuBuildCookieString(fields, douyuCookieOrder)
+	return buildCookieString(fields, douyuCookieOrder)
 }
 
 func douyuParseCookieFields(raw string) map[string]string {
@@ -300,7 +300,7 @@ func douyuParseCookieFields(raw string) map[string]string {
 	return out
 }
 
-func douyuBuildCookieString(fields map[string]string, order []string) string {
+func buildCookieString(fields map[string]string, order []string) string {
 	parts := make([]string, 0, len(fields))
 	seen := make(map[string]bool, len(fields))
 	for _, name := range order {

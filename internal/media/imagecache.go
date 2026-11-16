@@ -10,9 +10,14 @@
 //
 //	L1 纹理 —— 服务「现在这屏」，随上下文释放，丢了大不了重新解码
 //	L2 字节 —— 服务「刚才看过、可能还要看」，按 TTL 老化
+//	磁盘     —— 只服务头像这类长期不变的图，重启之后还在
 //
 // 切分区 / 切平台时清掉 L1，回滚时从 L2 重新解码，不用走网络。
 // 这是两层缓存存在的唯一理由：把「省内存」和「回滚快」拆成两件独立的事。
+//
+// 磁盘层（见 imagecache_disk.go）只给 Avatar 用，封面不进：直播间的封面
+// 常常就是实时画面，分钟级就换了，缓存下来命中的是过期图；头像几个月不换
+// 一次，重启后重下一遍纯属浪费。
 //
 // # 其它约束
 //
@@ -119,8 +124,8 @@ const (
 // 「不把上游惹毛」之间的位置。
 // 解码 6：解码是 CPU 密集的，但都在后台 goroutine，8 核以上不会挤压渲染线程。
 const (
-	maxDownloads = 8
-	maxDecodes   = 6
+	maxDownloads = 16
+	maxDecodes   = 8
 )
 
 // texture 是一张已解码的纹理。
@@ -167,6 +172,19 @@ type Cache struct {
 	scale  float64 // 设备像素 / DIP，决定解码尺寸
 	client *http.Client
 
+	// diskDir 是头像的磁盘缓存目录；空串表示只走内存（测试、拿不到配置目录）。
+	// 封面永远不进磁盘，见包注释。
+	diskDir string
+	// wanted 记这次加载要不要落盘。
+	//
+	// 同一 URL 可能先被预取（只进内存）再被头像请求（要落盘），所以用 OR：
+	// 只要有人要，解码成功后就把字节写下去。
+	wanted map[string]bool
+	// diskMu 串行化淘汰扫描。读写文件本身不持 mu：渲染线程每帧都要查缓存，
+	// 不能等 IO。
+	diskMu sync.Mutex
+	diskAt time.Time // 上次扫描时间，限制扫描频率
+
 	download chan struct{}
 	decode   chan struct{}
 
@@ -185,10 +203,20 @@ var Default = &Cache{
 	loading:  map[string]bool{},
 	failed:   map[string]time.Time{},
 	last:     map[string]*ui.Bitmap{},
+	wanted:   map[string]bool{},
 	scale:    1,
 	client:   &http.Client{Timeout: 20 * time.Second},
 	download: make(chan struct{}, maxDownloads),
 	decode:   make(chan struct{}, maxDecodes),
+}
+
+// SetDiskDir 打开头像的磁盘缓存；dir 为空串就关掉。
+//
+// 目录建不出来或不可写不算错：写入失败就当没这层，内存缓存照跑。
+func (c *Cache) SetDiskDir(dir string) {
+	c.mu.Lock()
+	c.diskDir = dir
+	c.mu.Unlock()
 }
 
 // SetWindow 让缓存拿到窗口：图片就绪后用它触发重绘。
@@ -208,7 +236,21 @@ func (c *Cache) SetWindow(w *mygo.Window) {
 //
 // 返回 nil 的那一帧用占位画法顶上；图片加载完成后会触发一次重绘，
 // 下一帧就能拿到真图——加载什么渲染什么，不等待其它图片。
+//
+// 只走内存：封面用这个，直播封面是实时画面，落盘只会缓存过期图。
 func (c *Cache) Bitmap(url string, width float32) *ui.Bitmap {
+	return c.bitmap(url, width, false)
+}
+
+// Avatar 取一张头像，和 Bitmap 只差一层：字节会落到磁盘缓存。
+//
+// 头像稳定，重下一遍没有意义；重启后第一次打开关注页也不该再等一轮网络。
+// 其余路径完全一样——L1 纹理、L2 字节、后台解码、失败冷却都共享。
+func (c *Cache) Avatar(url string, width float32) *ui.Bitmap {
+	return c.bitmap(url, width, true)
+}
+
+func (c *Cache) bitmap(url string, width float32, persist bool) *ui.Bitmap {
 	if url == "" {
 		return nil
 	}
@@ -217,6 +259,14 @@ func (c *Cache) Bitmap(url string, width float32) *ui.Bitmap {
 	now := time.Now()
 
 	c.mu.Lock()
+	if persist {
+		if c.wanted == nil {
+			c.wanted = map[string]bool{}
+		}
+		// 在 loading 判断之前记下：同一张头像的另一个尺寸正在下载时，
+		// 这次的落盘需求也得算进去。
+		c.wanted[url] = true
+	}
 	if t, ok := c.textures[key]; ok {
 		// 命中就刷新使用时间：闲置回收和 LRU 都看这个值，
 		// 正在屏幕上的图因此不可能被清掉。
@@ -243,11 +293,17 @@ func (c *Cache) Bitmap(url string, width float32) *ui.Bitmap {
 		raw = r.data
 		r.at = now // 刚用过，别让它在我们手上过期
 	}
+	dir := c.diskDir
 	c.mu.Unlock()
 
-	if raw != nil {
+	switch {
+	case raw != nil:
 		go c.decodeRaw(key, url, target, raw)
-	} else {
+	case persist && dir != "":
+		// 磁盘优先于网络：头像重启后还在，先看它。
+		// 只在 persist 时查——封面从来不落盘，查也是白查。
+		go c.loadDisk(key, url, target, dir)
+	default:
 		go c.fetch(key, url, target)
 	}
 	// 新图在路上：这一帧交给上一张纹理，避免拖动窗口时封面反复闪成占位色。
@@ -389,6 +445,8 @@ func (c *Cache) decodeRaw(key, url string, target int, data []byte) {
 		c.fail(url)
 		return
 	}
+	// 解码成功才写盘：解不出来的字节写下去只会让下次启动再失败一遍。
+	c.persistData(url, data)
 	c.enqueue(key, url, img)
 }
 
@@ -408,6 +466,8 @@ func (c *Cache) fetchStatic(key, url, alt string, target int) {
 		c.fail(url)
 		return
 	}
+	// 解码成功才写盘：解不出来的字节写下去只会让下次启动再失败一遍。
+	c.persistData(url, data)
 	c.enqueue(key, url, img)
 }
 
@@ -641,5 +701,15 @@ func (c *Cache) Ready(url string, width float32) bool {
 func (c *Cache) Prefetch(width float32, urls ...string) {
 	for _, u := range urls {
 		c.Bitmap(u, width)
+	}
+}
+
+// PrefetchAvatars 是头像专用的预取：顺手把落盘需求记上。
+//
+// 首屏预取的头像随后会被卡片、岛、关注页按几档尺寸再请求一次；走 Bitmap
+// 的话那次下载不落盘，下一次启动还得重来。
+func (c *Cache) PrefetchAvatars(width float32, urls ...string) {
+	for _, u := range urls {
+		c.Avatar(u, width)
 	}
 }

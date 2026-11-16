@@ -221,7 +221,7 @@ func avatar(c *ui.Context, s Streamer) {
 
 // avatarCircle 是任意直径的头像（卡片 32、搜索结果 34、关注面板 40）。
 func avatarCircle(c *ui.Context, s Streamer, size float32) {
-	if bmp := media.Default.Bitmap(s.AvatarURL, size); bmp != nil {
+	if bmp := media.Default.Avatar(s.AvatarURL, size); bmp != nil {
 		ui.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
 		return
 	}
