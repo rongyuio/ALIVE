@@ -531,3 +531,46 @@ func TestLiveWithoutVariantsReportsError(t *testing.T) {
 
 // contains 是 strings.Contains 的短名，读起来顺一点。
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// ---------------------------------------------------------------- 换地址
+
+// 平台声明了寿命才提前换；没声明时什么也不做。
+func TestRefreshAtFor(t *testing.T) {
+	if got := refreshAtFor(live.Variant{}); !got.IsZero() {
+		t.Fatalf("没声明寿命却排了换地址：%v", got)
+	}
+	exp := time.Now().Add(300 * time.Second)
+	got := refreshAtFor(live.Variant{Expires: exp})
+	if want := exp.Add(-refreshLead); !got.Equal(want) {
+		t.Fatalf("换地址时刻 %v，期望 %v", got, want)
+	}
+}
+
+// 断流判定：没出图、暂停、时间轴还在走都不算；自己停了、或者十秒不动才算。
+func TestDeadReason(t *testing.T) {
+	now := time.Now()
+	var m playerMedia
+	if got := m.deadReason(false, false, 0, now); got != "" {
+		t.Fatalf("还没出图就判死：%q", got)
+	}
+	if got := m.deadReason(true, false, 10*time.Second, now); got != "ended" {
+		t.Fatalf("播放器自己停了，判定=%q", got)
+	}
+	m = playerMedia{}
+	if got := m.deadReason(true, true, 10*time.Second, now); got != "" {
+		t.Fatalf("刚起步就判死：%q", got)
+	}
+	// 时间轴在走就一直健康。
+	m.stillPos, m.stillAt = 10*time.Second, now
+	if got := m.deadReason(true, true, 11*time.Second, now.Add(time.Minute)); got != "" {
+		t.Fatalf("时间轴在走却判死：%q", got)
+	}
+	// 停在同一个位置上超过预算才算卡住。
+	m.stillPos, m.stillAt = 11*time.Second, now
+	if got := m.deadReason(true, true, 11*time.Second, now.Add(streamStallTimeout-time.Second)); got != "" {
+		t.Fatalf("预算内就判死：%q", got)
+	}
+	if got := m.deadReason(true, true, 11*time.Second, now.Add(streamStallTimeout+time.Second)); got != "stalled" {
+		t.Fatalf("停住超过预算，判定=%q", got)
+	}
+}

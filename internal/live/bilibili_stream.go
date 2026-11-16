@@ -205,6 +205,7 @@ func biliPlaybackVariant(roomID string, qn int64, desc map[int64]string, u biliP
 		// m3u8 本身不要 Referer，但里面的 .ts 分片会 403
 		Headers: biliStreamHeaders(roomID),
 		Codec:   u.Codec,
+		Expires: expiryFromQuery(u.URL, "expires"),
 	}
 }
 

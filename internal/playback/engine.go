@@ -47,6 +47,44 @@ type Engine struct {
 	serial uint64
 	frames uint64
 	closed bool
+	gate   audioGate
+}
+
+// audioGateBudget 是「等音频起步」的上限。
+//
+// 4K 起播时 mpv 会先解出画面、音频管线还落在后面（1x 供片下实测 0.9 秒），
+// 于是出现一段「画面在动、没有声音」。这道门把画面压到音频时钟走起来为止。
+// 上限是兜底：没有音轨的流、或者音频起不来时，不能永远不给画面。
+const audioGateBudget = 2 * time.Second
+
+// audioGate 决定「已经解出来的画面现在能不能交出去」。
+//
+// 判据是音频时钟有没有走起来：mpv 里 time-pos 由音频驱动（video-sync=audio），
+// 它还是 0 就说明声音一个采样都还没出来。1080p / 2K 上 time-pos 和首帧几乎
+// 同时到，这道门一次都不触发；4K 上它会压住画面直到声音接上。
+type audioGate struct {
+	started bool
+	// since 是第一次「有画面但音频还没起步」的时刻；零值表示还没进过门。
+	since time.Time
+}
+
+// allow 报告这一帧能否交给上屏。pos 是音频时钟。
+func (g *audioGate) allow(pos time.Duration, now time.Time) bool {
+	if g.started {
+		return true
+	}
+	if pos > 0 {
+		g.started = true
+		return true
+	}
+	if g.since.IsZero() {
+		g.since = now
+	}
+	if now.Sub(g.since) > audioGateBudget {
+		g.started = true
+		return true
+	}
+	return false
 }
 
 // Open 打开一路直播并开始播放。
@@ -123,11 +161,16 @@ func (e *Engine) SetWake(wake func()) {
 
 // Frame 返回当前该显示的画面。
 //
-// changed 表示这是新的一帧（mpv 的渲染序号变了）。ok 为 false 表示还没有画面。
+// changed 表示这是新的一帧（mpv 的渲染序号变了）。ok 为 false 表示还没有画面，
+// 或者画面已经到了但音频还没起步（见 audioGate）：后者让加载态多压一会儿，
+// 换来「画面出现时声音同时出现」。
 // 返回的 NV12 平面指向 mpv 引擎内部轮换的缓冲，三帧之后才会被覆写。
 func (e *Engine) Frame(t time.Time) (media.Picture, bool, bool) {
 	f, serial := e.p.Frame()
 	if f == nil {
+		return media.Picture{}, false, false
+	}
+	if !e.allowFrame() {
 		return media.Picture{}, false, false
 	}
 	e.mu.Lock()
@@ -157,6 +200,13 @@ func (e *Engine) Frame(t time.Time) (media.Picture, bool, bool) {
 
 // Interval 是呈现端的取帧节拍。
 func (e *Engine) Interval() time.Duration { return 16 * time.Millisecond }
+
+// allowFrame 问一次音频门：音频时钟还没走起来就先不给画面。
+func (e *Engine) allowFrame() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.gate.allow(e.p.State().Position, time.Now())
+}
 
 // State 报告加载与播放状态。
 func (e *Engine) State() (media.State, error) {

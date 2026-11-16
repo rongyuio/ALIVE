@@ -273,7 +273,7 @@ func (p *douyuProvider) StreamForPlayback(ctx context.Context, roomID, line, qua
 		if !known || applied < 0 {
 			// 服务端没给实际档位：地址可用，但不能冒充请求的档位。
 			if unconfirmed == nil {
-				v := Variant{URL: playURL, Headers: headers, Codec: "avc"}
+				v := Variant{URL: playURL, Headers: headers, Codec: "avc", Expires: douyuVariantExpiry(playURL)}
 				unconfirmed = &v
 			}
 			continue
@@ -341,6 +341,7 @@ func douyuNewVariant(roomID string, rate douyuRate, playURL string) Variant {
 		// 斗鱼的 FLV/HLS 都校验 Referer，不带给 ffmpeg 就是 403
 		Headers: douyuStreamHeaders(roomID),
 		Codec:   "avc",
+		Expires: douyuVariantExpiry(playURL),
 	}
 }
 
@@ -349,6 +350,8 @@ func douyuFillSelected(info Stream, selected Variant) (Stream, Variant) {
 	for i := range info.Variants {
 		if info.Variants[i].ID == selected.ID {
 			info.Variants[i].URL = selected.URL
+			// 目录项是取流之前建的，那时还没有地址，也就没有失效时刻。
+			info.Variants[i].Expires = selected.Expires
 			return info, info.Variants[i]
 		}
 	}
@@ -770,6 +773,14 @@ func douyuExpirePatch(rawURL string) string {
 		return rawURL + "&expire=0"
 	}
 	return rawURL
+}
+
+// douyuVariantExpiry 读这条地址的失效时刻。
+//
+// CDN 到点会主动断开连接（实测 300 秒整），mpv 把「连接被关」当成文件播完，
+// 画面就停在最后一帧。把失效时刻交出去，播放层就能提前换一份新地址。
+func douyuVariantExpiry(rawURL string) time.Time {
+	return expiryFromQuery(rawURL, "expire")
 }
 
 // ---------------------------------------------------------------- 小工具

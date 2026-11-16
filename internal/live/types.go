@@ -148,6 +148,11 @@ type Variant struct {
 	FrameRate float64
 	// Headers 是回源要带的请求头，形如 "Referer: https://live.bilibili.com/"。
 	Headers []string
+	// Expires 是这条地址的失效时刻，零值表示平台没有声明。
+	//
+	// CDN 给的签名地址有过期时间，到点会主动断开连接——播放器会把它当成
+	// 文件播完。知道失效时刻就能在它过期之前换一份新地址，用户不会停住。
+	Expires time.Time
 	// Codec 是这条地址的视频编码（avc / hevc / av1）。转封装层据此决定
 	// 能不能直接 copy：AV1 塞进 MPEG-TS 会被 ffmpeg 丢掉视频轨，只剩音频。
 	Codec string

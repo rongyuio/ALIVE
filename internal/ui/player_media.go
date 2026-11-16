@@ -76,6 +76,17 @@ type playerMedia struct {
 
 	lastPos   time.Duration
 	lastPosAt time.Time
+	// stillPos / stillAt 是断流看门狗自己的观测点，和缓冲胶囊那套分开：
+	// 胶囊 1.5 秒不动就提示，重连要等 10 秒，不能共用一个时间戳。
+	stillPos time.Duration
+	stillAt  time.Time
+	// refreshAt 是当前这条地址到期前该换新地址的时刻；零值表示平台没声明寿命。
+	refreshAt time.Time
+	// refreshing 表示已经派出去一次热切换，避免每帧重复派。
+	refreshing bool
+	// lastSwapAt / swapFailures 用来退避：连续失败时不要每帧都重开一路。
+	lastSwapAt   time.Time
+	swapFailures int
 }
 
 // stalledThreshold 是判定「画面停住」的阈值。
@@ -128,6 +139,10 @@ func (m *playerMedia) reset() {
 	m.pendingQualityPick = ""
 	m.upstream = live.Variant{}
 	m.lastPos, m.lastPosAt = 0, time.Time{}
+	m.stillPos, m.stillAt = 0, time.Time{}
+	m.refreshAt, m.lastSwapAt = time.Time{}, time.Time{}
+	m.refreshing = false
+	m.swapFailures = 0
 }
 
 // cancelSession 结束当前这一轮起播。
@@ -473,6 +488,7 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 	a.media.pausedFor = 0
 	a.media.player = p
 	a.media.upstream = upstream
+	a.media.refreshAt = refreshAtFor(upstream)
 	a.media.loading = false
 	a.media.err = ""
 	// 播放器打开就按当前音量对齐，别让用户先听到满音量再跳
@@ -492,12 +508,154 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 // stopPlayback 收掉播放器，弹幕不动。
 func (a *App) stopPlayback() { a.media.stopPlayback() }
 
+// refreshLead 是提前多久换地址：留出取流 + 首帧的时间，别卡在过期那一刻。
+// 斗鱼的直链签 300 秒（实测），60 秒足够重开一路。
+const refreshLead = 60 * time.Second
+
+// swapRetryDelay 是换地址失败后多久再试。
+const swapRetryDelay = 15 * time.Second
+
+// swapMaxFailures 是连续失败多少次之后放弃无缝切换、退回整轮重来。
+const swapMaxFailures = 2
+
+// swapRequest 是一次换地址要用的上下文：全部在主线程上取好，后台不再回读 App。
+type swapRequest struct {
+	platform live.Platform
+	roomID   string
+	line     string
+	quality  string
+}
+
+// refreshAtFor 算出该在什么时候换地址：平台声明了寿命就提前一分钟。
+func refreshAtFor(v live.Variant) time.Time {
+	if v.Expires.IsZero() {
+		return time.Time{}
+	}
+	return v.Expires.Add(-refreshLead)
+}
+
+// scheduleSwap 派一次「取新地址 → 开第二路 → 换上去」。
+//
+// 两种触发：地址快到期了，或者这一路已经停了（播放器自己结束 / 时间轴不动）。
+// 两条要的是同一件事——再要一份能播的地址——所以走同一条路。
+func (a *App) scheduleSwap(reason string) {
+	m := &a.media
+	if m.refreshing || m.player == nil {
+		return
+	}
+	if !m.lastSwapAt.IsZero() && time.Since(m.lastSwapAt) < swapRetryDelay {
+		return
+	}
+	m.refreshing = true
+	m.lastSwapAt = time.Now()
+	sess := a.session()
+	cur := a.current()
+	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: a.Line, quality: m.upstream.Label}
+	logStage(sess.id, sess.start, "swap-start", "reason", reason)
+	go a.runHotSwap(sess, req, reason)
+}
+
+// runHotSwap 在后台取一条新地址、开好第二路，等它出图再交给主线程换上去。
+//
+// 新的一路先出图再切换，所以屏幕上不会经过加载态；切换那一刻画面是连续的，
+// 只有声音有一次几百毫秒的接缝——网页端也是这个代价。
+func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
+	fail := func(err error) {
+		logStage(sess.id, sess.start, "swap-failed", "reason", reason, "error", errClass(err))
+		runOnMain(sess.win, func() {
+			a.media.refreshing = false
+			a.media.swapFailures++
+			if a.media.swapFailures >= swapMaxFailures {
+				// 新地址也开不起来：退回整轮重来，至少让用户看到进度。
+				a.media.swapFailures = 0
+				a.startStream(true)
+				return
+			}
+			a.media.refreshAt = time.Now().Add(swapRetryDelay)
+		})
+	}
+	prov, ok := providerFor(req.platform)
+	if !ok {
+		fail(errors.New("没有这个平台的取流入口"))
+		return
+	}
+	if _, ok := prov.(live.Streamer); !ok {
+		fail(errors.New("这个平台不能取流"))
+		return
+	}
+	_, selected, err := fetchStream(sess.ctx, prov, req.roomID, req.line, req.quality)
+	if err != nil {
+		fail(err)
+		return
+	}
+	if selected.URL == "" {
+		fail(errors.New("没有拿到可播放的地址"))
+		return
+	}
+	e, err := openNative(sess.ctx, selected.URL, playback.Options{
+		Headers: selected.Headers, Width: selected.Width, Height: selected.Height, FrameRate: selected.FrameRate,
+	})
+	if err != nil {
+		fail(err)
+		return
+	}
+	// 等到第一帧（音频门也在里面）：没有画面就换上去等于黑屏。
+	deadline := time.Now().Add(8 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		if sess.ctx.Err() != nil {
+			_ = e.Close()
+			return
+		}
+		if _, _, ok := e.Frame(time.Now()); ok {
+			ready = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready {
+		_ = e.Close()
+		fail(errors.New("新地址 8 秒内没有画面"))
+		return
+	}
+	runOnMain(sess.win, func() {
+		a.applyMedia(sess, func() {
+			a.adoptSwap(sess, e, selected, reason)
+		}, func() { _ = e.Close() })
+	})
+}
+
+// adoptSwap 把新的一路接到媒体层上，并关掉旧的。
+func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant, reason string) {
+	old := a.media.player
+	p := ui.NewEngineVideoPlayer(e)
+	a.media.player = p
+	a.media.upstream = v
+	a.media.refreshAt = refreshAtFor(v)
+	a.media.refreshing = false
+	a.media.swapFailures = 0
+	volume := float64(a.Volume)
+	p.SetVolume(volume)
+	a.pushedVolume = volume
+	if !a.Playing {
+		p.Pause()
+	}
+	if old != nil {
+		old.Close()
+	}
+	logStage(sess.id, sess.start, "swap-done", "reason", reason, "quality", v.Label)
+}
+
 func (m *playerMedia) stopPlayback() {
 	if m.player != nil {
 		m.player.Close()
 		m.player = nil
 	}
 	m.lastPos, m.lastPosAt = 0, time.Time{}
+	m.stillPos, m.stillAt = 0, time.Time{}
+	m.refreshAt, m.lastSwapAt = time.Time{}, time.Time{}
+	m.refreshing = false
+	m.swapFailures = 0
 }
 
 // failPlayback 把这一轮落到可重试的终态。
@@ -544,6 +702,20 @@ func (a *App) trackFirstFrame() {
 				"declared_bitrate", m.upstream.Bitrate, "declared_fps", m.upstream.FrameRate,
 				"decoded_width", w, "decoded_height", h, "buffering", p.Buffering())
 		}
+		// 两条触发，最后都落到「换一份新地址」：
+		//   1. 地址快到期了（平台声明过寿命）——提前换，用户看不到停；
+		//   2. 这一路已经停了：播放器自己结束，或者时间轴长时间不动。
+		//      这是兜底，正常情况下第一条先触发。
+		if a.Playing {
+			if why := m.deadReason(true, p.Playing(), p.Position(), now); why != "" {
+				// 不在这里打日志：卡住的时候每帧都会命中，scheduleSwap 自己会
+				// 记一条 swap-start，带原因。
+				a.scheduleSwap("dead-" + why)
+			}
+		}
+		if !m.refreshAt.IsZero() && !now.Before(m.refreshAt) {
+			a.scheduleSwap("expire")
+		}
 		return
 	}
 	// Ready 已经在上面的分支里优先，所以这里只剩「确实还没出图」的情况。
@@ -552,8 +724,36 @@ func (a *App) trackFirstFrame() {
 	}
 }
 
-// needFirstFrameTimeout 报告这一轮是否已经超出首帧预算。
+// streamStallTimeout 是「时间轴多久不动就当成这一路已经死了」。
 //
+// 缓冲也会让时间轴停住，所以这个值必须比缓冲胶囊的 1.5 秒宽：6 秒还没动一下，
+// 就不是抖动，是断了。再长用户就盯着静止画面了。
+const streamStallTimeout = 6 * time.Second
+
+// deadReason 报告直播是不是已经不能继续播了，返回空串表示还活着。
+//
+// ready 表示出过图，playing 是播放器自己报的状态，pos 是时间轴。直播没有
+// 「播完」这一说，所以播放器自己停下只有一种解释：这颗地址不能用了——CDN
+// 给的签名地址有过期时间（斗鱼实测约 5 分钟），到期后连接被关，mpv 把它当成
+// 文件结束。卡住（时间轴不动）是另一种：数据断了，mpv 还在原地等。
+func (m *playerMedia) deadReason(ready, playing bool, pos time.Duration, now time.Time) string {
+	if !ready {
+		return ""
+	}
+	if !playing {
+		return "ended"
+	}
+	if m.stillAt.IsZero() || pos != m.stillPos {
+		m.stillPos, m.stillAt = pos, now
+		return ""
+	}
+	if now.Sub(m.stillAt) > streamStallTimeout {
+		return "stalled"
+	}
+	return ""
+}
+
+// needFirstFrameTimeout 报告这一轮是否已经超出首帧预算。
 // only 约束「确实还没出图」的情况：Ready 由调用方先判，已出图和暂停都不算。
 // libmpv 收到 loadfile 就返回，流能不能连上要等它自己解析；没有这条兜底，
 // 上游给了个死地址时界面会永远停在「正在拉取直播流…」。

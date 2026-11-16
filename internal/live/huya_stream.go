@@ -177,7 +177,8 @@ func (p *huyaProvider) Stream(ctx context.Context, roomID, line string) (Stream,
 			URL:     playURL,
 			Headers: headers,
 			// 地址固定带 codec=264，转封装可以直接 copy。
-			Codec: "avc",
+			Codec:   "avc",
+			Expires: expiryFromQuery(playURL, "wsTime"),
 		})
 	}
 	return out, nil

@@ -159,13 +159,15 @@ func (p *douyinProvider) Stream(ctx context.Context, roomID, line string) (Strea
 
 	quals := douyinOrderForPlayback(room.StreamURL.parseStreamData(), douyinPickQualities(&room))
 	for _, q := range quals {
+		url := httpsURL(q.URL)
 		out.Variants = append(out.Variants, Variant{
 			ID:    q.ID,
 			Label: q.Label,
-			URL:   httpsURL(q.URL),
+			URL:   url,
 			// FLV / HLS 都校验 Referer，缺了就是 403。
 			Headers: douyinStreamHeaders,
 			Codec:   q.Codec,
+			Expires: expiryFromQuery(url, "expire"),
 		})
 	}
 	if len(out.Variants) == 0 {
