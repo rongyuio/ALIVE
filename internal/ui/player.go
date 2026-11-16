@@ -37,18 +37,18 @@ func (a *App) PlayerPage(c *ui.Context) {
 	// 接真实流：房间变了才重新取流 + 连弹幕
 	a.ensureMedia(c)
 	a.syncPlayer()
-	// 首帧可用时刻是起播耗时的最后一段，顺带负责代理快路径的回退。
+	// 首帧可用时刻是起播耗时的最后一段。
 	a.trackFirstFrame()
 	// MyGo 0.9.0 的原生播放器在 Loading 阶段不定时请求帧，不能依赖灵动岛
 	// 或弹幕恰好在动画；首帧预算和健康检查都靠这一帧续上。
 	//
-	// 首帧后所有路径都按 250ms 看一眼：MF 停帧不会主动报错，只靠用户操作
-	// 触发帧会漏掉播放器故障，普通转封装尤其明显。
+	// 首帧后按 250ms 看一眼：播放器停帧不会主动报错，只靠用户操作触发帧会
+	// 漏掉故障。
 	if a.Playing && a.media.player != nil && a.media.player.Err() == nil {
 		if !a.media.firstFrame {
 			c.After(firstFramePollInterval)
 		} else {
-			c.After(proxyHealthPollInterval)
+			c.After(playbackHealthPollInterval)
 		}
 	}
 	// 左右 14（窄屏 10）、底部不留：baseline 的 appBodyPlayer 就是这样，

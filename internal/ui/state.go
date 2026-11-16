@@ -42,7 +42,6 @@ type persisted struct {
 	Subs          *[]Subscription `json:"subscriptions,omitempty"`
 	Quality       string          `json:"quality,omitempty"`
 	Line          string          `json:"line,omitempty"`
-	RelayEncoder  string          `json:"relayEncoder,omitempty"`
 	Volume        *float32        `json:"volume,omitempty"`
 	DanmuOn       *bool           `json:"danmuOn,omitempty"`
 	Danmu         *danmuPrefs     `json:"danmu,omitempty"`
@@ -142,7 +141,6 @@ func (a *App) saveState() {
 		Subs:          &subs,
 		Quality:       a.Quality,
 		Line:          a.Line,
-		RelayEncoder:  a.RelayEncoder,
 		Volume:        &volume,
 		DanmuOn:       &danmuOn,
 		Danmu:         &danmu,
@@ -200,9 +198,6 @@ func (a *App) restore() {
 	}
 	if p.Line != "" {
 		a.Line = p.Line
-	}
-	if p.RelayEncoder != "" {
-		a.RelayEncoder = p.RelayEncoder
 	}
 	if p.Volume != nil {
 		a.Volume = *p.Volume

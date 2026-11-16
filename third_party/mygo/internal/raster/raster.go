@@ -92,6 +92,7 @@ func Render(dst *Image, s *scene.Scene) {
 	var r Renderer
 	r.drawCanvases(s)
 	r.d.draw(dst, s, image.Rect(0, 0, dst.W, dst.H), r.opBounds(s))
+
 }
 
 // restorePixels makes the pixels of the images s draws within area again
@@ -1614,6 +1615,7 @@ func (r *renderer) image(op *scene.Op) {
 	if img == nil || img.W == 0 || img.H == 0 || op.Rect.Empty() || unflipped(op.Src).Empty() || img.Pixels() == nil {
 		return
 	}
+
 	opacity := op.Opacity
 	if opacity == 0 {
 		opacity = 1
@@ -1652,6 +1654,13 @@ func (r *renderer) image(op *scene.Op) {
 // sampleOp reads op's image at (u, v), where a pixel spans du by dv of
 // its pixels, as op samples, grays and tints it.
 func sampleOp(op *scene.Op, u, v, du, dv float32) [4]float32 {
+	// The GPU renderers drop the CPU pixels after uploading, leaving the
+	// image a Restore that makes them again; sample reads Pix directly, so
+	// it has to ask for them first. NV12 surfaces take their own path below
+	// and are unaffected, which is why this only shows up for other
+	// surfaces (a video engine's BGRA frames, say) in the CPU renderer and
+	// in captures.
+	op.Image.Pixels()
 	if op.Pixelated {
 		u, v = pixelated(u, du), pixelated(v, dv)
 	}

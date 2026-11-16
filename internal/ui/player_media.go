@@ -5,45 +5,35 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/video"
 
-	"alive/internal/ffmpeg"
 	"alive/internal/live"
 	"alive/internal/playback"
-	"alive/internal/relay"
 )
 
 // 播放页的媒体层。
 //
-// 三样东西都挂在 App 上而不是视图里——视图每帧重建，而转封装进程、
-// 播放器、弹幕连接都要跨帧活着。
+// 三样东西都挂在 App 上而不是视图里——视图每帧重建，而播放器、
+// 弹幕连接都要跨帧活着。
 //
-//	relay    ffmpeg 把上游流转封装成本地 HLS（Media Foundation 直接拉不了
-//	         斗鱼的 FLV、也拉不了带防盗链的 m3u8）
 //	player   ui/video 的播放器，走系统媒体框架解码
 //	danmaku  一条 WebSocket 弹幕连接
 type playerMedia struct {
-	relay  relaySession
-	player *ui.VideoPlayer
-	// nativeTried 记录这一轮已经试过自带解码。系统解不了某个编码时先让自带
-	// 解码接手，失败再退回 relay；这个标记保证只试一次，不会来回打转。
-	nativeTried bool
-	danmaku     live.DanmakuStream
-	stream      live.Stream
+	player  *ui.VideoPlayer
+	danmaku live.DanmakuStream
+	stream  live.Stream
 
 	// roomKey 是 platform|roomID：换房间时对比它就知道要不要重连
 	roomKey string
 	// seq 是这一轮起播的代号。每开一轮就 +1，之前派出去的一切结果都变成过期
 	// 结果，由接纳回调负责把它们的资源关掉。
 	seq int
-	// loading 表示取流 / 转封装还在进行
+	// loading 表示取流还在进行
 	loading bool
 	// err 是取流失败的原因，直接显示在状态覆盖层上
 	err string
@@ -54,12 +44,9 @@ type playerMedia struct {
 	cancel      context.CancelFunc
 	ctx         context.Context
 	win         *mygo.Window
-	stopRelay   func()
 	stopDanmaku func()
 	roomCtx     context.Context
 	roomCancel  context.CancelFunc
-	// encoder 是这一轮用的转码器策略，起播前在主线程上取好给后台用。
-	encoder relay.EncoderMode
 	// id / start 是这一轮的关联 ID 与起点，日志里的毫秒数都相对 start。
 	id    string
 	start time.Time
@@ -68,14 +55,8 @@ type playerMedia struct {
 	openedAt     time.Time
 	pauseStarted time.Time
 	pausedFor    time.Duration
-	// upstream 是已经接到播放器上的那一档，代理快路径回退要拿它重开。
+	// upstream 是已经接到播放器上的那一档。
 	upstream live.Variant
-	// proxyAttempt 表示这一轮走的是 HLS 代理快路径；proxyFellBack 表示
-	// 已经为这一轮回退过一次——回退只做一次。
-	proxyAttempt  bool
-	proxyFellBack bool
-	// proxyDisabled 在当前房间回退后保留，切档、换线和重试不再重复试错。
-	proxyDisabled bool
 
 	// danmuSeq 单独管弹幕连接。换清晰度不该让同一房间的聊天断掉，也不能因为
 	// 画面那一路的代号变了，就把刚连上的弹幕当成过期结果丢掉。
@@ -109,51 +90,28 @@ const streamFetchBudget = 40 * time.Second
 // firstFramePollInterval 只在等待首帧时驱动画面检查，首帧后交还播放器调度。
 const firstFramePollInterval = time.Second / 30
 
-// proxyHealthPollInterval 是首帧之后所有活跃播放器的健康检查间隔。
+// playbackHealthPollInterval 是首帧之后驱动画面健康检查的节拍。
 //
-// Media Foundation 停帧后不会主动通知错误，只靠用户操作触发帧会漏掉它；
-// 代理路径和普通转封装都按这个间隔看一眼。
-const proxyHealthPollInterval = 250 * time.Millisecond
+// 播放器停帧不会主动报错，只靠用户操作触发帧会漏掉它，所以首帧后按这个
+// 间隔续一帧，让 trackFirstFrame 有机会看到故障。
+const playbackHealthPollInterval = 250 * time.Millisecond
 
-// componentPreparingMessage 是组件安装期间的提示；自动重试据此判断这一轮
-// 是否仍停在同一原因上，避免把用户后来的其它错误误当成可重试。
-const componentPreparingMessage = "正在准备播放组件，稍后点重试"
-
-// componentRetryWindow 是等组件装完的上限；超过就不再自动重试，
-// 用户仍然可以用界面上的重试按钮。
-const componentRetryWindow = 10 * time.Minute
-
-// proxyFirstFrameWait 是代理路径等首帧的上限：超过它还没出图就换路。
+// firstFrameBudget 是首帧上限：超过它还没有画面就落到可重试的错误终态。
 //
-// 取 3 秒是因为代理的正常区间是 1.1~2.0 秒，而它的尾部可以到 9 秒——本机实测过
-// 同一房间 1082 / 1245 / 1423 / 2047 / 9199ms。那个尾部不是网络，是 MF 的 HLS
-// source 在等自己的起播水位：B 站这类房间的直播窗口只有 6 个 1 秒分片，它的等待
-// 被放大成整窗口。网页用 hls.js + MSE，一片到就解就放，所以没有这个问题。
-// 3 秒足够覆盖正常区间，超出的那部分交给自带解码（850~2644ms）来兜。
-//
-// 从播放器打开后计算，暂停时间不计入，避免网络抖动时过早重启。
-const proxyFirstFrameWait = 3 * time.Second
-
-// firstFrameBudget 是所有路径的首帧上限：代理回退、普通转封装、兼容转码都算。
-//
-// relay.Start 返回成功只代表本地 playlist 和首个分片可读，不代表播放器能建
-// 出解码器交帧。没有这条兜底，remux / 转码路径会永远停在「正在拉取直播流…」。
-// 比代理预算宽，因为它背后没有代理预检那层过滤，慢一点是正常的。
+// libmpv 收到 loadfile 就返回，流能不能连上要等它自己解析。没有这条兜底，
+// 上游给了个死地址时界面会永远停在「正在拉取直播流…」。
+// 从播放器打开后计算，暂停时间不计入。
 const firstFrameBudget = 20 * time.Second
 
 // playbackSession 是一轮起播的凭据：媒体代号、寿命 ctx、日志关联 ID 与起点。
 //
 // 后台 goroutine 只拿它，不回读 App 字段——那些字段只属于主线程。
 type playbackSession struct {
-	seq     int
-	win     *mygo.Window
-	ctx     context.Context
-	id      string
-	start   time.Time
-	encoder relay.EncoderMode
-	// proxy 表示这一路允许尝试 HLS 代理快路径。它在主线程上定下来，后台 goroutine
-	// 就不用回读媒体层字段。
-	proxy bool
+	seq   int
+	win   *mygo.Window
+	ctx   context.Context
+	id    string
+	start time.Time
 }
 
 // reset 在主线程取消所有会话，慢资源在后台释放。
@@ -165,10 +123,6 @@ func (m *playerMedia) reset() {
 	m.loading = false
 	m.err = ""
 	m.firstFrame = false
-	m.proxyAttempt = false
-	m.proxyFellBack = false
-	m.proxyDisabled = false
-	m.nativeTried = false
 	m.notice = ""
 	m.noticeUntil = time.Time{}
 	m.pendingQualityPick = ""
@@ -189,16 +143,8 @@ func (m *playerMedia) cancelSession() {
 	m.seq++
 }
 
-// mode 是本轮的实际呈现方式：自带解码记 native，其余看 relay 的传输模式。
-//
-// native 路径没有 relay，直接拿 relayMode(nil) 会记成 starting，
-// 日志里就看不出这条路到底走的是哪儿。
-func (m *playerMedia) mode() string {
-	if m.player != nil && m.relay == nil {
-		return "native"
-	}
-	return relayMode(m.relay)
-}
+// mode 是本轮的实际呈现方式。现在只有 libmpv 一条路，日志里固定记 native。
+func (m *playerMedia) mode() string { return "native" }
 
 // stalled 报告画面是不是真的停住了。
 //
@@ -274,19 +220,16 @@ func (a *App) beginSession(stage string) playbackSession {
 	m.win = a.Win
 	m.id = fmt.Sprintf("%s#%d", stage, m.seq)
 	m.start = time.Now()
-	m.encoder = relay.ParseEncoderMode(a.RelayEncoder)
 	m.firstFrame = false
 	m.openedAt = time.Time{}
 	m.pauseStarted = time.Time{}
 	m.pausedFor = 0
 	m.upstream = live.Variant{}
-	m.proxyAttempt = false
-	m.proxyFellBack = false
 	m.loading = true
 	m.err = ""
 
-	sess := playbackSession{seq: m.seq, ctx: ctx, id: m.id, start: m.start, encoder: m.encoder, proxy: hlsProxyEnabled() && !m.proxyDisabled, win: m.win}
-	logStage(sess.id, sess.start, "begin", "proxy_requested", sess.proxy)
+	sess := playbackSession{seq: m.seq, ctx: ctx, id: m.id, start: m.start, win: m.win}
+	logStage(sess.id, sess.start, "begin")
 	return sess
 }
 
@@ -295,7 +238,7 @@ func (a *App) beginSession(stage string) playbackSession {
 // 后台不能回读 App 字段（那些只属于主线程），所以这里一次拷全。
 func (a *App) session() playbackSession {
 	m := &a.media
-	return playbackSession{seq: m.seq, ctx: m.ctx, id: m.id, start: m.start, encoder: m.encoder, proxy: hlsProxyEnabled() && !m.proxyDisabled, win: m.win}
+	return playbackSession{seq: m.seq, ctx: m.ctx, id: m.id, start: m.start, win: m.win}
 }
 
 // startStream 取流 → 转封装 → 播放器 →（按需）弹幕。
@@ -428,7 +371,7 @@ func (a *App) startStream(keepDanmaku bool) {
 			}, nil)
 			return
 		}
-		a.startPlayback(sess, upstream, sess.proxy)
+		a.startPlayback(sess, upstream)
 	}()
 }
 
@@ -452,85 +395,25 @@ func fetchStream(ctx context.Context, prov live.Provider, roomID, line, quality 
 	return info, pickVariant(info.Variants, quality), nil
 }
 
-// startPlayback 在后台启动转封装，再把播放器创建排到主线程。
-// sess.ctx 无启动 deadline，直到切档或退出才取消；取流预算不会杀死已起播的 ffmpeg。
-func (a *App) startPlayback(sess playbackSession, upstream live.Variant, useProxy bool) {
-	// 一律走自带解码。
-	//
-	// 目标不是「中位数最快」，是「点开就看」，也就是最差情况可控。代理路径把呈现交给
-	// MF 的 HLS source，它自己决定何时起播：本机实测中位数 1.4 秒但会跳 9.2 秒，而它
-	// 为什么跳我们改不了（`ui.VideoPlayer` 只有只读的 Buffering()）。
-	// 自带解码最差 2.6 秒，现在把探测窗口的等待去掉后能压到 1 秒级。
-	//
-	// 失败在后台回退到 relay 的兼容路径，只试一次。
-	useNative := true
-	if v, ok := nativeOverride(); ok {
-		useNative = v
-	}
-	if useNative && !a.media.nativeTried {
-		a.media.nativeTried = true
-		if a.startNativePlayback(sess, upstream, useProxy) {
-			return
-		}
-	}
-	srv := newRelaySession()
-	localURL, err := srv.Start(sess.ctx, upstream.URL, upstream.Headers, upstream.Codec,
-		relayOptions(sess.encoder, useProxy))
-	mode := relayMode(srv)
-	if err != nil || sess.ctx.Err() != nil {
-		srv.Stop()
-		if sess.ctx.Err() != nil {
-			logStage(sess.id, sess.start, "relay-canceled", "mode", mode)
-			return
-		}
-		logStage(sess.id, sess.start, "relay-failed", "mode", mode, "error", errClass(err))
-		// 组件正在后台安装时说清原因，别让用户以为直播流坏了。
-		preparing := errors.Is(err, ffmpeg.ErrPreparing)
-		if preparing {
-			a.retryWhenComponentsReady(sess)
-		}
-		a.applyMedia(sess, func() {
-			a.media.loading = false
-			if preparing {
-				a.media.err = componentPreparingMessage
-				return
-			}
-			a.media.err = "无法拉取直播流，请重试或切换线路"
-		}, nil)
+// startPlayback 交给 libmpv 接手这一路。
+//
+// sess.ctx 无启动 deadline，直到切档或退出才取消。
+func (a *App) startPlayback(sess playbackSession, upstream live.Variant) {
+	if a.startNativePlayback(sess, upstream) {
 		return
 	}
-	// Start 完成后才注册 Stop，避免 Stop 早于 Start 接管资源；即使窗口不再执行
-	// 回调，取消会话也会释放服务。接纳后这个守卫仍覆盖整个播放寿命。
-	stop := cleanupOnCancel(sess.ctx, srv.Stop)
-	logStage(sess.id, sess.start, "relay", "mode", mode, "quality", upstream.Label)
+	// 没有窗口就无处呈现。
 	a.applyMedia(sess, func() {
-		a.media.proxyAttempt = mode == "hls-proxy"
-		p, err := openVideo(localURL)
-		if err != nil {
-			if p != nil {
-				p.Close()
-			}
-			stop()
-			logStage(sess.id, sess.start, "open-failed", "mode", mode, "error", errClass(err))
-			if a.fallbackToRemux(upstream) {
-				return
-			}
-			a.media.loading = false
-			a.media.err = "播放器打不开这个流，请重试或切换线路"
-			return
-		}
-		a.adoptPlayback(sess, srv, p, upstream, stop)
-	}, func() {
-		stop()
-		logStage(sess.id, sess.start, "playback-stale", "mode", mode)
-	})
+		a.media.loading = false
+		a.media.err = "窗口未就绪，无法播放"
+	}, nil)
 }
 
-// startNativePlayback 用自带解码接手这一路。
+// startNativePlayback 用 libmpv 接手这一路。
 //
-// 返回 false 表示当前环境起不来（没有窗口），调用方继续走 relay。
-// 成功后的接纳照旧走 applyMedia：过期结果自己关掉，不让旧会话的画面盖上来。
-func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant, useProxy bool) bool {
+// 返回 false 表示当前环境起不来（没有窗口）。成功后的接纳照旧走 applyMedia：
+// 过期结果自己关掉，不让旧会话的画面盖上来。
+func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) bool {
 	win := a.media.win
 	if win == nil {
 		return false
@@ -551,8 +434,8 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant, u
 			}
 			runOnMain(win, func() {
 				a.applyMedia(sess, func() {
-					// 自带解码不适配这一路，退回 relay 的兼容路径。
-					a.startPlayback(sess, upstream, useProxy)
+					a.media.loading = false
+					a.media.err = "播放组件打不开这个流，请重试或切换线路"
 				}, nil)
 			})
 			return
@@ -562,7 +445,7 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant, u
 				// 引擎交给播放器：之后每帧由 MyGo 问 Frame(t)，我们不再自己推帧。
 				// 关播放器就关引擎，所以这里不必再挂一个 stop。
 				p := ui.NewEngineVideoPlayer(e)
-				a.adoptPlayback(sess, nil, p, upstream, nil)
+				a.adoptPlayback(sess, p, upstream)
 			}, func() { _ = e.Close() })
 		})
 	}()
@@ -581,15 +464,13 @@ func cleanupOnCancel(ctx context.Context, closeResource func()) func() {
 	}
 }
 
-// adoptPlayback 把已经就绪的转封装和播放器接到媒体层上。
+// adoptPlayback 把已经就绪的播放器接到媒体层上。
 //
 // 只在主线程、且代号已被采纳时调用。
-func (a *App) adoptPlayback(sess playbackSession, srv relaySession, p *ui.VideoPlayer, upstream live.Variant, stop func()) {
-	a.media.stopRelay = stop
+func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream live.Variant) {
 	a.media.openedAt = time.Now()
 	a.media.pauseStarted = time.Time{}
 	a.media.pausedFor = 0
-	a.media.relay = srv
 	a.media.player = p
 	a.media.upstream = upstream
 	a.media.loading = false
@@ -604,15 +485,11 @@ func (a *App) adoptPlayback(sess playbackSession, srv relaySession, p *ui.VideoP
 		a.media.pauseStarted = a.media.openedAt
 		p.Pause()
 	}
-	mode := relayMode(srv)
-	if srv == nil {
-		mode = "native"
-	}
-	logStage(sess.id, sess.start, "open", "mode", mode, "quality", upstream.Label,
+	logStage(sess.id, sess.start, "open", "mode", "native", "quality", upstream.Label,
 		"ready", p.Ready(), "declared_width", upstream.Width, "declared_height", upstream.Height)
 }
 
-// stopPlayback 收掉 ffmpeg 和播放器，弹幕不动。
+// stopPlayback 收掉播放器，弹幕不动。
 func (a *App) stopPlayback() { a.media.stopPlayback() }
 
 func (m *playerMedia) stopPlayback() {
@@ -620,23 +497,13 @@ func (m *playerMedia) stopPlayback() {
 		m.player.Close()
 		m.player = nil
 	}
-	if m.stopRelay != nil {
-		m.stopRelay()
-		m.stopRelay = nil
-	} else if m.relay != nil {
-		srv := m.relay
-		go srv.Stop()
-	}
-	m.relay = nil
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 }
 
 // failPlayback 把这一轮落到可重试的终态。
 //
-// 顺序是有意的：先读实际传输方式（stopPlayback 会清掉 relay 字段，之后再读
-// 只剩 starting），再收掉播放器和转封装——留着坏播放器会让错误层盖在一块还
-// 在解码的黑画面上，留着 ffmpeg 只会白占带宽。房间 ctx 和弹幕不动：画面断了
-// 不代表聊天断了，也不该因为一次播放失败触发整房间重连。
+// 先收掉播放器——留着坏的会让错误层盖在一块还在解码的黑画面上。房间 ctx 和
+// 弹幕不动：画面断了不代表聊天断了，也不该因为一次播放失败触发整房间重连。
 func (a *App) failPlayback(class, msg string) {
 	m := &a.media
 	logStage(m.id, m.start, class, "mode", m.mode())
@@ -645,39 +512,7 @@ func (a *App) failPlayback(class, msg string) {
 	m.err = msg
 }
 
-// fallbackToRemux 在代理快路径失败时，对当前这一轮退回普通转封装一次。
-//
-// 只在主线程调用。打开失败、首帧超时或播放中明确报错都可触发；回退后
-// 当前房间不再尝试代理，切档和换线也不重复付出等待成本。返回 true 表示
-// 已经安排了回退，调用方不要再报错。
-func (a *App) fallbackToRemux(upstream live.Variant) bool {
-	m := &a.media
-	if !m.proxyAttempt || m.proxyFellBack || m.ctx == nil || m.ctx.Err() != nil {
-		return false
-	}
-	m.proxyFellBack = true
-	m.proxyDisabled = true
-	m.proxyAttempt = false
-	m.firstFrame = false
-	m.loading = true
-	m.err = ""
-	a.stopPlayback()
-	sess := a.session()
-	logStage(sess.id, sess.start, "proxy-fallback", "quality", upstream.Label)
-	// 先换自带解码：代理晚出来的那几秒，多半是 MF 在等它自己的起播水位，
-	// 换一条完全不经过 MF 的路，解到第一帧就上屏。native 也起不来时才退回转封装。
-	if !m.nativeTried && m.win != nil {
-		m.nativeTried = true
-		if a.startNativePlayback(sess, upstream, false) {
-			return true
-		}
-	}
-	go a.startPlayback(sess, upstream, false)
-	return true
-}
-
-// trackFirstFrame 记录首帧，并负责两条兜底：代理路径的八秒回退，以及所有
-// 路径的首帧上限。播放器的明确错误也在这里落到可重试终态。
+// trackFirstFrame 记录首帧，并在超时和播放器报错时落到可重试终态。
 //
 // 每帧调用。Ready 只说明解码器交出了第一帧，不等于它在屏幕上呈现的时刻；
 // 日志按「首帧可用」标注，别当成精确的观感时间。
@@ -692,14 +527,9 @@ func (a *App) trackFirstFrame() {
 		m.observeStartupPause(a.Playing, now)
 	}
 	// 播放器报错时 Ready 仍可能为真，这个判断必须排在记录首帧之前。
-	// 代理路径先回退一次；其余路径没有别的兜底，直接收掉坏资源。
 	if err := p.Err(); err != nil {
 		// 暂停中不重启也不清理：用户主动停着，恢复播放那一帧会再进来处理。
-		// 和代理回退同一套语义，避免暂停时突然重开一路流。
 		if !a.Playing {
-			return
-		}
-		if m.upstream.URL != "" && a.fallbackToRemux(m.upstream) {
 			return
 		}
 		a.failPlayback("playback-failed", "播放失败，请重试或切换线路")
@@ -716,38 +546,17 @@ func (a *App) trackFirstFrame() {
 		}
 		return
 	}
-	// 代理路径的预算更短：八秒还不出来就退回普通转封装，只退一次。
-	if m.needProxyFallback(nil, now, a.Playing) {
-		if m.upstream.URL != "" && a.fallbackToRemux(m.upstream) {
-			return
-		}
-	}
-	// 所有路径的首帧上限。Ready 已经在上面的分支里优先，所以这里只剩
-	// 「确实还没出图」的情况。
+	// Ready 已经在上面的分支里优先，所以这里只剩「确实还没出图」的情况。
 	if m.needFirstFrameTimeout(now, a.Playing) {
 		a.failPlayback("first-frame-timeout", "直播流长时间没有画面，请重试或切换线路")
 	}
 }
 
-// needProxyFallback 判断代理路径是否因播放错误或首帧超时而回退。
-//
-// 播放器明确报错时不受首帧状态限制；八秒预算只约束尚未出图的阶段。
-// 纯判断，不碰播放器状态，测试可以直接喂时间。
-func (m *playerMedia) needProxyFallback(err error, now time.Time, playing bool) bool {
-	if !playing || !m.proxyAttempt || m.proxyFellBack || m.openedAt.IsZero() {
-		return false
-	}
-	if err != nil {
-		return true
-	}
-	return !m.firstFrame && m.startupElapsed(now) >= proxyFirstFrameWait
-}
-
 // needFirstFrameTimeout 报告这一轮是否已经超出首帧预算。
 //
-// 只约束「确实还没出图」的情况：Ready 由调用方先判，已出图和暂停都不算。
-// 所有路径共用这一个预算——relay 只保证首片落盘，不代表播放器能建解码器出图，
-// 没有它，remux / 转码路径会永远停在「正在拉取直播流…」。
+// only 约束「确实还没出图」的情况：Ready 由调用方先判，已出图和暂停都不算。
+// libmpv 收到 loadfile 就返回，流能不能连上要等它自己解析；没有这条兜底，
+// 上游给了个死地址时界面会永远停在「正在拉取直播流…」。
 func (m *playerMedia) needFirstFrameTimeout(now time.Time, playing bool) bool {
 	if !playing || m.firstFrame || m.openedAt.IsZero() {
 		return false
@@ -803,7 +612,7 @@ func (a *App) PickQuality(label string) {
 		a.media.pendingQualityPick = ""
 		sess := a.beginSession("换档")
 		a.media.upstream = v
-		go a.startPlayback(sess, v, sess.proxy)
+		go a.startPlayback(sess, v)
 		return
 	}
 	// 档位表还没到（刚进页面就点了一下），或者按需取流的平台还没解析这一档：
@@ -1122,36 +931,6 @@ func (m *playerMedia) noticeActive(now time.Time) bool {
 	return true
 }
 
-// retryWhenComponentsReady 在组件装好后自动重试一次当前房间。
-//
-// 只在“确实还缺组件”时挂等待，避免装好之后空转；重试前再核对房间和错误文案，
-// 用户已经切房或手动重试过就不再插一手。
-func (a *App) retryWhenComponentsReady(sess playbackSession) {
-	win := a.media.win
-	key := a.media.roomKey
-	if win == nil || ffmpeg.Available() {
-		return
-	}
-	go func() {
-		select {
-		case <-ffmpeg.ProvisionDone():
-		case <-time.After(componentRetryWindow):
-			return
-		case <-sess.ctx.Done():
-			return
-		}
-		if !ffmpeg.Available() {
-			return
-		}
-		runOnMain(win, func() {
-			if a.media.roomKey != key || a.media.err != componentPreparingMessage {
-				return
-			}
-			a.retryStream()
-		})
-	}()
-}
-
 // retryStream 是状态覆盖层上「重试 / 立即刷新」的动作。
 //
 // 弹幕还活着就保留它——画面断了不代表聊天断了。
@@ -1190,29 +969,8 @@ func almostEqual(a, b float64) bool {
 // 失败」「代理回退」「按需档位」能在测试里用假的转封装 / 播放器 / 平台验到；
 // 生产实现就是它们右边的那个调用。
 
-// relaySession 是一次转封装会话，生产上就是 *relay.Server。
-type relaySession interface {
-	Start(ctx context.Context, upstream string, headers []string, codec string, opts relay.Options) (string, error)
-	Mode() string
-	Stop()
-}
-
-// newRelaySession 创建一路转封装；测试里替换。
-var newRelaySession = func() relaySession { return relay.New() }
-
-// openVideo 是播放器接入口；测试里替换。
-var openVideo = video.OpenURL
-
-// openNative 是自带解码的接入口；测试里替换。
+// openNative 是播放引擎的接入口；测试里替换。
 var openNative = playback.Open
-
-// relayOptions 组装转封装选项。
-//
-// useProxy 允许 relay 按编码、系统解码能力和列表格式尝试代理；
-// 不支持时仍由 relay 选择转封装或兼容转码。
-var relayOptions = func(encoder relay.EncoderMode, useProxy bool) relay.Options {
-	return relay.Options{Encoder: encoder, HLSProxy: useProxy}
-}
 
 // providerFor 是平台数据入口的查找；测试里替换成桩，避免发真实请求。
 var providerFor = live.ProviderFor
@@ -1228,34 +986,6 @@ var runOnMain = func(win *mygo.Window, fn func()) bool {
 	}
 	win.Update(fn)
 	return true
-}
-
-// envHLSProxy 覆盖当前进程的代理策略，便于诊断与回退，不落盘、不进界面。
-const envHLSProxy = "ALIVE_HLS_PROXY"
-
-// hlsProxyEnabled 不按平台限制代理；编码、封装与列表格式由 relay 预检。
-//
-// 默认允许尝试，显式 0 可恢复转封装；未知非空值保守关闭。
-func hlsProxyEnabled() bool {
-	switch os.Getenv(envHLSProxy) {
-	case "", "1":
-		return true
-	default:
-		return false
-	}
-}
-
-// relayMode 返回这一路的实际传输方式（hls-proxy / remux / transcode）。
-//
-// 还没起来时 Mode() 是空串，日志里记成 starting。
-func relayMode(srv relaySession) string {
-	if srv == nil {
-		return "starting"
-	}
-	if m := srv.Mode(); m != "" {
-		return m
-	}
-	return "starting"
 }
 
 // logStage 记一条起播阶段日志：id 是这一轮的关联 ID，base 是这一轮开始的时刻，
@@ -1287,30 +1017,4 @@ func errClass(err error) string {
 		return "upstream"
 	}
 	return "error"
-}
-
-// nativeOverride 是验收与排障用的强制开关：ALIVE_NATIVE=1 强制走自带解码，
-// =0 强制不走，不设置时按系统解码能力判断。
-//
-// 本机装了 HEVC 解码器，自动模式下 native 永远不会被选中——这条路径需要
-// 一个显式开关才验得到。
-func nativeOverride() (value, set bool) {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ALIVE_NATIVE"))) {
-	case "1", "true", "on":
-		return true, true
-	case "0", "false", "off":
-		return false, true
-	}
-	return false, false
-}
-
-// isFLVStream 判断这条地址是不是 HTTP-FLV。
-//
-// 只看路径后缀：签名参数和 fragment 不影响容器判断。
-func isFLVStream(raw string) bool {
-	path := raw
-	if i := strings.IndexAny(path, "?#"); i >= 0 {
-		path = path[:i]
-	}
-	return strings.HasSuffix(strings.ToLower(path), ".flv")
 }

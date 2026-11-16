@@ -325,7 +325,7 @@ func biliMasterCodecFromCodecs(codecs string) string {
 			return "avc"
 		case strings.HasPrefix(name, "hvc1"), strings.HasPrefix(name, "hev1"),
 			strings.HasPrefix(name, "dvh1"), strings.HasPrefix(name, "dvhe"):
-			// 这些杜比视界标识使用 HEVC，沿用当前 relay 的 HEVC 兼容策略。
+			// 这些杜比视界标识使用 HEVC，按 HEVC 归类。
 			return "hevc"
 		case strings.HasPrefix(name, "av01"):
 			return "av1"
@@ -336,7 +336,7 @@ func biliMasterCodecFromCodecs(codecs string) string {
 
 // biliMasterCodec 从地址判断视频编码。
 //
-// AVC 分支能直接 -c copy，AV1 / HEVC 要转码，这个标记会一路传到 relay。
+// AVC 分支能直接 -c copy，AV1 / HEVC 要转码，这个标记会一路传到播放层。
 func biliMasterCodec(url string) string {
 	lower := strings.ToLower(url)
 	switch {

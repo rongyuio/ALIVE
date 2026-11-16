@@ -20,19 +20,12 @@ MYGO  := $(GO) tool mygo
 # mygo.json 里 out=build，打包产物落在这里
 BUILD_DIR := build
 
-# libav 的运行库。cgo 链接期用 third_party/ffmpeg/lib 的导入库，运行期要 DLL
-# 在搜索路径上；go run / go test 的二进制落在临时目录，不在仓库里，所以要显式
-# 带进去。make build / make dev 不需要这一步——mygo 自己会把 resources 复制到
-# 二进制旁边。
-# 路径必须转成 POSIX 形式：Make 交给的是 msys 的 sh，它只把「整条都是 POSIX 路径」
-# 的 PATH 列表翻译成 Windows 格式。写成 $(CURDIR) 会得到 D:/... 开头的混合值，翻译
-# 直接跳过，DLL 目录等于没进 PATH——症状是测试全挂在 0xc0000135。
-LIBDIR := $(shell cygpath -u "$(CURDIR)")/third_party/ffmpeg/bin
-RUNENV  = PATH="$(LIBDIR):$$PATH"
-
-# 播放走 cgo。mygo 在环境里没有 CGO_ENABLED 时默认关掉，显式设了才照传，
-# 这里给整份 Makefile 定死，免得每个 recipe 都写一遍。
-export CGO_ENABLED := 1
+# libmpv 的库文件。播放走运行时 dlopen（purego），不是链接期依赖，所以不需要
+# CGO_ENABLED，也不需要 gcc。但 go run / go test 的二进制落在临时目录，不在
+# 仓库里，所以要把库的绝对路径显式告诉它。make build / make dev 不需要——
+# mygo 自己会把 resources 复制到二进制旁边。
+MPVLIB := $(shell cygpath -w "$(CURDIR)/third_party/mpv/bin/libmpv-2.dll")
+RUNENV  = ALIVE_MPV_LIB="$(MPVLIB)"
 
 # 递归展开：只有用到 fmt-check 时才会真的跑 gofmt
 FMT_UNFORMATTED = $(shell gofmt -l . 2>/dev/null)
@@ -98,7 +91,7 @@ probe:
 e2e:
 	@mkdir -p $(BUILD_DIR)/e2e
 	$(GO) build -tags e2e -o $(BUILD_DIR)/e2e/alive-e2e.exe .
-	cp third_party/ffmpeg/bin/*.dll $(BUILD_DIR)/e2e/
+	cp third_party/mpv/bin/libmpv-2.dll $(BUILD_DIR)/e2e/
 
 tools:
 	$(GO) install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation

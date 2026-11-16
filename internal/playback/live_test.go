@@ -64,6 +64,34 @@ func TestLiveEngine(t *testing.T) {
 		t.Fatalf("15 秒没有首帧（frames=%d dropped=%d audio=%v state=%v err=%v）",
 			frames, dropped, audio, st, serr)
 	}
+	// CPU 转换这条路是截图验收和没有 GPU 时的渲染器走的，它有一条自己的坑：
+	// mpv 的 bgr0 第四字节是不确定值（实测为 0），直接当 alpha 用就是整块透明，
+	// 屏幕上是好的、截出来全是黑。这里守住两件事：有内容，且不透明。
+	time.Sleep(2 * time.Second)
+	if pic, _, ok := e.Frame(time.Now()); ok {
+		rgba := pic.RGBA(nil)
+		if len(rgba) != 4*pic.W*pic.H {
+			t.Fatalf("CPU 转换长度 %d，期望 %d", len(rgba), 4*pic.W*pic.H)
+		}
+		nonzero, opaque := 0, 0
+		for i := 0; i+3 < len(rgba); i += 4 {
+			if rgba[i] != 0 || rgba[i+1] != 0 || rgba[i+2] != 0 {
+				nonzero++
+			}
+			if rgba[i+3] == 255 {
+				opaque++
+			}
+		}
+
+		total := len(rgba) / 4
+		t.Logf("CPU 转换：非黑像素 %d / %d，不透明 %d / %d", nonzero, total, opaque, total)
+		if nonzero < total/2 {
+			t.Errorf("CPU 转换几乎没有内容：%d / %d", nonzero, total)
+		}
+		if opaque != total {
+			t.Errorf("CPU 转换的 alpha 不是全 255：%d / %d，软件光栅化会当成整块透明", opaque, total)
+		}
+	}
 	frames, dropped, audioOn := e.Stats()
 	w, h := e.Size()
 	t.Logf("首帧 %v，%dx%d，frames=%d dropped=%d audio=%v",
@@ -106,10 +134,9 @@ func TestLiveEngine(t *testing.T) {
 		}
 	}
 	frames2, dropped2, _ := e.Stats()
-	sc, sw := e.Starved()
-	dc, dw := e.DemuxStall()
-	t.Logf("12 秒内音频断供 %d 次（最差 %v）；解码 %d 帧、丢 %d 帧；PCM 环饿死 %d 次（最长 %v）；解封装阻塞 %d 次（最长 %v）",
-		stalls, worst, frames2-frames, dropped2-dropped, sc, sw, dc, dw)
+	dbg := e.Debug()
+	t.Logf("12 秒内音频断供 %d 次（最差 %v）；上屏 %d 帧、丢 %d 帧；phase=%s pos=%v buffering=%v",
+		stalls, worst, frames2-frames, dropped2-dropped, dbg.Phase, dbg.Position, dbg.Buffering)
 	if stalls > 3 {
 		t.Errorf("音频断供 %d 次，太多了", stalls)
 	}

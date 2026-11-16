@@ -18,7 +18,7 @@
 
 | 文档 | 内容 | 什么时候必读 |
 |---|---|---|
-| [playback.md](architecture/playback.md) | 播放链路：libav 进程内解码、时间轴怎么构造、三个 goroutine 与反压、缓冲取值、首帧模型 | **动 `internal/libav`、`internal/playback`、`internal/ui/player_media.go` 之前** |
+| [playback.md](architecture/playback.md) | 播放链路：mpv 负责什么、我们只负责的三件事、bgr0 的 alpha 陷阱、首帧模型、怎么区分上游慢和我们慢 | **动 `internal/playback`、`third_party/mygo/plugins/video`、`internal/ui/player_media.go` 之前** |
 | [platform.md](architecture/platform.md) | 四个平台的取流约束：入口、登录门槛、线路语义、编码分支 | 动 `internal/live` 之前，或遇到"取不到流 / 档位不对 / 选错了分支" |
 
 ### decisions
@@ -27,7 +27,8 @@
 |---|---|---|
 | [0001-player-backend.md](decisions/0001-player-backend.md) | 播放器后端：Media Foundation、自带 FFmpeg 解码、libmpv 三条路线的取舍与迁移条件 | 想改播放器实现，或觉得"是不是该换 libmpv"之前 |
 | [0002-ffmpeg-provisioning.md](decisions/0002-ffmpeg-provisioning.md) | FFmpeg 随包分发、版本锁定、校验落盘 | 升级 FFmpeg、改下载源、加新的二进制依赖之前 |
-| [0003-libav-in-process.md](decisions/0003-libav-in-process.md) | 为什么是 cgo + libav 而不是 ffmpeg 子进程，以及代价（不能交叉编译、gcc、139MB、GPL） | 想改回子进程、想换播放引擎、遇到构建/分发问题时 |
+| [0003-libav-in-process.md](decisions/0003-libav-in-process.md) | cgo + libav 取代 ffmpeg 子进程的取舍与代价（**实现方式已被 0004 取代**） | 想知道为什么放弃子进程、或重提自研引擎时 |
+| [0004-libmpv.md](decisions/0004-libmpv.md) | 播放换成 libmpv：实测数据、mygo#124 为什么不能直接用、软件渲染的天花板、fork 了 mygo 哪一处 | 动播放层、怀疑「是不是该自己写引擎」、升级 mpv 之前 |
 
 ### reference
 
@@ -42,12 +43,10 @@
 
 | 要动的代码 | 必读 |
 |---|---|
-| `internal/libav/*` | [architecture/playback.md](architecture/playback.md)、[decisions/0003](decisions/0003-libav-in-process.md) |
-| `internal/playback/*` | [architecture/playback.md](architecture/playback.md)、[decisions/0001](decisions/0001-player-backend.md)、[decisions/0003](decisions/0003-libav-in-process.md) |
-| `internal/relay/*` | [architecture/playback.md](architecture/playback.md)、[reference/measurements.md](reference/measurements.md) |
-| `internal/live/*` | [architecture/platform.md](architecture/platform.md) |
+| `internal/playback/*` | [architecture/playback.md](architecture/playback.md)、[decisions/0004](decisions/0004-libmpv.md) |
+| `third_party/mygo/plugins/video/*` | [decisions/0004](decisions/0004-libmpv.md)、`third_party/mpv/README.md` |
 | `internal/ui/player_media.go` | [architecture/playback.md](architecture/playback.md) |
-| `internal/ffmpeg/*` | [decisions/0002](decisions/0002-ffmpeg-provisioning.md) |
+| `internal/live/*` | [architecture/platform.md](architecture/platform.md) |
 | `internal/ui/*`（界面） | [reference/mygo.md](reference/mygo.md)、根目录 `AGENTS.md` |
 
 ## 写作约定

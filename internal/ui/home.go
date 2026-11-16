@@ -97,9 +97,6 @@ type App struct {
 	QualityOpen bool
 	Line        string
 	LineOpen    bool
-	// RelayEncoder 是转码器策略（auto / software）。后面接设置页，
-	// 现在先由状态文件带着走，默认 auto。
-	RelayEncoder string
 	// 这三个浮层是 hover 触发的（baseline 的 ControlsDropdown / 设置面板都是
 	// onMouseEnter 开、onMouseLeave 排一个 220ms 后关的定时器），
 	// hoverLeft 记指针最后一次离开按钮和面板的时刻。
@@ -300,10 +297,8 @@ func newApp() *App {
 		// 清晰度 / 线路都只能来自平台返回值，本地不留默认：B 站没有叫
 		// 「原画」的档位（它是「1080P 原画」），虎牙抖音的档位名又各不相同。
 		// 空串表示「还不知道是哪一档」，取到档位后由 player_media 校正成第一档。
-		Quality: "",
-		Line:    "",
-		// 转码器：auto = 硬件优先、失败回落软编；software = 强制 libx264。
-		RelayEncoder:  "auto",
+		Quality:       "",
+		Line:          "",
 		DanmuOn:       true,
 		DanmuFont:     20,
 		DanmuDur:      10 * time.Second,

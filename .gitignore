@@ -9,3 +9,4 @@ mygo_windows_*.syso
 
 # 本地临时文件
 /.task/
+/.tmp/

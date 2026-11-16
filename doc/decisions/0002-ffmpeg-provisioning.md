@@ -1,8 +1,10 @@
 # 0002 FFmpeg 随包分发与版本锁定
 
-- **状态**：已落地
+- **状态**：已决定，但**落地方式已废止**（2026-11-16）。播放走 libmpv（[0004](0004-libmpv.md)），
+  它自带 FFmpeg；兜底路径（relay）也一并删除，我们不再分发任何 FFmpeg。本文保留作
+  当时的推理与踩坑记录
 - **日期**：2026-11-16
-- **影响**：`internal/ffmpeg`、`third_party/ffmpeg`、`mygo.json`
+- **影响**：`internal/ffmpeg`、`third_party/ffmpeg`、`mygo.json`——三者都已在 2026-11-16 清空
 
 ## 背景
 
@@ -48,17 +50,18 @@
 - `ALIVE_FFMPEG_DIR` 可指定唯一来源，供排障与测试使用；设置后不再回落到 PATH。
 - PATH 只在开发机上作为兜底。
 
-## 两套来源（2026-11-16 补充）
+## 当时的两种来源（2026-11-16 补充，均已废止）
 
-主路径改成 cgo 之后，FFmpeg 在仓库里以两种形态存在，别混：
+主路径改成 cgo 之后，FFmpeg 在仓库里以两种形态存在：`%LOCALAPPDATA%\alive\bin` 的
+运行时下载副本（服务 relay 兜底），和 `third_party/ffmpeg` 的构建输入。两种都已随
+`internal/relay`、`internal/ffmpeg` 的删除一并清空。
 
-| 用途 | 位置 | 怎么来 |
-|---|---|---|
-| 播放主路径（解封装、解码） | `third_party/ffmpeg/{include,lib,bin}` | 随仓库分发：头文件与导入库供 cgo 链接，DLL 由 `mygo.json` 的 `resources` 列进包 |
-| relay 兜底（转封装、转码、探测） | `%LOCALAPPDATA%\alive\bin` | 本文上面讲的首次启动下载 |
-
-**两者必须是同一个 commit。** 否则同一条流在主路径和兜底路径上会有不同表现，
-而那种差异在排障时最难判断。当前两边都是 `n9.0.2-45-g1e65c6cd5d`。
+**2026-11-16 更新（最终结论）：** 播放主路径改用 libmpv（[0004](0004-libmpv.md)），
+libmpv 自带 FFmpeg。随后 `internal/relay` 与 `internal/ffmpeg` 一起删除——兜底的真实
+触发面只有「找不到 `libmpv-2.dll`」，那是安装损坏，兜底依赖的 ffmpeg 组件同样会缺。
+**现在仓库里没有任何 FFmpeg 分发物**：`third_party/ffmpeg`（143MB 头文件与导入库）、
+`internal/ffmpeg`（运行时下载）、`%LOCALAPPDATA%\alive\bin` 的缓存副本都不再需要。
+本文下面的「首次启动下载」一节描述的实现已经不存在，保留作历史。
 
 为什么主路径不放仓库外：DLL 是 exe 的加载期硬依赖（Windows 加载器在进程入口点之前
 就解析 import table），缺了进程起不来，跑不到"启动后发现缺库再去下载"这一步。

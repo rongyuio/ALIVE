@@ -23,19 +23,19 @@ alive 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.c
 main.go            窗口生命周期、启动参数、数据拉取
 main_test.go       视图测试（ui.NewTester，不弹窗口）
 mygo.json          name / identifier / version / out，应用元信息唯一来源
-resources/         随包资源；icon.png 为应用图标（当前是占位图，替换时保持 1024×1024）
+resources/         随包资源；icon.png 为应用图标，正方形。Windows 只取到 256，源图 ≥256 即可
+                   （全部缩小，不糊）；出 macOS/Linux 包要求 ≥1024，它们会渲染到 1024 和 512
 go.mod             MyGo CLI 作为 tool：go tool mygo
 .agents/skills/    MyGo 官方 skill（维护约定、原生模块），动 MyGo 相关代码前先读
 internal/ui/       界面：Shell、顶栏、分区栏、卡片、订阅页、播放页、搜索浮层、配色面板、灵动岛
 internal/theme/    设计令牌与配色表
 internal/media/    图片下载、解码与缓存
-internal/ffmpeg/   ffmpeg / ffprobe 子进程的定位与自动准备，仅供 relay 兜底路径使用
 internal/live/     各平台数据层：分区、列表、搜索、取流、弹幕，归一化成同一套类型
-internal/libav/    cgo 桥接 libav*：解封装、解码、sws 转 NV12、swr 重采样。C 侧只有 alive.h/alive.c 一个面
-internal/playback/ 播放引擎：三个 goroutine（解封装 / 音频 / 视频）+ PCM 环，实现 MyGo 的 media.Engine
-internal/relay/    兜底：HLS 透明代理、转封装、转码。只在 libav 起不来时接手
+internal/playback/ 播放引擎：薄壳。把 URL 与回源 headers 交给 libmpv，把 bgr0 帧包成 media.Picture
 doc/               文档唯一入口：架构、决策、实测。从 doc/README.md 进
-third_party/       mygo 源码（仅导出引擎契约的 replace）与 ffmpeg 头文件 / 导入库 / 运行库
+third_party/mygo/  上游源码的 replace。除 engines 契约的导出，只改了 plugins/video（播放）与
+                   internal/raster 的一处（软件光栅化采样前先取回像素），都有注释说明为什么
+third_party/mpv/   libmpv 运行库与头文件。运行时 LoadLibrary 加载，不是链接期依赖
 ```
 
 顶层目录只有这一个例外：`doc/` 是文档目录。新功能按职责落到 `internal/<领域>`；
@@ -49,9 +49,9 @@ third_party/       mygo 源码（仅导出引擎契约的 replace）与 ffmpeg �
 
 | 要动的代码 | 必读 |
 |---|---|
-| `internal/libav/*` | `doc/architecture/playback.md`、`doc/decisions/0003-libav-in-process.md` |
-| `internal/playback/*` | `doc/architecture/playback.md`、`doc/decisions/0001-player-backend.md`、`doc/decisions/0003-libav-in-process.md` |
-| `internal/relay/*` | `doc/architecture/playback.md`、`doc/reference/measurements.md` |
+| `internal/playback/*` | `doc/architecture/playback.md`、`doc/decisions/0004-libmpv.md` |
+| `third_party/mygo/plugins/video/*` | `doc/decisions/0004-libmpv.md`、`third_party/mpv/README.md` |
+| `third_party/mygo/internal/raster/*` | `doc/architecture/playback.md` 的「渲染」一节 |
 | `internal/live/*` | `doc/architecture/platform.md` |
 | `internal/ui/player_media.go` | `doc/architecture/playback.md` |
 | `internal/ffmpeg/*` | `doc/decisions/0002-ffmpeg-provisioning.md` |
@@ -63,45 +63,38 @@ third_party/       mygo 源码（仅导出引擎契约的 replace）与 ffmpeg �
 
 ## 命令
 
-播放走 cgo，构建只需要一件额外前置：**MinGW-w64 的 gcc 在 PATH 上**。
-`CGO_ENABLED=1` 与运行库的搜索路径都由 `Makefile` 统一给出，不用自己记。
+播放走 libmpv（运行时 `LoadLibrary`，不是链接期依赖），所以**构建不需要 cgo、不需要
+gcc、不需要 `CGO_ENABLED`**。`libmpv-2.dll` 的路径由 `Makefile` 统一给出。
 
 ```sh
 make              # 打包：便携版 exe + NSIS 安装包，都进 build/<os>-<arch>/
 make dev          # 开发模式：改 .go 自动重建重启
 make check        # gofmt + build + vet + mygo vet + test，一次跑完
 make test
-make run          # 从源码跑（.dll 的搜索路径已在 recipe 里）
+make run          # 从源码跑（ALIVE_MPV_LIB 已在 recipe 里）
 make mock / mock-offline / probe / e2e / tools / tidy / clean
 ```
 
-直接调 `go` / `go tool mygo` 而不是 make 时，环境得自己带，否则 `internal/libav`
-会被构建约束整个排除：
+直接调 `go` / `go tool mygo` 而不是 make 时：
 
 ```sh
-$env:CGO_ENABLED="1"      # pwsh；bash 用 export CGO_ENABLED=1
 go tool mygo dev          # 运行库会自动放到开发二进制旁边
 go tool mygo build        # 便携版 + 安装包
-go test ./...             # 还要把 third_party/ffmpeg/bin 加进 PATH，见「测试与验证」
+ALIVE_MPV_LIB=... go test ./...   # 见「测试与验证」
 ```
 
-**不要用 `go run .`**：它把二进制放进临时目录，libav 的 DLL 不在那里，进程在加载器
-阶段就退出（`0xc0000135`）。要么用 `go tool mygo dev`，要么把
-`third_party/ffmpeg/bin` 加进 PATH：
+直接 `go run .` 也能编译运行，但二进制在临时目录、找不到 `libmpv-2.dll`，播放会直接
+报错——没有兜底路径了。要看真实播放效果用 `make dev` 或 `make run`。
 
-```pwsh
-$env:PATH = "D:\Project\alive\third_party\ffmpeg\bin;$env:PATH"
-```
-
-库的版本在 `third_party/ffmpeg`（头文件、导入库、运行库）与 `go.mod` 的 cgo 指令里，
-换版本要同时换这三样，理由见 `doc/decisions/0002`。
+库的版本与来源见 `third_party/mpv/README.md`；换版本要同时换 DLL 与头文件，并重跑
+`doc/reference/measurements.md` 的首帧对照。
 
 截图验收（要改 `ALIVE_*` 环境变量时用 pwsh，不要用 Git Bash —— 它会改写以 `/` 开头的值）：
 
 ```pwsh
 $env:ALIVE_ROUTE="subscribe"; $env:ALIVE_UI="palette"
 $env:ALIVE_CAPTURE="D:\tmp\alive.png"; $env:ALIVE_CAPTURE_DELAY="2s"
-go run .   # 见上：PATH 里要有 third_party/ffmpeg/bin
+make run   # 不要用 go run .：ALIVE_MPV_LIB 由 Makefile 的 recipe 传进去
 ```
 
 `ALIVE_ROUTE` 取 `home` / `subscribe` / `player`；`ALIVE_UI` 取 `palette` / `island` / `search` / `quality` / `danmu` / `sync` / `splash` / `nocover`；`ALIVE_WATCH=2h` 预置播放页的观看时长（验小时级的岛收起态）；`ALIVE_CAPTURE_KEEP=1` 截完不退出。
@@ -127,9 +120,9 @@ go run .   # 见上：PATH 里要有 third_party/ffmpeg/bin
 
 - 视图测试用 `ui.NewTester(view, w, h)`，在内存里点击、输入、按键；测试文件放包旁边，命名 `*_test.go`。
 - 改 UI 前跑 `make check`（gofmt + build + vet + mygo vet + test，一次跑完）。
-- 单独调 `go test` 时注意：测试二进制落在临时目录，找不到 libav 的 DLL，会以
-  `0xc0000135` 直接退出——加载器在进程入口点之前就解析 import table，一行 Go 代码
-  都跑不到。`make test` 的 recipe 已经把运行库目录带进 PATH，平时用它就行。
+- 单独调 `go test` 时要给 `ALIVE_MPV_LIB`（`third_party/mpv/bin/libmpv-2.dll` 的绝对
+  路径）：测试二进制落在临时目录，找不到库就走不通播放，`TestMatrix` / `TestLiveEngine`
+  会直接失败。`make test` 的 recipe 已经带上了，平时用它就行。
 - 涉及视觉的改动必须截图：默认态一张，被改动的浮层/状态各一张。只看代码不算验证。
 - 没有跑过的检查不能写成通过；无关的既有失败要如实说明。
 

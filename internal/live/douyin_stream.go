@@ -53,7 +53,7 @@ func (t *douyinTierStream) douyinIsHEVC() bool {
 	return douyinVariantCodec(t.Codec) == "hevc"
 }
 
-// douyinVariantCodec 把 sdk_params.VCodec 归一成 relay 认的编码名。
+// douyinVariantCodec 把 sdk_params.VCodec 归一成播放层认的编码名。
 // 识别不了时返回空串，转封装层仍按 H.264 处理。
 func douyinVariantCodec(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {

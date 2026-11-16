@@ -46,8 +46,8 @@ live_57bf9_SAe1Weh_27l4b_2500     → live_57bf9_SAe1Weh_27l4b
 | `live_<...>`（无后缀） | AVC | 最全（S16 房 5 档） | gotcha204 族 |
 | `live_<...>_miniav1` | AV1 | 少 1 档（缺 480P） | gotcha208 / 209 族 |
 
-AVC 分支码率约为 AV1 的 2~4 倍（S16 房 2K：AVC 4.5 Mbps / AV1 1.2 Mbps），但 relay 走
-`-c copy` 零转码，不走 AV1 那条 `libx264` 软编路径。**默认选 AVC 分支。**
+AVC 分支码率约为 AV1 的 2~4 倍（S16 房 2K：AVC 4.5 Mbps / AV1 1.2 Mbps）。仍然
+**默认选 AVC 分支**：AV1 的硬件解码覆盖比 AVC 窄得多，一旦落到软解，4K 的代价非常高。
 
 ### 1.3 登录门槛在前端，不在接口
 

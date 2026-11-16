@@ -3,7 +3,7 @@
 - **状态**：已决定，已落地（2026-11-16 接入播放页）
 - **实现方式已取代**：两个 ffmpeg 子进程 → cgo 进程内 libav，见 [0003](0003-libav-in-process.md)。方向不变，本文的取舍与上游调研仍然有效
 - **日期**：2026-11-16
-- **影响**：`internal/ui/player_media.go`、`internal/playback`、`internal/relay`
+- **影响**：`internal/ui/player_media.go`、`internal/playback`、`internal/relay`（兜底路径，已于 2026-11-16 删除）
 
 ## 背景
 
@@ -100,7 +100,7 @@ B 是唯一现在就能动手、且方向正确的一条。
 | `SetVolume` / `Pause` | mpv 属性 |
 
 保持不动：`Options.Headers`、`Open` 的探测与失败语义、`ErrUnsupported` 的判定口径、
-`Ready` / `Err` / `Stats` / `Close` 的语义，以及调用方的兜底顺序。
+`Ready` / `Err` / `Stats` / `Close` 的语义，以及调用方的失败处理顺序。
 
 迁移时要重新验三件事：
 

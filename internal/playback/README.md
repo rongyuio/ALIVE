@@ -1,23 +1,20 @@
 # internal/playback
 
-用 libav 在进程内解码直播流，做成 MyGo 的 `media.Engine`。
+用 libmpv 播放直播流，做成 MyGo 的 `media.Engine`。这一层是薄壳：真正的播放全在 mpv 里。
 
-- 为什么不用系统解码、和 Media Foundation / libmpv 的取舍 → [doc/decisions/0001](../../doc/decisions/0001-player-backend.md)
-- 为什么是 cgo 而不是 ffmpeg 子进程 → [doc/decisions/0003](../../doc/decisions/0003-libav-in-process.md)
-- 在整条播放链路里的位置、缓冲取值、首帧模型 → [doc/architecture/playback.md](../../doc/architecture/playback.md)
-- 实测数字 → [doc/reference/measurements.md](../../doc/reference/measurements.md)
+- 为什么是 libmpv（含放弃自研引擎的实测数据）→ [doc/decisions/0004](../../doc/decisions/0004-libmpv.md)
+- 在整条播放链路里的位置、bgr0 的 alpha 陷阱 → [doc/architecture/playback.md](../../doc/architecture/playback.md)
+- 首帧与矩阵实测 → [doc/reference/measurements.md](../../doc/reference/measurements.md)
+- 上游 mpv 报名 → [third_party/mpv/README.md](../../third_party/mpv/README.md)
 
 本文件只写接口和实现约定。
 
 ## 接口
 
-`Open` 返回 `*Engine`，它实现 `media.Engine`：呈现端每帧问 `Frame(t)` 要画面，
-声音由 `audio.Player` 从 `pcmRing` 读。调用方不需要知道里面跑着什么。
-
 ```go
 type Options struct {
     Headers   []string // 回源请求头，例如 "Referer: https://live.bilibili.com/"
-    Width     int      // 平台声明的尺寸，仅作提示
+    Width     int      // 平台声明尺寸，仅作兜底
     Height    int
     FrameRate float64
 }
@@ -25,59 +22,37 @@ type Options struct {
 func Open(ctx context.Context, upstream string, opts Options) (*Engine, error)
 ```
 
-`Open` 返回时解封装已经跑起来，首帧要等 `Frame` 第一次给出画面。
-地址为空或 libav 不接受这条流时返回 `ErrUnsupported`，调用方据此回退到 relay。
+`Open` 返回时 mpv 已经收到 `loadfile`，首帧要等 `Frame` 第一次给出画面。
+找不到 `libmpv-2.dll`、或 mpv 不接受这条流时返回 `ErrUnsupported`，调用方据此落到
+可重试的错误终态。
 
-## 内部实现
+`Frame(t)` 的 `changed` 来自 mpv 的渲染序号：同一帧被重复渲染不会重复通知上屏。
 
-```text
-Open
- └─ libav.OpenDemuxer  avformat_open_input（一次连接，音视频共享）
-     ├─ 解封装 goroutine    av_read_frame → 按流分到两个包队列（cap 256）
-     ├─ 音频解码 goroutine  解码 → swr 重采样 48kHz 立体声 f32 → PCM 环（4 秒）
-     │                       └─ audio.Player 按 WASAPI 实际出声节奏消费
-     └─ 视频解码 goroutine  解码 → sws 转 NV12 → 12 个帧槽
-                             └─ Frame(t) 按音频时钟挑帧，用完还槽
-```
+## 只干三件事
 
-几个刻意的选择：
+1. **headers** → `http-header-fields`。四个平台都校验 Referer/UA，缺了直接 403。
+2. **渲染尺寸** → 按 `dwidth/dheight` 的属性事件，上限 4K。事件没到之前用平台声明值顶着。
+3. **CPU 路径的 alpha** → `bgr0` 第四个字节是垃圾值（实测 0），GPU 采样不看它、CPU 光栅化
+   按预乘 alpha 混合就是整块透明。所以 `RGBA` 自己转一遍，alpha 一律 255。
 
-- **反压只加在音频。** PCM 环满 → 音频解码停 → 解封装停，这是唯一会阻塞整条链的地方。
-  视频永不阻塞：槽满了丢最旧的帧。宁可丢一帧画面，也不能让声音断。
-- **视频解码跟着呈现节奏走**（`free` 槽信号量）。不节流的话解码会跑到前面几秒，
-  槽里堆满未来的帧，反而把当前该显示的那一帧挤掉。
-- **时钟零点取第一个可解码视频帧的 PTS，不是音频首帧。** 直播流接上后音频立刻流动，
-  视频要等下一个 IDR，实测斗鱼两者差三秒多。音频跳过关键帧之前的部分，两路都从
-  关键帧起步——这是首帧从 4.5 秒降到 0.4 秒的关键。
-- **不分片代理。** 分片由 libav 自己按需取，和网页端一样：一条下载流、一次一片。
-  曾经套过一层后台预取 6 片的本地代理，实测是反的——预取和正在读的那一片抢带宽，
-  12 秒里音频断 4~17 次；关掉之后同样的房间 0 断供。抖动的正确吸收位置是播放端的
-  环形缓冲，不是输入端的二次搬运。
-- **PCM 环 4 秒、预缓冲 2 秒。** 取值依据是实测的断供数据，推导写在 `engine.go` 的
-  常量注释里，别凭感觉改。
-- **缓冲环就是 `audio.Decoder`。** `pcmRing` 实现 `Read` / `SampleRate` / `Channels`，
-  直接交给 `audio.Player`，中间不再有搬运层。
+其余（解封装、解码、缓冲、时钟、音画同步、丢帧、音频输出）全交给 mpv。**不要再往里加
+调度逻辑**——上一版自研引擎就是在这里把自己卡死的。
 
-## 诊断
+## 库文件
 
-```go
-func (e *Engine) Stats() (frames, dropped uint64, audioOn bool)
-func (e *Engine) Starved() (count uint64, worst time.Duration)  // PCM 环见底的次数与最长空等
-func (e *Engine) DemuxStall() (count uint64, worst time.Duration)
-```
-
-判"卡"只看前两个：`Starved` 有值说明缓冲不够或网络真的断了，`DemuxStall` 说明
-`av_read_frame` 在等数据。
+`libmpv-2.dll` 在 `third_party/mpv/bin/`，由 `mygo.json` 的 `resources` 打进包。
+找不到可执行文件旁边的库时，`ALIVE_MPV_LIB` 可指定绝对路径（测试用）。
 
 ## 测试
 
 ```sh
-$env:PATH = "D:\Project\alive\third_party\ffmpeg\bin;$env:PATH"
-go test ./internal/playback -count=1
-go test -race ./internal/playback -count=1
+make test    # recipe 里带 ALIVE_MPV_LIB
 ```
 
-PATH 那一步不能省：测试二进制落在临时目录，找不到 libav 的 DLL 会以 `0xc0000135`
-直接退出（加载器在进程入口点之前就解析 import table，Go 代码一行都跑不到）。
+| 测试 | 需要 | 干什么 |
+|---|---|---|
+| `TestLiveEngine` | `ALIVE_LIVE_ROOM` + `ALIVE_LIVE_PLATFORM` | 真实流端到端：首帧、音频连续、**CPU 转换必须有内容且 alpha 全 255** |
+| `TestMatrix` | `ALIVE_MATRIX=1` | 跨平台 × 分区 × 房间 × 档位，输出首帧/解码/上屏/丢帧/断供 |
+| `TestFfmpegControl` | `ALIVE_CTRL_ROOM` + `ALIVE_CTRL_PLATFORM` | 同一份签名地址跑 ffmpeg 命令行，判断慢是上游还是我们 |
 
-`live_test.go` 是接真实公网流的端到端验收，需要 `ALIVE_LIVE_ROOM`，默认跳过。
+后两个会连公网，默认跳过。`TestFfmpegControl` 不打印地址——它带签名。

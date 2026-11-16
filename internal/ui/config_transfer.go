@@ -82,7 +82,6 @@ type configData struct {
 	Subs          []portableSub    `json:"subscriptions"`
 	Quality       string           `json:"quality,omitempty"`
 	Line          string           `json:"line,omitempty"`
-	RelayEncoder  string           `json:"relayEncoder,omitempty"`
 	Volume        *float32         `json:"volume,omitempty"`
 	DanmuOn       *bool            `json:"danmuOn,omitempty"`
 	Danmu         *danmuPrefs      `json:"danmu,omitempty"`
@@ -161,7 +160,6 @@ func (a *App) buildConfigPayload() configPayload {
 			Subs:          subs,
 			Quality:       a.Quality,
 			Line:          a.Line,
-			RelayEncoder:  a.RelayEncoder,
 			Volume:        &volume,
 			DanmuOn:       &danmuOn,
 			Danmu:         &danmu,
@@ -520,9 +518,6 @@ func (a *App) applyConfig(d configData) importSummary {
 	if d.Line != "" {
 		a.Line = d.Line
 		sum.Prefs = true
-	}
-	if d.RelayEncoder != "" {
-		a.RelayEncoder = d.RelayEncoder
 	}
 	if d.Volume != nil {
 		a.Volume = *d.Volume
