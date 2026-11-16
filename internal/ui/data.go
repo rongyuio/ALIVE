@@ -214,7 +214,12 @@ func (a *App) applyLiveGroups(platform string, _ []live.CategoryGroup, groups []
 	a.CategoryIndex = 0
 	a.SubCatIndex = -1
 	a.MoreOpen = false
-	a.resetCards()
+	// 不在这里重置入场动画。
+	//
+	// 四个平台的分区树和首屏列表启动时就预取好了（ensureLiveData），切平台
+	// 一般直接命中 feedCache：房间里已经有人、封面纹理也保住了。这时候再让
+	// 整屏卡片从 opacity 0 淡入一次，用户看到的就是「切平台闪一下」。
+	// 该有动画的是真的从网络取回来那一次，由 loadRooms 在写入新列表时重置。
 	a.loadRooms()
 }
 
@@ -288,8 +293,14 @@ func (a *App) loadRooms() {
 			a.feedCache[key] = feedEntry{
 				rooms: rooms, page: 1, hasMore: page.HasMore, at: time.Now(),
 			}
-			// 新列表第一次上屏时才播入场动画；缓存复用不播。
-			a.resetCards()
+			// 只有「从骨架换成卡片」才播入场动画。
+			//
+			// 缓存命中（哪怕已经过期）时列表早就在屏幕上了，这时候再整屏淡入
+			// 一次就是用户说的「切分区闪一下」——而且只在缓存超过 60 秒时出现，
+			// 所以看起来是偶尔复现。内容换成新的不再有动画，滚动位置也不跳。
+			if !hit {
+				a.resetCards()
+			}
 		})
 	}()
 }

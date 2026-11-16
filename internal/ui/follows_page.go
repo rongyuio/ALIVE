@@ -90,7 +90,7 @@ func (a *App) followsBar(c *ui.Context) {
 					})
 				if a.FollowsQuery != "" {
 					clear := ui.Box(c).Size(18, 18).Radius(9).Center().
-						Cursor(ui.CursorPointer)
+						Cursor(ui.CursorPointer).Label("清空关注搜索")
 					if clear.Hovered() {
 						clear.Background(theme.FillTertiary)
 					}
@@ -367,7 +367,7 @@ func (a *App) followsPlatformChip(c *ui.Context, id, label string) {
 	// 高度 34 和订阅页的 chip 一致：同一条胶囊条里的东西要同一个身高
 	chip := ui.Box(c).Height(34).Padding(0, 15, 0, 15).
 		Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-		Border(1, ui.Transparent).
+		Border(1, ui.Transparent).Label("关注筛选:" + label).
 		// 数据规模不常驻：指针停在这枚胶囊上才出「N 位主播 · N 正在直播」
 		Tooltip(a.followsChipTip(id))
 

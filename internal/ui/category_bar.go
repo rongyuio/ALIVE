@@ -213,8 +213,9 @@ func (a *App) primaryRow(c *ui.Context) {
 
 func (a *App) groupTab(c *ui.Context, i int, name string) {
 	selected := i == a.GroupIndex
+	// 自绘 Box 不进无障碍树，没有 Label 时自动化只能按坐标点。
 	tab := ui.Box(c).Height(groupTabH).Padding(0, groupTabPadH, 0, groupTabPadH).
-		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer)
+		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).Label("分区:" + name)
 	hovered := tab.Hovered()
 	switch {
 	case selected:
@@ -276,7 +277,8 @@ func (a *App) categorySearch(c *ui.Context) {
 			OnTextKey(func(k ui.TextKey) bool { return a.categorySearchKey(c, k) })
 
 		if a.CategoryQuery != "" {
-			clear := ui.Box(c).Size(18, 18).Radius(9).Center().Cursor(ui.CursorPointer)
+			clear := ui.Box(c).Size(18, 18).Radius(9).Center().
+				Cursor(ui.CursorPointer).Label("清空分区搜索")
 			if clear.Hovered() {
 				clear.Background(theme.FillTertiary)
 			}
@@ -417,7 +419,8 @@ func (a *App) categorySearchPanel(c *ui.Context) {
 func (a *App) categorySearchItem(c *ui.Context, i int, h categoryHit) {
 	active := i == a.CategoryHit
 	row := ui.Row(c).Padding(8, 10, 8, 10).Gap(10).Radius(theme.RadiusXS).
-		AlignItems(ui.Center).Cursor(ui.CursorPointer)
+		AlignItems(ui.Center).Cursor(ui.CursorPointer).
+		Label("分区结果:" + h.Category)
 	if active {
 		row.Background(theme.FillQuaternary)
 	}
@@ -459,7 +462,7 @@ func (a *App) categoryChip(c *ui.Context, i int, name string) {
 	selected := i == a.CategoryIndex
 	chip := ui.Box(c).Height(chipH).Padding(0, chipPadH, 0, chipPadH).
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).
-		Border(1, ui.Transparent).MaxWidth(chipMaxW)
+		Border(1, ui.Transparent).MaxWidth(chipMaxW).Label("分类:" + name)
 	hovered := chip.Hovered()
 	switch {
 	case selected:
@@ -515,7 +518,7 @@ func (a *App) chipsOverflow(c *ui.Context, avail float32) bool {
 // moreButton 是二级分区放不下时出现的「全部」入口，展开该分组的全部分区。
 func (a *App) moreButton(c *ui.Context, row ui.Element) {
 	btn := ui.Row(c).Height(chipH).Padding(0, 13, 0, 13).Gap(4).
-		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer)
+		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).Label("更多分区")
 	switch {
 	case a.MoreOpen:
 		btn.Background(theme.AccentSoft)
@@ -597,7 +600,8 @@ func (a *App) morePanel(c *ui.Context, w float32) {
 func (a *App) morePanelItem(c *ui.Context, i int, name string) {
 	active := i == a.CategoryIndex
 	item := ui.Box(c).Height(moreItemH).Padding(0, 10, 0, 10).
-		Radius(theme.RadiusXS).Center().Cursor(ui.CursorPointer)
+		Radius(theme.RadiusXS).Center().Cursor(ui.CursorPointer).
+		Label("分类:" + name)
 	switch {
 	case active:
 		item.Background(theme.Accent)
@@ -625,7 +629,7 @@ func (a *App) morePanelItem(c *ui.Context, i int, name string) {
 func (a *App) subscribeButton(c *ui.Context) {
 	subscribed := a.subscribed()
 	btn := ui.Row(c).Height(chipH).Padding(0, 13, 0, 13).Gap(6).
-		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer)
+		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).Label("订阅分区")
 	if subscribed {
 		btn.Background(theme.Accent).Border(1, ui.Transparent)
 	} else {
@@ -671,7 +675,7 @@ func (a *App) subChip(c *ui.Context, i int, name string) {
 	active := i == a.SubCatIndex || (i == -1 && a.SubCatIndex < 0)
 	chip := ui.Box(c).Height(subChipH).Padding(0, subChipPadH, 0, subChipPadH).
 		Radius(theme.RadiusXS).Center().Cursor(ui.CursorPointer).
-		MaxWidth(subChipMaxW)
+		MaxWidth(subChipMaxW).Label("子分类:" + name)
 	hovered := chip.Hovered()
 	switch {
 	case active:

@@ -61,7 +61,7 @@ func (a *App) searchAvailable() bool {
 // baseline 不在顶栏常驻输入框——常驻输入框会把宽度撑开、顶到中间的灵动岛。
 func (a *App) searchButton(c *ui.Context) {
 	btn := ui.Box(c).Size(38, 38).Radius(theme.RadiusFull).
-		Center().Cursor(ui.CursorPointer)
+		Center().Cursor(ui.CursorPointer).Label("搜索")
 	hovered := btn.Hovered()
 
 	switch {
@@ -133,7 +133,8 @@ func (a *App) searchPopover(c *ui.Context) {
 		case a.SearchLoading:
 			spinner(c, 14)
 		case a.SearchQuery != "":
-			clear := ui.Box(c).Size(22, 22).Radius(11).Center().Cursor(ui.CursorPointer)
+			clear := ui.Box(c).Size(22, 22).Radius(11).Center().
+				Cursor(ui.CursorPointer).Label("清空搜索")
 			if clear.Hovered() {
 				clear.Background(theme.FillTertiary)
 			}
@@ -213,7 +214,8 @@ func (a *App) searchResults(c *ui.Context) {
 func (a *App) searchItem(c *ui.Context, i int, hit searchHit) {
 	active := i == a.SearchHit
 	row := ui.Row(c).Padding(8, 10, 8, 10).Gap(11).Radius(theme.RadiusMD).
-		AlignItems(ui.Center).Cursor(ui.CursorPointer)
+		AlignItems(ui.Center).Cursor(ui.CursorPointer).
+		Label("搜索结果:" + hit.S.Name)
 	if active {
 		row.Background(theme.FillQuaternary)
 	}

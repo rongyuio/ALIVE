@@ -109,7 +109,7 @@ func (a *App) danmuSwitchRow(c *ui.Context, label string, on *bool) {
 	row.Children(func() {
 		danmuLabel(c, label).Grow(1)
 		sw := ui.Box(c).Width(34).Height(18).Radius(theme.RadiusFull).
-			Cursor(ui.CursorPointer)
+			Cursor(ui.CursorPointer).Label(label)
 		if *on {
 			sw.Background(theme.Accent)
 		} else {
@@ -156,6 +156,7 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, frac float32, s
 		})
 
 		track := ui.Box(c).Width(danmuSliderW).Height(4).Radius(theme.RadiusFull).
+			Label(label).
 			Background(ui.RGBA(255, 255, 255, 0.15)).Cursor(ui.CursorPointer)
 		if x, _, ok := track.PointerPosition(); ok && (track.Pressed() || track.Dragging()) {
 			f := x / danmuSliderW

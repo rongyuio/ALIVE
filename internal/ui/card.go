@@ -72,6 +72,8 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 
 	hovered := card.Hovered()
 	card.Cursor(ui.CursorPointer)
+	// 卡片整块可点：无障碍树里要能读到是哪位主播。
+	card.Label("直播间:" + s.Name)
 	cardBg := theme.BgSecondary
 	if hovered {
 		// baseline: color-mix(bg-secondary 88%, bg-tertiary)
@@ -126,6 +128,11 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 			if hovered || followed {
 				follow := ui.Box(c).Absolute().Left(8).Top(8).Size(32, 32).Radius(16).
 					Center().Cursor(ui.CursorPointer)
+				if followed {
+					follow.Label("取消关注:" + s.Name)
+				} else {
+					follow.Label("关注:" + s.Name)
+				}
 				switch {
 				case followed:
 					follow.Background(theme.Accent).Border(1, ui.Transparent)

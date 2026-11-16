@@ -642,7 +642,8 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 		}
 		a.playerIconBtn(c, muteIcon, 18, false, muteLabel, a.toggleMute)
 
-		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().Cursor(ui.CursorPointer)
+		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
+			Cursor(ui.CursorPointer).Label("音量")
 		// PointerPosition 的 x 是相对热区的，除以热区宽度就是音量比例
 		x, _, _ := hot.PointerPosition()
 		_, _, held := hot.Dragged()
@@ -808,7 +809,7 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open 
 	strong := theme.Accent.Alpha(0.24)
 
 	row := ui.Row(c).FillWidth().Padding(8, 12, 8, 12).Gap(12).Radius(8).
-		AlignItems(ui.Center).Cursor(ui.CursorPointer)
+		AlignItems(ui.Center).Cursor(ui.CursorPointer).Label("选项:" + opt)
 	if active {
 		row.Background(strong)
 	} else if row.Hovered() {

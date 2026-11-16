@@ -123,7 +123,11 @@ func (a *App) MiniPlayer(c *ui.Context) {
 			if a.Playing {
 				playIcon = iconPause
 			}
-			a.miniBtn(c, playIcon, 20, func() {
+			playLabel := "播放"
+			if a.Playing {
+				playLabel = "暂停"
+			}
+			a.miniBtn(c, playIcon, playLabel, 20, func() {
 				a.Playing = !a.Playing
 				a.markDirty()
 				a.invalidateWindows()
@@ -131,7 +135,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 
 			ui.Box(c).Grow(1)
 
-			a.miniBtn(c, iconPlayerBack, 16, func() {
+			a.miniBtn(c, iconPlayerBack, "关闭小窗", 16, func() {
 				if a.Mini != nil {
 					a.Mini.Close()
 				}
@@ -141,8 +145,9 @@ func (a *App) MiniPlayer(c *ui.Context) {
 }
 
 // miniBtn 是小窗控制条上的一枚图标按钮：无底色，hover 才亮。
-func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, size float32, on func()) {
-	btn := ui.Box(c).Size(28, 28).Radius(8).Center().Cursor(ui.CursorPointer)
+func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, label string, size float32, on func()) {
+	btn := ui.Box(c).Size(28, 28).Radius(8).Center().
+		Cursor(ui.CursorPointer).Label(label)
 	if btn.Hovered() {
 		btn.Background(ui.RGBA(255, 255, 255, 0.12))
 	}
@@ -207,26 +212,27 @@ func (a *App) playerCaption(c *ui.Context) {
 	row := ui.Row(c).Absolute().Top(0).Right(0).Height(32)
 	a.chromeFade(row)
 	row.Children(func() {
-		a.captionBtn(c, captionMin, false, func() { a.Win.Minimize() })
+		a.captionBtn(c, captionMin, "最小化", false, func() { a.Win.Minimize() })
 		icon := captionMax
 		if maximized {
 			icon = captionRestore
 		}
-		a.captionBtn(c, icon, false, func() {
+		a.captionBtn(c, icon, "最大化", false, func() {
 			if maximized {
 				a.Win.Unmaximize()
 			} else {
 				a.Win.Maximize()
 			}
 		})
-		a.captionBtn(c, captionClose, true, func() { a.Win.Close() })
+		a.captionBtn(c, captionClose, "关闭窗口", true, func() { a.Win.Close() })
 	})
 }
 
 // captionBtn 是一枚 caption 按钮。close 决定 hover 是不是 Win11 的关闭红。
-func (a *App) captionBtn(c *ui.Context, ico *ui.SVG, close bool, on func()) {
+func (a *App) captionBtn(c *ui.Context, ico *ui.SVG, label string, close bool, on func()) {
 	w := float32(46)
-	btn := ui.Box(c).Width(w).Height(32).Center().Cursor(ui.CursorPointer)
+	btn := ui.Box(c).Width(w).Height(32).Center().
+		Cursor(ui.CursorPointer).Label(label)
 	hovered := btn.Hovered()
 	switch {
 	case hovered && close:

@@ -67,7 +67,7 @@ func (a *App) subscribeBar(c *ui.Context) {
 
 			chip := ui.Row(c).Height(34).Padding(0, 4, 0, 7).Gap(2).
 				Radius(theme.RadiusFull).Background(theme.FillQuaternary).
-				Cursor(ui.CursorPointer)
+				Cursor(ui.CursorPointer).Label("订阅:" + sub.Platform + " " + sub.Name)
 			if active {
 				chip.Background(theme.Accent)
 			} else if chip.Hovered() {
@@ -111,7 +111,7 @@ func (a *App) subscribeBar(c *ui.Context) {
 
 				// 取消订阅：默认 50% 透明，悬停才实
 				remove := ui.Box(c).Size(24, 24).Radius(12).Center().
-					Cursor(ui.CursorPointer)
+					Cursor(ui.CursorPointer).Label("取消订阅:" + sub.Name)
 				if remove.Hovered() {
 					remove.Background(nameColor.Mix(ui.Transparent, 0.16))
 				}

@@ -18,7 +18,7 @@ var shortcuts = []struct{ key, action string }{
 // shortcutsOverlay 是 ? 唤出的快捷键说明：居中弹层，点空白或 Esc 关掉。
 func (a *App) shortcutsOverlay(c *ui.Context) {
 	bg := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(0, 0, 0, 0.55)).Center()
+		Background(ui.RGBA(0, 0, 0, 0.55)).Center().Label("关闭快捷键说明")
 	if bg.Clicked() {
 		a.ShortcutsOpen = false
 	}

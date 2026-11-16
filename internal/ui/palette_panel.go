@@ -176,7 +176,7 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 
 	item := ui.Column(c).Width((palettePanelW-24-6)/2).Gap(6).Padding(7).
 		Radius(theme.RadiusMD).Background(theme.FillQuaternary).
-		Border(1, ui.Transparent).Cursor(ui.CursorPointer)
+		Border(1, ui.Transparent).Cursor(ui.CursorPointer).Label("配色:" + p.Name)
 	if active {
 		item.Border(1, theme.Accent).Background(theme.FillTertiary)
 	} else if item.Hovered() {

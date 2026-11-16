@@ -201,7 +201,7 @@ func (a *App) danmuPanelList(c *ui.Context) {
 	if a.panelPending > 0 {
 		pill := ui.Row(c).Height(28).Padding(0, 12, 0, 12).Gap(5).
 			Radius(theme.RadiusFull).Background(theme.Accent).Center().
-			Cursor(ui.CursorPointer).
+			Cursor(ui.CursorPointer).Label("回到最新弹幕").
 			Attach(ui.AnchorBottom, ui.AnchorBottom).Bottom(12)
 		if pill.Clicked() {
 			a.PanelScroll.Y = math.MaxFloat32

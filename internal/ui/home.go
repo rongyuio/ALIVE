@@ -564,7 +564,7 @@ func (a *App) errorBar(c *ui.Context) {
 		Children(func() {
 			ui.Text(c, a.ErrText).FontSize(theme.TextSM).TextColor(theme.TextPrimary).Grow(1)
 			retry := ui.Row(c).Height(30).Padding(0, 14, 0, 14).Gap(6).
-				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
+				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).Label("重试").
 				Background(theme.FillTertiary)
 			if retry.Hovered() {
 				retry.Background(theme.FillSecondary)
@@ -769,7 +769,7 @@ func (a *App) emptyGrid(c *ui.Context) {
 		ui.Row(c).Gap(10).Padding(10, 0, 0, 0).Children(func() {
 			clear := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
 				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-				Background(theme.Accent)
+				Label("查看全部分区").Background(theme.Accent)
 			if clear.Hovered() {
 				clear.Background(theme.AccentHover)
 			}
@@ -783,7 +783,7 @@ func (a *App) emptyGrid(c *ui.Context) {
 
 			retry := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
 				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-				Background(theme.FillTertiary)
+				Label("重试").Background(theme.FillTertiary)
 			if retry.Hovered() {
 				retry.Background(theme.FillSecondary)
 			}
@@ -986,6 +986,17 @@ func (a *App) activeTab() string {
 	return a.Platform
 }
 
+// tabName 是 tab 在无障碍树里的名字。
+func tabName(id string) string {
+	switch id {
+	case "follows":
+		return "全部关注"
+	case "subscribe":
+		return "订阅"
+	}
+	return platformLabel(id)
+}
+
 // switchTab 处理 tab 点击。
 func (a *App) switchTab(id string) {
 	switch id {
@@ -1071,9 +1082,9 @@ func (a *App) platformTabs(c *ui.Context) {
 					// 「全部关注」和其他 tab 一样是页面入口，点了切路由
 					tab := ui.Box(c).Width(tabW).Height(tabH).Radius(theme.RadiusFull).
 						Center().Cursor(ui.CursorPointer)
-					if t.id == "follows" {
-						tab.Label("全部关注")
-					}
+					// 每个 tab 都要有可读的名字：自绘 Box 不进无障碍树，
+					// 没有 Label 的话自动化（和读屏）看到的只是一串无名元素。
+					tab.Label(tabName(t.id))
 					if tab.Clicked() {
 						a.switchTab(t.id)
 					}
@@ -1157,17 +1168,17 @@ func (a *App) windowControls(c *ui.Context) {
 	ui.Row(c).Gap(2).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
 		Background(theme.FillQuaternary).Border(1, theme.Border).
 		Children(func() {
-			a.caption(c, iconMinimize, false, func() {
+			a.caption(c, iconMinimize, "最小化", false, func() {
 				if a.Win != nil {
 					a.Win.Minimize()
 				}
 			})
-			a.caption(c, iconMaximize, false, func() {
+			a.caption(c, iconMaximize, "最大化", false, func() {
 				if a.Win != nil {
 					a.Win.Maximize()
 				}
 			})
-			a.caption(c, iconClose, true, func() {
+			a.caption(c, iconClose, "关闭窗口", true, func() {
 				if a.Win != nil {
 					a.Win.Close()
 				}
@@ -1176,14 +1187,14 @@ func (a *App) windowControls(c *ui.Context) {
 }
 
 // caption 是一枚窗口按钮。
-func (a *App) caption(c *ui.Context, ico *ui.SVG, danger bool, on func()) {
+func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on func()) {
 	w, h := float32(40), float32(34)
 	if a.narrow(c) {
 		// baseline ≤1240：34×32
 		w, h = 34, 32
 	}
 	btn := ui.Box(c).Size(w, h).Radius(theme.RadiusFull).
-		Center().Cursor(ui.CursorPointer)
+		Center().Cursor(ui.CursorPointer).Label(label)
 	hovered := btn.Hovered()
 	if hovered {
 		if danger {

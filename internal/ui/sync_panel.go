@@ -30,7 +30,7 @@ func (a *App) openSyncPanel() {
 // 文件的路；补局域网时在对应 actionRow 里加按钮即可。
 func (a *App) syncOverlay(c *ui.Context) {
 	bg := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(4, 5, 7, 0.72)).Center()
+		Background(ui.RGBA(4, 5, 7, 0.72)).Center().Label("关闭数据同步")
 	if bg.Clicked() {
 		a.SyncOpen = false
 	}

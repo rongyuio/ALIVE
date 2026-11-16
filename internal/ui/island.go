@@ -321,7 +321,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	// 它下面，所以这东西不能常驻，否则会把关注按钮一起挡掉。
 	if op < 0.5 {
 		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-			Cursor(ui.CursorPointer)
+			Cursor(ui.CursorPointer).Label("展开灵动岛")
 		if hit.Clicked() {
 			a.setIslandOpen(c, true)
 		}
