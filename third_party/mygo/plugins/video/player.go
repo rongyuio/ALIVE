@@ -240,6 +240,25 @@ func (p *Player) SetRate(rate float64) error {
 	}
 	return p.send([]string{"set", "speed", strconv.FormatFloat(rate, 'f', 3, 64)}, false)
 }
+
+// SetVideo turns the video track on or off, its sound playing either way.
+//
+// Off is vid=no: mpv stops decoding pictures and its render context stops
+// waking the window, while the audio output keeps going on its own thread
+// and the clock keeps to the sound. On is vid=auto, which picks the track
+// again and decodes from the next keyframe — a live stream shows nothing
+// for however long that takes.
+//
+// alive added this on top of upstream for background listening: leaving
+// the player page keeps the stream's sound and drops its pictures, and
+// nothing else in this package reached the vid option.
+func (p *Player) SetVideo(on bool) error {
+	value := "auto"
+	if !on {
+		value = "no"
+	}
+	return p.send([]string{"set", "vid", value}, false)
+}
 func finite(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) }
 func seconds(n float64) time.Duration {
 	if !finite(n) || n < 0 || n > float64(math.MaxInt64)/1e9 {

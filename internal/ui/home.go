@@ -80,11 +80,10 @@ type App struct {
 	Volume       float32
 	Playing      bool // 播放页的播放 / 暂停状态
 	WinFull      bool // 窗口全屏（baseline 的 cssFullscreen）：播放页铺满窗口，应用顶栏让位
-	// InfoOpen 是播放页灵动岛是否展开：进直播间自动展开，闲置几秒收起，
-	// 点岛可以反复开关。infoOpenAt 是最近一次展开 / 悬停刷新的时刻，
-	// infoRoom 记着当前房间，用来判断「刚进直播间」。
+	// InfoOpen 是播放页灵动岛是否展开。展开态现在常驻（岛同时承担「正在看谁」
+	// 和「声音从哪来」），所以这个字段只表示「进过这个房间」，不再有收起。
+	// infoRoom 记着当前房间，用来判断是不是换了直播间。
 	InfoOpen    bool
-	infoOpenAt  time.Time
 	infoRoom    string
 	Quality     string
 	QualityOpen bool
@@ -428,6 +427,9 @@ func (a *App) Shell(c *ui.Context) {
 	// 离开播放页先把窗口级和界面级的状态收干净。统一放在这里而不是各个
 	// 返回按钮上：离开播放页的路不止一条（左上返回钮、Esc、顶栏 tab），
 	// 漏一条就是窗口卡死（见 leavePlayer）。
+	//
+	// 注意它不管媒体层：后台收听要的正是「界面收了、声音留着」，
+	// 引擎的开关在下面和 closeMedia 里。
 	if a.Router.Path() != routePlayer {
 		a.leavePlayer()
 	}
@@ -454,11 +456,20 @@ func (a *App) Shell(c *ui.Context) {
 					a.Home(c)
 				}
 			})
-			// 离开播放页就把 ffmpeg / 播放器 / 弹幕连接一起收掉，
-			// 否则换房间回来时会有两路流同时占带宽。
+			// 离开播放页：默认进后台收听，声音留着、画面关掉。
+			//
+			// 只有两条路是真退出——左上角的叉和 Esc——它们自己调 closeMedia。
+			// 其余离开方式（顶栏 tab、灵动岛、搜索跳转）都保留这一路的声音，
+			// 回来时接着看。
+			//
+			// 换台不在这里判：从后台收听点开另一个直播间时，ensureMedia 会发现
+			// roomKey 变了，reset 之后重开一路，旧引擎在 stopPlayback 里关掉。
 			if a.Router.Path() != routePlayer && a.media.roomKey != "" {
-				a.closeMedia()
+				a.detachMedia()
 			}
+			// 媒体层的心跳：后台收听时视频元素不在了，没有东西替它请求帧，
+			// 地址续期和断流重连会跟着一起停摆。
+			a.kickMediaTick()
 		})
 		// 灵动岛浮在内容之上。两种全屏下整块不画：画面上只留返回钮和控制条，
 		// 岛连同它那圈流光和投影压在满屏画面上纯属干扰。

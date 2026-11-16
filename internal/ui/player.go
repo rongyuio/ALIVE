@@ -36,6 +36,12 @@ func (a *App) PlayerPage(c *ui.Context) {
 	a.ensureDanmuLoop()
 	// 接真实流：房间变了才重新取流 + 连弹幕
 	a.ensureMedia(c)
+	// 从后台收听回来：把视频轨重新打开。
+	//
+	// 必须排在 ensureMedia 之后：换台时 ensureMedia 已经 reset 并重开一路，
+	// background 在那条路上被清掉了，这里就是空操作；只有「还是同一个房间」
+	// 时才轮到它把旧引擎的视频轨打开。
+	a.attachMedia()
 	a.syncPlayer()
 	// 首帧可用时刻是起播耗时的最后一段。
 	a.trackFirstFrame()
@@ -472,6 +478,9 @@ func (a *App) playerTopbar(c *ui.Context) {
 				BorderColor(ui.RGBA(255, 255, 255, 0.24))
 		}
 		if back.Clicked() {
+			// 叉是明确退出：关引擎、断弹幕，不留后台声音。别的离开方式
+			// （顶栏 tab、灵动岛、搜索跳转）只进后台收听。
+			a.closeMedia()
 			a.Router.Back()
 		}
 		back.Children(func() {

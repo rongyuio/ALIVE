@@ -75,6 +75,10 @@ func main() {
 	case "nocover":
 		// 封面全部画占位，用于验收占位样式
 		appui.ForcePlaceholder = true
+	case "background":
+		// 后台收听态：有播放器但不在播放页，岛缩成圆胶囊。
+		// 配合 ALIVE_ROOM 用，验收时看首页那枚岛。
+		app.EnterBackgroundForCapture()
 	}
 
 	var win *mygo.Window
@@ -92,7 +96,7 @@ func main() {
 			}
 		}
 		win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     "alive",
+			Title:     "ALIVE",
 			Width:     w,
 			Height:    hgt,
 			MinWidth:  900,

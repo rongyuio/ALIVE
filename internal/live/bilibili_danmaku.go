@@ -222,6 +222,24 @@ func (s *biliDanmaku) connectOnce() error {
 	return lastErr
 }
 
+// biliLoginUID 返回当前会话的登录 uid，未登录时返回 "0"。
+//
+// 弹幕 auth 包里的 uid 必须和 getDanmuInfo 签发 token 时用的是同一个。
+// 登录态下 token 把登录 uid 编了进去，再拿匿名 uid 去认证，服务端会直接
+// 断开连接——表现是连上就 EOF，一条弹幕都收不到，上层只看到「断开重连」
+// 在循环。实测 2026-11-16：同一个 token，uid=0 立刻 EOF，
+// uid=<登录 uid> 正常收到认证回复。
+//
+// 返回字符串而不是数字：uid 已经是 16 位量级，拼进 JSON 不该经过浮点。
+func (p *bilibiliProvider) biliLoginUID() string {
+	for _, c := range p.api.GetCookies() {
+		if c.Name == "DedeUserID" && c.Value != "" {
+			return c.Value
+		}
+	}
+	return "0"
+}
+
 // biliDanmuInfo 取弹幕服务器的 token 与域名列表。
 func (p *bilibiliProvider) biliDanmuInfo(ctx context.Context, realID int64) (string, []string, error) {
 	release, err := p.lim.acquire(ctx)
@@ -252,9 +270,10 @@ func (p *bilibiliProvider) biliDanmuInfo(ctx context.Context, realID int64) (str
 
 // readLoop 发 auth、跑心跳、读帧。
 func (s *biliDanmaku) readLoop(conn *websocket.Conn, token string) error {
-	// uid 是 JSON 数字位，可能超过 int64 精确范围；匿名直接用 0。
-	auth := fmt.Sprintf(`{"uid":0,"roomid":%d,"protover":%d,"platform":"web","type":2,"key":%q}`,
-		s.realID, biliDanmuProto, token)
+	// uid 必须和签发 token 用的一致：登录态下是登录 uid，匿名才是 0。
+	// 写死 0 会让登录用户的连接被服务端立刻断开（见 biliLoginUID）。
+	auth := fmt.Sprintf(`{"uid":%s,"roomid":%d,"protover":%d,"platform":"web","type":2,"key":%q}`,
+		s.provider.biliLoginUID(), s.realID, biliDanmuProto, token)
 	authPkt := blivedmpacket.NewPlainPacket(blivedmpacket.RoomEnter, []byte(auth))
 	if err := conn.Write(s.ctx, websocket.MessageBinary, authPkt.Build()); err != nil {
 		return fmt.Errorf("发送 auth: %w", err)

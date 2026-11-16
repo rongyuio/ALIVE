@@ -49,7 +49,7 @@ func (a *App) togglePip() {
 		}
 	}
 	mini := mygo.NewWindow(mygo.WindowOptions{
-		Title:     "alive 小窗",
+		Title:     "ALIVE 小窗",
 		Width:     miniW,
 		Height:    miniH,
 		MinWidth:  miniMinW,

@@ -1,6 +1,6 @@
 {
-  "name": "alive",
-  "identifier": "com.ry.alive",
+  "name": "ALIVE",
+  "identifier": "io.github.rongyuio.alive",
   "version": "0.1.0",
   "out": "build",
   "resources": [

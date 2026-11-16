@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-alive 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.com/egoist/mygo`）用 GPU 直接画出来，没有 webview、没有前端构建。
+ALIVE 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.com/egoist/mygo`）用 GPU 直接画出来，没有 webview、没有前端构建。
 
 ## 设计令牌
 
@@ -33,8 +33,9 @@ internal/media/    图片下载、解码与缓存
 internal/live/     各平台数据层：分区、列表、搜索、取流、弹幕，归一化成同一套类型
 internal/playback/ 播放引擎：薄壳。把 URL 与回源 headers 交给 libmpv，把 bgr0 帧包成 media.Picture
 doc/               文档唯一入口：架构、决策、实测。从 doc/README.md 进
-third_party/mygo/  上游源码的 replace。除 engines 契约的导出，只改了 plugins/video（播放）与
-                   internal/raster 的一处（软件光栅化采样前先取回像素），都有注释说明为什么
+third_party/mygo/  上游源码的 replace。除 engines 契约的导出，只改了 plugins/video（播放、
+                   vid 开关）、ui/engine_video.go（取引擎）与 internal/raster 的一处
+                   （软件光栅化采样前先取回像素），都有注释说明为什么
 third_party/mpv/   libmpv 运行库与头文件。运行时 LoadLibrary 加载，不是链接期依赖
 ```
 

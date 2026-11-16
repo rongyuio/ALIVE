@@ -4,8 +4,8 @@
 mygo_windows_*.syso
 
 # `go build .` 会在仓库根产出同名二进制
-/alive
-/alive.exe
+/ALIVE
+/ALIVE.exe
 
 # 本地临时文件
 /.task/

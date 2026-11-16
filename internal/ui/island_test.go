@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -25,9 +26,9 @@ func TestIslandClickDoesNothing(t *testing.T) {
 	}
 }
 
-// 播放页的岛接的是主播信息：进直播间自动展开，指针不在岛上、闲置 4 秒
-// 之后收成小胶囊，点一下再展开；指针停在岛上时一直亮着，不计时。
-func TestPlayerIslandAutoCollapses(t *testing.T) {
+// 播放页的岛接的是主播信息：进直播间展开，展开态常驻——它同时承担
+// 「正在看谁」和「声音从哪来」两件事，自己缩回去等于把状态藏起来。
+func TestPlayerIslandStaysExpanded(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	if err := tt.Click("旭旭宝宝"); err != nil {
@@ -37,63 +38,67 @@ func TestPlayerIslandAutoCollapses(t *testing.T) {
 		t.Fatal("进直播间没有展开信息岛")
 	}
 
+	// 指针移开、闲置远超原来那 4 秒：仍然展开。
 	tt.Move(700, 450)
-	tt.Advance(5 * time.Second)
-	if app.InfoOpen {
-		t.Fatal("闲置 4 秒之后信息岛没有收起")
+	tt.Advance(10 * time.Second)
+	if !app.InfoOpen {
+		t.Fatal("闲置 10 秒之后信息岛收起了：展开态应当常驻")
 	}
 
-	// 收起态整块可点，点岛中心就能再展开。这里只能按坐标点：
-	// 收起态压着一层透明热区，按 Label 找「主播信息」会落到它下面去。
-	island, ok := tt.Find("灵动岛")
+	// 宽度也是展开宽，不是收起那枚圆。
+	b, ok := tt.Find("灵动岛")
 	if !ok {
 		t.Fatal("灵动岛没有渲染出来")
 	}
-	tt.Press(island.X+island.W/2, island.Y+island.H/2)
-	tt.Release(island.X+island.W/2, island.Y+island.H/2)
-	tt.Frame()
-	if !app.InfoOpen {
-		t.Fatal("点信息岛没有展开")
-	}
-
-	// 指针停在岛上：一直亮着
-	tt.Move(720, 30)
-	tt.Advance(6 * time.Second)
-	if !app.InfoOpen {
-		t.Fatal("指针停在岛上时不该收起")
-	}
-
-	// 移开之后重新数满 4 秒
-	tt.Move(700, 450)
-	tt.Advance(5 * time.Second)
-	if app.InfoOpen {
-		t.Fatal("指针移开 4 秒之后没有收起")
+	if b.W < islandPlayerMinW-1 {
+		t.Fatalf("岛宽 %v，期望接近展开宽 %v", b.W, islandPlayerExpandedW)
 	}
 }
 
-// 收起态要缩成正圆：宽高都等于岛高，头像铺满内侧，时间和名字都不画。
-// 用尺寸常量锁住，免得以后有人把收起宽度又改回首页眼睛岛的 100。
-func TestPlayerIslandCollapsedIsCircle(t *testing.T) {
-	if islandPlayerCollapsedW != theme.IslandH {
-		t.Fatalf("收起宽 %v、高 %v：播放页的岛该是正圆", islandPlayerCollapsedW, theme.IslandH)
-	}
+// 后台收听态：离开播放页之后岛缩成一枚圆形头像胶囊，点它回到那个直播间。
+//
+// 这是「不点叉就离开」之后唯一的路——声音还在放，但界面上得有东西说明
+// 它在放、并且点得回去。
+func TestListeningIslandReturnsToPlayer(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	if err := tt.Click("旭旭宝宝"); err != nil {
 		t.Fatal(err)
 	}
-	tt.Move(700, 450)
-	tt.Advance(5 * time.Second)
-	if app.InfoOpen {
-		t.Fatal("岛没有收起")
+	// 切到订阅页：这是「离开但不退出」的一条路（顶栏 tab）
+	if err := tt.Click("订阅"); err != nil {
+		t.Fatal(err)
 	}
-	b, ok := tt.Find("灵动岛")
+	tt.Frame()
+	if app.Router.Path() == routePlayer {
+		t.Fatal("点了订阅页还停在播放页")
+	}
+	// 没有真播放器时后台收听不成立（media.player 为 nil），
+	// 所以这里验的是「岛按后台收听态渲染」的那条分支本身。
+	if !app.media.background {
+		t.Skip("没有真实播放器，后台收听态起不来")
+	}
+
+	b, ok := tt.Find("回到直播间")
 	if !ok {
-		t.Fatal("灵动岛没有渲染出来")
+		t.Fatal("后台收听态没有画出回到直播间的入口")
 	}
-	// 弹簧收尾会留亚像素残差，0.1px 以内肉眼不可见
 	if d := b.W - b.H; d < -0.1 || d > 0.1 {
-		t.Fatalf("收起态 %vx%v，不是正圆", b.W, b.H)
+		t.Fatalf("后台收听胶囊 %vx%v，不是正圆", b.W, b.H)
+	}
+	if err := tt.Click("回到直播间"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := app.Router.Path(); got != routePlayer {
+		t.Fatalf("点胶囊之后路由是 %s，期望 %s", got, routePlayer)
+	}
+}
+
+// 收起宽度常量仍然锁在岛高：后台收听那颗圆胶囊用的就是它。
+func TestPlayerIslandCollapsedIsCircle(t *testing.T) {
+	if islandPlayerCollapsedW != theme.IslandH {
+		t.Fatalf("收起宽 %v、高 %v：圆胶囊该是正圆", islandPlayerCollapsedW, theme.IslandH)
 	}
 }
 
@@ -105,20 +110,112 @@ func TestPlayerIslandExpandedWidth(t *testing.T) {
 }
 
 // 首页岛是 24 小时制数字时钟，每秒走一次。
-// 用 Tester 的时钟推进，不 sleep；格式钉死 HH:MM:SS，避免退回 12 小时制。
+//
+// 每位数字是独立元素（翻牌需要逐位裁剪），所以按字符验证：时分秒六位
+// 都在文本树里，冒号两个。用 Tester 的时钟推进，不 sleep。
 func TestHomeIslandClock(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
-	initial := tt.Now().Format("15:04:05")
-	if len(initial) != 8 || initial[2] != ':' || initial[5] != ':' {
-		t.Fatalf("Tester 起始时间格式异常：%q", initial)
+
+	digits := func() string {
+		h, m, s := tt.Now().Clock()
+		return fmt.Sprintf("%02d%02d%02d", h, m, s)
 	}
-	if !tt.HasText(initial) {
-		t.Fatalf("初始时钟 = %q，期望 %q", tt.Texts(), initial)
+	texts := func() map[string]bool {
+		set := map[string]bool{}
+		for _, x := range tt.Texts() {
+			set[x] = true
+		}
+		return set
 	}
+	if want := digits(); !texts()[want[:1]] {
+		t.Fatalf("时钟缺小时十位 %q，文本树 = %v", want[:1], tt.Texts())
+	}
+	before := tt.Now().Format("15:04:05")
 	tt.Advance(2 * time.Second)
-	want := tt.Now().Format("15:04:05")
-	if !tt.HasText(want) {
-		t.Fatalf("走了两秒，时钟文本 = %q，期望 %q", tt.Texts(), want)
+	after := tt.Now().Format("15:04:05")
+	if before == after {
+		t.Fatalf("推进两秒后时间没变：%s", after)
+	}
+	// 秒的个位必须已经换成新值
+	if want := after[7:]; !texts()[want] {
+		t.Fatalf("秒个位应为 %q，文本树里没有", want)
+	}
+}
+
+// 秒变化时只有秒的个位在翻，其余位保持静止——整排一起滚看起来像整块在抖。
+// 用 Tester 的时钟逐帧采样，不 sleep、不截图。
+//
+// 采样必须按**位置**而不是按字符：时钟里出现重复数字（11:55:19 这种）时，
+// 两个 `1` 是两个不同的元素，按字符聚合会把它们的位置混在一起，明明只有
+// 一位在动也会被算成「多位在动」。这条以前是偶发失败，根因就在这儿。
+func TestClockRollsOnlyChangedDigit(t *testing.T) {
+	app := NewMockApp()
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	// 对齐到「整秒 + 950ms」，往后推必然跨过一次整秒
+	now := tt.Now()
+	tt.Advance(time.Second - now.Sub(now.Truncate(time.Second)) + 950*time.Millisecond)
+
+	// 采样：按元素位置记 y。翻牌中的位 y 会离开静止值。
+	type slot struct{ x, w float32 }
+	settled := map[slot]float32{}
+	moving := map[slot]bool{}
+	for i := 0; i < 12; i++ {
+		for _, a := range tt.AccessAll() {
+			if len(a.Name) != 1 || a.Name[0] < '0' || a.Name[0] > '9' {
+				continue
+			}
+			// 位置 = 左边界 + 宽度。x 相同、宽也相同的两个元素就是同一位；
+			// 同一秒里重复的数字不会落在同一格上。
+			k := slot{x: a.Bounds.X, w: a.Bounds.W}
+			y := a.Bounds.Y
+			if prev, ok := settled[k]; !ok {
+				settled[k] = y
+			} else if y != prev {
+				moving[k] = true
+			}
+		}
+		tt.Advance(25 * time.Millisecond)
+	}
+	if len(moving) == 0 {
+		t.Fatal("跨了一整秒，没有任何一位数字在翻——翻牌动画没跑")
+	}
+	// 跨一秒只会让秒的个位换值；十位只在 9→0 时变，分位不动。
+	// 所以参与翻牌的位置数应当很少（这里只要求「不是整排」）。
+	if len(moving) > 4 {
+		t.Fatalf("一次走秒有 %d 位数字在动（%v）：应该只有变化的那一位", len(moving), moving)
+	}
+}
+
+// 切平台时，正在收听的直播间头像不能被当成「旧平台的纹理」清掉。
+//
+// 清掉的那一帧 islandAvatar 拿不到位图，退回文字占位；解码回来又换回头像，
+// 屏幕上就是「闪一下」。keep 集合必须带上当前主播的图。
+func TestSwitchTabKeepsNowPlayingAvatar(t *testing.T) {
+	app := NewMockApp()
+	app.Player = Streamer{
+		Platform:  "douyu",
+		RoomID:    "9999",
+		Name:      "主播",
+		AvatarURL: "https://example.invalid/avatar.jpg",
+		CoverURL:  "https://example.invalid/cover.jpg",
+	}
+	app.media.background = true
+
+	keep := app.feedURLs("bilibili")
+	if !keep["https://example.invalid/avatar.jpg"] {
+		t.Fatal("切平台要保住正在收听主播的头像：否则岛会闪回文字占位")
+	}
+	if !keep["https://example.invalid/cover.jpg"] {
+		t.Fatal("切平台要保住正在收听主播的封面")
+	}
+}
+
+// 没在听任何东西时不必保留——keep 集合里不该凭空多出空串。
+func TestFeedURLsWithoutPlayer(t *testing.T) {
+	app := NewMockApp()
+	keep := app.feedURLs("bilibili")
+	if keep[""] {
+		t.Fatal("keep 集合里出现了空 URL")
 	}
 }

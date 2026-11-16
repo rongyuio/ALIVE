@@ -101,4 +101,4 @@ tidy:
 
 clean:
 	rm -rf $(BUILD_DIR) .mygo
-	rm -f alive alive.exe alive-e2e mygo_windows_*.syso
+	rm -f ALIVE ALIVE.exe alive-e2e mygo_windows_*.syso

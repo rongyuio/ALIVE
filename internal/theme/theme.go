@@ -108,9 +108,11 @@ const (
 
 	NavbarHeight float32 = 64
 	ControlH     float32 = 40
-	IslandGap    float32 = 10
-	IslandW      float32 = 100
-	IslandH      float32 = 38
+	// 岛在顶栏里垂直居中：(NavbarHeight - IslandH) / 2。这里不给间距常量——
+	// 曾经有一个 IslandGap=10，那是照 44 高的返回钮算的，岛只有 38 高，
+	// 于是整体偏上 3px，和顶栏右侧的账号头像对不齐。
+	IslandW float32 = 100
+	IslandH float32 = 38
 
 	// 首页卡片网格
 	CardMinWidth float32 = 220

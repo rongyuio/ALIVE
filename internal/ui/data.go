@@ -75,16 +75,29 @@ func (a *App) prefetchCategories(platform string) {
 //
 // 切平台时用它决定哪些纹理要保住：这些图如果已经预取好了，
 // 用户切过去就是瞬时的，不该被"清理旧平台"顺手清掉。
+//
+// 还有一组图不在任何列表里，却一直显示在屏幕上：当前播放 / 收听的那位
+// 主播。灵动岛在后台收听时挂着它的头像，播放页挂着它的封面——这两张
+// 不保住，切平台那一帧就会退回文字占位，图解码回来又跳一下。
 func (a *App) feedURLs(platform string) map[string]bool {
+	keep := map[string]bool{}
+	if cur := a.current(); cur.AvatarURL != "" || cur.CoverURL != "" {
+		if cur.AvatarURL != "" {
+			keep[cur.AvatarURL] = true
+		}
+		if cur.CoverURL != "" {
+			keep[cur.CoverURL] = true
+		}
+	}
+
 	groups := a.GroupsByPlatform[platform]
 	if len(groups) == 0 || len(groups[0].CategoryIDs) == 0 {
-		return nil
+		return keep
 	}
 	entry, ok := a.feedCache[platform+"|"+groups[0].CategoryIDs[0]+"|-1"]
 	if !ok {
-		return nil
+		return keep
 	}
-	keep := make(map[string]bool, len(entry.rooms)*2)
 	for _, r := range entry.rooms {
 		if r.CoverURL != "" {
 			keep[r.CoverURL] = true

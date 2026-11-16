@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 
 	"alive/internal/live"
 	"alive/internal/playback"
@@ -168,6 +169,11 @@ func seededApp(t *testing.T) *App {
 	a := NewMockApp()
 	a.Player = Streamer{Platform: "douyu", RoomID: "123", Name: "主播"}
 	a.media.roomKey = "douyu|123"
+	// 媒体层的状态机默认站在播放页上：attachMedia 有路由判据，
+	// 留在 NewMockApp 给的首页就等于「人在别的页面」，那条路测不到。
+	if a.Router == nil || a.Router.Path() != routePlayer {
+		a.Router = ui.NewRouter(routePlayer)
+	}
 	// 起播要一个窗口才肯把工作交出去（beginSession 从 a.Win 取）。测试里
 	// runOnMain 已被替换，这个零值窗口只用来过 nil 判断，不会被调用任何方法。
 	a.Win = &mygo.Window{}
@@ -572,5 +578,161 @@ func TestDeadReason(t *testing.T) {
 	}
 	if got := m.deadReason(true, true, 11*time.Second, now.Add(streamStallTimeout+time.Second)); got != "stalled" {
 		t.Fatalf("停住超过预算，判定=%q", got)
+	}
+}
+
+// ---------------------------------------------------------------- 后台收听
+
+// trackSpy 记视频轨被开关了几次、最后是什么状态。
+type trackSpy struct {
+	mu     sync.Mutex
+	states []bool
+}
+
+func (s *trackSpy) SetVideoEnabled(on bool) {
+	s.mu.Lock()
+	s.states = append(s.states, on)
+	s.mu.Unlock()
+}
+
+func (s *trackSpy) last() (bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.states) == 0 {
+		return false, false
+	}
+	return s.states[len(s.states)-1], true
+}
+
+func (s *trackSpy) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.states)
+}
+
+// useTrack 把引擎取用换成 spy，并给 app 挂一个非 nil 的播放器。
+//
+// ui.VideoPlayer 造不出不碰 libmpv 的实例，这里只用到「非 nil」这一个性质：
+// detachMedia / attachMedia 的判据是它，视频轨的开关走 engineOf。
+func useTrack(t *testing.T, a *App, spy *trackSpy) {
+	t.Helper()
+	old := engineOf
+	engineOf = func(*ui.VideoPlayer) videoTrack { return spy }
+	t.Cleanup(func() { engineOf = old })
+	a.media.player = nil
+}
+
+// 离开播放页进后台收听：视频轨关掉、房间记号留着、引擎不关。
+func TestDetachKeepsSound(t *testing.T) {
+	a := seededApp(t)
+	spy := &trackSpy{}
+	useTrack(t, a, spy)
+
+	a.detachMedia()
+
+	if !a.media.background {
+		t.Fatal("没有进入后台收听")
+	}
+	if on, ok := spy.last(); !ok || on {
+		t.Fatalf("视频轨最后状态是 %v（有没有设过 %v），应当关掉", on, ok)
+	}
+	if a.media.roomKey == "" {
+		t.Fatal("后台收听把房间记号清了：地址续期和断流重连都会失去目标")
+	}
+
+	// 幂等：再调一次不该重复设。
+	if n := spy.count(); n != 1 {
+		t.Fatalf("第二次 detach 又设了一次视频轨（共 %d 次）", n)
+	}
+}
+
+// 回到播放页：视频轨重新打开，后台标记清掉。
+func TestAttachRestoresVideo(t *testing.T) {
+	a := seededApp(t)
+	spy := &trackSpy{}
+	useTrack(t, a, spy)
+
+	a.detachMedia()
+	a.attachMedia()
+
+	if a.media.background {
+		t.Fatal("回到播放页之后还挂着后台收听标记")
+	}
+	if on, ok := spy.last(); !ok || !on {
+		t.Fatalf("视频轨最后状态是 %v（有没有设过 %v），应当打开", on, ok)
+	}
+}
+
+// 没有引擎时不该进后台收听：那会留下一个「假装在听」的态。
+func TestDetachWithoutEngineDoesNothing(t *testing.T) {
+	a := seededApp(t)
+	old := engineOf
+	engineOf = func(*ui.VideoPlayer) videoTrack { return nil }
+	t.Cleanup(func() { engineOf = old })
+
+	a.detachMedia()
+
+	if a.media.background {
+		t.Fatal("没有引擎也进了后台收听")
+	}
+}
+
+// 真退出要把后台收听一起收掉：引擎没了岛还显示在收听，比不显示更糟。
+func TestCloseMediaClearsBackground(t *testing.T) {
+	a := seededApp(t)
+	spy := &trackSpy{}
+	useTrack(t, a, spy)
+
+	a.detachMedia()
+	a.closeMedia()
+
+	if a.media.background {
+		t.Fatal("关掉媒体之后还挂着后台收听标记")
+	}
+	if a.media.player != nil {
+		t.Fatal("关掉媒体之后播放器还在")
+	}
+}
+
+// 后台收听时首帧预算不适用：画面本来就不该有，用画面判死会把一路好好出声的
+// 流关掉。这里验判据本身——background 态下 trackFirstFrame 不落错误终态。
+func TestBackgroundIgnoresFirstFrameBudget(t *testing.T) {
+	a := seededApp(t)
+	spy := &trackSpy{}
+	useTrack(t, a, spy)
+	a.Playing = true
+	a.detachMedia()
+
+	// 把打开时刻拨到很久以前：真按首帧预算算，这一下必然超时。
+	a.media.openedAt = time.Now().Add(-time.Minute)
+
+	a.trackFirstFrame()
+
+	if a.media.err != "" {
+		t.Fatalf("后台收听被首帧预算判成了失败：%s", a.media.err)
+	}
+	if a.media.background == false {
+		t.Fatal("后台收听被首帧预算关掉了")
+	}
+}
+
+// 转场期间 Router 会重建上一页：那时 PlayerPage 仍会跑 attachMedia，
+// 而人已经在别的页面上了。不加路由判据，attach 和 Shell 的 detach 会每帧
+// 互相翻一次——实测一秒十几条日志，视频轨跟着来回切。
+func TestAttachIgnoredOffPlayerPage(t *testing.T) {
+	a := seededApp(t)
+	spy := &trackSpy{}
+	useTrack(t, a, spy)
+	a.detachMedia()
+
+	// 人已经不在播放页了。
+	a.Router = ui.NewRouter(routeHome)
+	a.attachMedia()
+
+	if !a.media.background {
+		t.Fatal("不在播放页时 attachMedia 把后台收听标记清了")
+	}
+	if on, _ := spy.last(); on {
+		t.Fatal("不在播放页时 attachMedia 把视频轨打开了")
 	}
 }

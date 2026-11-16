@@ -28,7 +28,7 @@ const (
 	configVersion  = 1
 	dtvConfigKind  = "dtv-config"
 	dtvLanSyncKind = "dtv-lan-sync"
-	configClient   = "alive"
+	configClient   = "ALIVE"
 )
 
 // DTV baseline 的 localStorage 键名，来源 src/lib/storage.ts。
@@ -102,7 +102,7 @@ type configPayload struct {
 
 // configFileName 是导出时的默认文件名，带时间戳便于区分多份快照。
 func configFileName() string {
-	return "alive-config-" + time.Now().Format("20060102-150405") + ".json"
+	return "ALIVE-config-" + time.Now().Format("20060102-150405") + ".json"
 }
 
 // buildConfigPayload 拍一份当前配置的完整快照。
@@ -183,7 +183,7 @@ func parseConfigFile(data []byte) (configData, error) {
 	case configKind:
 		var p configPayload
 		if err := json.Unmarshal(data, &p); err != nil {
-			return configData{}, errors.New("alive 配置文件损坏，读不出内容")
+			return configData{}, errors.New("ALIVE 配置文件损坏，读不出内容")
 		}
 		return p.Data, nil
 	case dtvConfigKind, dtvLanSyncKind:

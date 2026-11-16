@@ -87,6 +87,17 @@ type playerMedia struct {
 	// lastSwapAt / swapFailures 用来退避：连续失败时不要每帧都重开一路。
 	lastSwapAt   time.Time
 	swapFailures int
+
+	// background 表示正在后台收听：引擎活着、音频在走，视频轨关掉了。
+	// 离开播放页但没点叉 / 没按 Esc 时进入，回到播放页时退出。
+	//
+	// 这一态下 roomKey 和 player 都留着——它要的就是「还是那一路、还在出声」，
+	// 和 closeMedia 的「全关掉」是两件事。
+	background bool
+	// detachedAt 是进入后台收听、也就是视频轨被关掉的时刻，日志和恢复预算用。
+	detachedAt time.Time
+	// tickPending 表示后台收听的定时心跳已经排上，避免每帧重复排。
+	tickPending bool
 }
 
 // stalledThreshold 是判定「画面停住」的阈值。
@@ -143,6 +154,9 @@ func (m *playerMedia) reset() {
 	m.refreshAt, m.lastSwapAt = time.Time{}, time.Time{}
 	m.refreshing = false
 	m.swapFailures = 0
+	m.background = false
+	m.detachedAt = time.Time{}
+	m.tickPending = false
 }
 
 // cancelSession 结束当前这一轮起播。
@@ -179,6 +193,48 @@ func (m *playerMedia) stalled(p *ui.VideoPlayer) bool {
 	return now.Sub(m.lastPosAt) > stalledThreshold
 }
 
+// mediaTick 是媒体层的常驻心跳：首帧观测、地址续期、断流重连、错误终态。
+//
+// 每帧调用，判据是「有没有播放器」而不是「在不在播放页」。原来它挂在
+// PlayerPage 上，离开播放页就没人跑了——后台收听时地址到期（斗鱼 300 秒）
+// 就没人续，声音五分钟后自己断；窗口最小化时视图不重建，同样会断。
+//
+// 这一帧的驱动靠调用方（Shell）在必要时 c.After 续上；background 态下
+// 视图里没有视频元素在请求帧，所以还额外挂一条定时器，见 kickMediaTick。
+func (a *App) mediaTick() {
+	if a.media.player == nil {
+		return
+	}
+	a.trackFirstFrame()
+}
+
+// kickMediaTick 在后台收听时驱动 mediaTick。
+//
+// 有画面时 Video 元素每帧都在请求下一帧，看门狗跟着走；后台收听把视频轨关了，
+// 没有元素再请求帧，于是只能自己排。间隔取和播放页一样的健康检查节拍。
+//
+// 定时器不持有 App 的可变状态，只往主线程排一次 Update——它本身就是线程安全的，
+// 而且窗口销毁后 Update 会自己丢掉回调。
+func (a *App) kickMediaTick() {
+	m := &a.media
+	if !m.background || m.player == nil || a.Win == nil {
+		m.tickPending = false
+		return
+	}
+	if m.tickPending {
+		return
+	}
+	m.tickPending = true
+	win := a.Win
+	time.AfterFunc(playbackHealthPollInterval, func() {
+		runOnMain(win, func() {
+			a.media.tickPending = false
+			a.mediaTick()
+			a.kickMediaTick()
+		})
+	})
+}
+
 // closeMedia 是离开播放页时的清理入口。
 //
 // 先把代号推进（reset 里的 cancelSession 会做），再清 roomKey：正在路上的
@@ -188,9 +244,110 @@ func (a *App) closeMedia() {
 	a.media.roomKey = ""
 }
 
+// detachMedia 进入后台收听：画面关掉，声音留着。
+//
+// 和 closeMedia 的区别是「关到哪一层」：这里只把视频轨关掉，mpv 实例、
+// 地址续期、断流重连、房间记号全部保留。mpv 的音频输出和视频解码本来就是
+// 两条独立的线，vid=no 之后声音照常走、time-pos 照常前进，而软件渲染不再
+// 产帧——省掉的正是后台最贵的那一块（1080p60 每帧 8MB 的 BGRA 转换）。
+//
+// 没有引擎时不做事：还在取流的路上就离开播放页，那一路会被 closeMedia 收掉，
+// 不该在这里留一个「假装在听」的态。判据是引擎而不是播放器指针——没有可关的
+// 视频轨，就没有声音可留。
+func (a *App) detachMedia() {
+	m := &a.media
+	if m.background {
+		return
+	}
+	e := m.engine()
+	if e == nil {
+		return
+	}
+	e.SetVideoEnabled(false)
+	m.background = true
+	m.detachedAt = time.Now()
+	// 画面不产出了，缓冲胶囊和停帧看门狗都失去意义：它们的判据是「画面有没有
+	// 在动」，而这时候画面本来就不动。基准拨到现在，回来时不会立刻误判成卡死。
+	m.lastPos, m.lastPosAt = 0, time.Time{}
+	m.stillPos, m.stillAt = 0, time.Time{}
+	logStage(m.id, m.start, "detach", "quality", m.upstream.Label)
+}
+
+// attachMedia 从后台收听回到播放页：把视频轨重新打开。
+//
+// 恢复要等 mpv 从下一个关键帧开始解码（斗鱼实测中位数 1.7 秒，见
+// doc/reference/measurements.md）。这段画面停在离开时那一帧，所以回来之后
+// 首帧预算要重新起算，否则 20 秒的预算里只剩一半。
+//
+// 判据必须带上路由：转场期间 Router 会把上一页（播放页）再构建一次，而那时
+// 已经在别的页面上了。只看 background 的话，PlayerPage 的 attach 和 Shell 的
+// detach 会每帧互相翻一次——实测一秒能刷十几条 attach/detach 日志，视频轨
+// 跟着来回切。
+func (a *App) attachMedia() {
+	m := &a.media
+	if !m.background {
+		return
+	}
+	if a.Router == nil || a.Router.Path() != routePlayer {
+		return
+	}
+	m.background = false
+	m.detachedAt = time.Time{}
+	// 首帧预算从这一刻重新算：后台那段时间画面本来就不该有，不能算进预算。
+	if !m.firstFrame && !m.openedAt.IsZero() {
+		m.openedAt = time.Now()
+		m.pauseStarted = time.Time{}
+		m.pausedFor = 0
+	}
+	if e := m.engine(); e != nil {
+		e.SetVideoEnabled(true)
+	}
+	logStage(m.id, m.start, "attach", "quality", m.upstream.Label)
+}
+
+// videoTrack 是后台收听要的那一小块引擎能力：开关视频轨。
+//
+// 只声明用得到的一个方法，而不是整个 *playback.Engine：测试里没有 libmpv，
+// 造不出真引擎，但这一段状态机该被验到。
+type videoTrack interface {
+	SetVideoEnabled(on bool)
+}
+
+// engineOf 从播放器取出它的引擎。生产实现是类型断言；测试里换成假的。
+//
+// 播放器底下不是我们的引擎（比如将来换成别的实现）时返回 nil，
+// 后台收听自然不成立——没有可关的视频轨，也就不该假装在听。
+var engineOf = func(p *ui.VideoPlayer) videoTrack {
+	if p == nil {
+		return nil
+	}
+	e, _ := p.Engine().(*playback.Engine)
+	if e == nil {
+		return nil
+	}
+	return e
+}
+
+// engine 取出当前播放器底下的引擎。
+//
+// ui.VideoPlayer 把引擎藏在内部，只在这一处需要摸到它——视频轨的开关是
+// mpv 的选项，不是播放器接口的一部分。
+func (m *playerMedia) engine() videoTrack { return engineOf(m.player) }
+
 // CloseMedia 在窗口关闭前取消取流与房间会话，并异步释放连接及转封装资源。
 // 必须从主线程调用；后台资源回收不依赖后续 Window.Update 回调。
 func (a *App) CloseMedia() { a.closeMedia() }
+
+// EnterBackgroundForCapture 让应用以「后台收听中」的样子启动（截图验收用）。
+//
+// 真的后台收听要有引擎才能成立，而截图验收时常常不接真流。这里只置状态位并
+// 回到首页，岛据此画出那颗圆胶囊——验收的是它的版式，不是播放链路。
+func (a *App) EnterBackgroundForCapture() {
+	a.media.roomKey = "capture|background"
+	a.media.background = true
+	a.media.detachedAt = time.Now()
+	a.Router = ui.NewRouter(routeHome)
+}
 
 // ensureMedia 保证当前正在播放的直播间已经接上真实流。
 //
@@ -524,6 +681,8 @@ type swapRequest struct {
 	roomID   string
 	line     string
 	quality  string
+	// background 说明派这次换地址时正在后台收听：视频轨是关的，等不了画面。
+	background bool
 }
 
 // refreshAtFor 算出该在什么时候换地址：平台声明了寿命就提前一分钟。
@@ -550,7 +709,7 @@ func (a *App) scheduleSwap(reason string) {
 	m.lastSwapAt = time.Now()
 	sess := a.session()
 	cur := a.current()
-	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: a.Line, quality: m.upstream.Label}
+	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: a.Line, quality: m.upstream.Label, background: m.background}
 	logStage(sess.id, sess.start, "swap-start", "reason", reason)
 	go a.runHotSwap(sess, req, reason)
 }
@@ -600,6 +759,10 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 		return
 	}
 	// 等到第一帧（音频门也在里面）：没有画面就换上去等于黑屏。
+	//
+	// 后台收听时这条判据不成立——视频轨是关着的，Frame 永远不给画面。这时候
+	// 改用音频时钟：time-pos 走起来就说明这一路真的在出声，比画面更贴近
+	// 后台态真正要保证的那件事。
 	deadline := time.Now().Add(8 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
@@ -607,7 +770,12 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 			_ = e.Close()
 			return
 		}
-		if _, _, ok := e.Frame(time.Now()); ok {
+		if req.background {
+			if e.Position() > 0 {
+				ready = true
+				break
+			}
+		} else if _, _, ok := e.Frame(time.Now()); ok {
 			ready = true
 			break
 		}
@@ -615,7 +783,11 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 	}
 	if !ready {
 		_ = e.Close()
-		fail(errors.New("新地址 8 秒内没有画面"))
+		if req.background {
+			fail(errors.New("新地址 8 秒内没有声音"))
+		} else {
+			fail(errors.New("新地址 8 秒内没有画面"))
+		}
 		return
 	}
 	runOnMain(sess.win, func() {
@@ -634,6 +806,11 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 	a.media.refreshAt = refreshAtFor(v)
 	a.media.refreshing = false
 	a.media.swapFailures = 0
+	// 后台收听时换上去的是一路新引擎，视频轨默认是开的：不补这一下，换完
+	// 地址画面会自己回来，后台收听就名存实亡了。
+	if a.media.background {
+		e.SetVideoEnabled(false)
+	}
 	volume := float64(a.Volume)
 	p.SetVolume(volume)
 	a.pushedVolume = volume
@@ -643,7 +820,7 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 	if old != nil {
 		old.Close()
 	}
-	logStage(sess.id, sess.start, "swap-done", "reason", reason, "quality", v.Label)
+	logStage(sess.id, sess.start, "swap-done", "reason", reason, "quality", v.Label, "background", a.media.background)
 }
 
 func (m *playerMedia) stopPlayback() {
@@ -656,6 +833,11 @@ func (m *playerMedia) stopPlayback() {
 	m.refreshAt, m.lastSwapAt = time.Time{}, time.Time{}
 	m.refreshing = false
 	m.swapFailures = 0
+	// 引擎没了，后台收听就不成立：不清这一位，灵动岛会挂着一颗「正在收听」
+	// 的圆胶囊，而底下根本没有声音——比不显示更糟。
+	m.background = false
+	m.detachedAt = time.Time{}
+	m.tickPending = false
 }
 
 // failPlayback 把这一轮落到可重试的终态。
@@ -691,6 +873,15 @@ func (a *App) trackFirstFrame() {
 			return
 		}
 		a.failPlayback("playback-failed", "播放失败，请重试或切换线路")
+		return
+	}
+	// 后台收听：视频轨关着，Ready / Position 的含义都变了。
+	//
+	// 这里不能再走首帧那一套——画面本来就不该有，首帧预算会一路走到超时，
+	// 把正在出声的一路判成失败。判据换成「音频时钟还在不在走」：它停了才是
+	// 真的断了，那时候才换地址。
+	if m.background {
+		a.trackBackground(p, now)
 		return
 	}
 	if m.firstFrame || p.Ready() {
@@ -729,6 +920,39 @@ func (a *App) trackFirstFrame() {
 // 缓冲也会让时间轴停住，所以这个值必须比缓冲胶囊的 1.5 秒宽：6 秒还没动一下，
 // 就不是抖动，是断了。再长用户就盯着静止画面了。
 const streamStallTimeout = 6 * time.Second
+
+// trackBackground 是后台收听态的健康检查。
+//
+// 唯一的判据是音频时钟：画面关掉了，Ready 和 Frame 都不再说明任何事，
+// 只有 time-pos 还在前进才表示这一路真的在出声。它停了有两种可能——地址
+// 到期（斗鱼 300 秒）或者上游断流，两条都落到「换一份新地址」。
+//
+// 首帧预算在这里不适用：后台态本来就不该有画面，用画面判死会把一路好好
+// 出声的流关掉。
+func (a *App) trackBackground(p *ui.VideoPlayer, now time.Time) {
+	m := &a.media
+	if !p.Playing() {
+		// 用户主动暂停：声音本来就该停，别把它当成断流。
+		m.stillPos, m.stillAt = 0, time.Time{}
+		return
+	}
+	pos := p.Position()
+	if m.stillAt.IsZero() || pos != m.stillPos {
+		m.stillPos, m.stillAt = pos, now
+		return
+	}
+	// 后台态用同一档阈值：6 秒没有一毫秒推进，不是抖动。
+	if now.Sub(m.stillAt) <= streamStallTimeout {
+		return
+	}
+	m.stillPos, m.stillAt = 0, time.Time{}
+	// 地址到期同样要续：后台没人看画面，但声音不能断。
+	if !m.refreshAt.IsZero() && !now.Before(m.refreshAt) {
+		a.scheduleSwap("expire")
+		return
+	}
+	a.scheduleSwap("dead-background")
+}
 
 // deadReason 报告直播是不是已经不能继续播了，返回空串表示还活着。
 //
