@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// 拖拽排序：把拖起来的平台放到目标原来的索引上（与 baseline 的
-// splice(from,1) + splice(to,0) 一致）。
+// 拖拽排序：把拖起来的平台放到目标原来的索引上。
 func TestMovePlatform(t *testing.T) {
 	app := NewMockApp()
 	app.PlatformOrder = []string{"douyu", "huya", "douyin", "bilibili"}

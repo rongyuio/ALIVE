@@ -8,7 +8,7 @@ import (
 	"alive/internal/theme"
 )
 
-// 数据同步面板的度量，取自 baseline 的 LanSyncModal.module.css。
+// 数据同步面板的尺寸。
 const (
 	syncDialogW float32 = 520
 	syncBtnH    float32 = 32
@@ -25,7 +25,7 @@ func (a *App) openSyncPanel() {
 
 // syncOverlay 是顶栏「数据同步」的模态弹窗。
 //
-// 结构对齐 baseline 的 LanSyncModal：标题行 + 导出/导入两个页签 + 内容区。
+// 结构：标题行 + 导出/导入两个页签 + 内容区。
 // 局域网共享（二维码、一键导入）还没做，所以两个页签里各自只有一条本地
 // 文件的路；补局域网时在对应 actionRow 里加按钮即可。
 func (a *App) syncOverlay(c *ui.Context) {
@@ -39,7 +39,7 @@ func (a *App) syncOverlay(c *ui.Context) {
 		panel := ui.Column(c).Width(syncDialogW).Radius(theme.RadiusMD).
 			Background(theme.BgElevated).Border(1, theme.Border).
 			Label("数据同步").
-			// baseline --shadow-lg：0 38px 72px -30px rgba(0,0,0,.85)
+			// --shadow-lg：0 38px 72px -30px rgba(0,0,0,.85)
 			Shadow(0, 38, 72, -30, theme.ShadowLg)
 		// 点面板本身不该把它关掉
 		if panel.Clicked() {
@@ -192,7 +192,7 @@ func (a *App) syncHint(c *ui.Context, text string) {
 // syncButton 是面板里的胶囊按钮：32 高、圆角 full、12px 半粗。
 //
 // primary 是 accent 底 + accent-text 字，其余是 fill-tertiary 底加描边。
-// busy 时按 baseline 的 :disabled 处理：透明度 .5、光标回箭头、不响应点击。
+// busy 时按 :disabled 处理：透明度 .5、光标回箭头、不响应点击。
 func (a *App) syncButton(c *ui.Context, ico *ui.SVG, label string, primary bool, on func()) {
 	btn := ui.Box(c).Height(syncBtnH).Padding(0, 14, 0, 14).Radius(theme.RadiusFull).
 		Center().Label(label)
@@ -222,7 +222,7 @@ func (a *App) syncButton(c *ui.Context, ico *ui.SVG, label string, primary bool,
 		}
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			if a.SyncBusy {
-				// 读写文件期间给一个转圈，替代 baseline 的 Loader2
+				// 读写文件期间图标转起来，兼作进度提示
 				ui.Icon(c, iconSync).FontSize(14).TextColor(col).Rotate(
 					btn.Loop("sync-btn-spin", 900*time.Millisecond, ui.Linear) * 360)
 			} else {

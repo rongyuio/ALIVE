@@ -19,7 +19,7 @@ import (
 
 // 数据同步的文件格式。
 //
-// 导出写成 alive 自己的形状（kind: alive-config）；导入同时接受 DTV baseline
+// 导出写成 alive 自己的形状（kind: alive-config）；导入同时接受 DTV
 // 的两种文件——dtv-config（导出 JSON）与 dtv-lan-sync（局域网快照）。
 // 那两种的 entries 是一组 localStorage 键值，值本身还是 JSON 字符串，
 // 所以要多拐一层解析，形状映射也在本文件里。
@@ -31,7 +31,7 @@ const (
 	configClient   = "ALIVE"
 )
 
-// DTV baseline 的 localStorage 键名，来源 src/lib/storage.ts。
+// 导入兼容用的 localStorage 键名。
 //
 // 清晰度和线路的键带平台前缀（BILIBILI_preferred_quality 这种），
 // 前缀用大写平台名。
@@ -128,13 +128,7 @@ func (a *App) buildConfigPayload() configPayload {
 	}
 	subs := make([]portableSub, 0, len(a.Subs))
 	for _, s := range a.Subs {
-		subs = append(subs, portableSub{
-			PlatformID: s.PlatformID,
-			Platform:   s.Platform,
-			Group:      s.Group,
-			Name:       s.Name,
-			CategoryID: s.CategoryID,
-		})
+		subs = append(subs, portableSub(s))
 	}
 	volume := a.Volume
 	danmuOn := a.DanmuOn
@@ -446,7 +440,7 @@ func followIdentity(platform, roomID, name string) string {
 // applyConfig 把导入的配置并进当前状态。
 //
 // 关注和订阅只增不减——导入不该删掉本机已经关注的东西；主题、清晰度、
-// 音量、弹幕这些单值偏好按文件内容覆盖（和 baseline 的合并规则一致）。
+// 音量、弹幕这些单值偏好按文件内容覆盖。
 func (a *App) applyConfig(d configData) importSummary {
 	var sum importSummary
 

@@ -3,7 +3,7 @@ package ui
 import "github.com/egoist/mygo/ui"
 
 // lucide 的线性图标（24×24 网格、2px 描边、圆头圆角），
-// 与 baseline 用的 lucide-react 是同一套路径，所以粗细和比例能直接对上。
+// 路径与 lucide-react 是同一套，所以粗细和比例能直接对上。
 //
 // MyGo 的 SVG 不支持文字、内嵌图片、pattern、marker、filter，
 // 但这条线性图标只有 path / circle / rect，全部在支持范围内。
@@ -16,7 +16,7 @@ func iconSVG(inner string) *ui.SVG {
 
 // iconFilled 是实心图标：外层就是 fill="currentColor"，没有描边。
 //
-// 播放/暂停在 baseline 里是 `<Pause fill="currentColor" />`——矩形被填满；
+// 播放/暂停是实心图标——`<Pause fill="currentColor" />`，矩形被填满；
 // 只写描边会细成两根线。MyGo 的 SVG 解析不认内层元素上的 fill 覆盖外层，
 // 所以只能整张图改成实心。
 func iconFilled(inner string) *ui.SVG {
@@ -26,8 +26,8 @@ func iconFilled(inner string) *ui.SVG {
 			inner + `</svg>`))
 }
 
-// iconSVGThin 和 iconSVG 一样，只是描边 1.8 —— 窗口按钮用的是这一档，
-// baseline 里那三个图标是手写的 1.8 描边 SVG，不是 lucide 的 2。
+// iconSVGThin 和 iconSVG 一样，只是描边 1.8：窗口按钮那三个图标是手写的
+// 1.8 描边 SVG，不是 lucide 的 2。
 func iconSVGThin(inner string) *ui.SVG {
 	return ui.MustParseSVG([]byte(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
@@ -38,7 +38,7 @@ func iconSVGThin(inner string) *ui.SVG {
 // starPath 是 lucide Star 的原始路径（node_modules/lucide-react 同名文件）。
 const starPath = `M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z`
 
-// starSVG 构造空心或实心的星标：baseline 的关注按钮未关注时空心、已关注时实心。
+// starSVG 构造空心或实心的星标：关注按钮未关注时空心、已关注时实心。
 func starSVG(fill string) *ui.SVG {
 	return ui.MustParseSVG([]byte(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="` + fill + `" ` +
@@ -52,7 +52,7 @@ var (
 	iconStarFilled = starSVG("currentColor")
 
 	iconSearch = iconSVG(`<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>`)
-	// MonitorSmartphone：baseline 顶栏「数据同步」按钮用的图标
+	// MonitorSmartphone：顶栏「数据同步」按钮用的图标
 	iconMonitorSmartphone = iconSVG(
 		`<path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/>` +
 			`<path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/>` +
@@ -82,11 +82,10 @@ var (
 			`<path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/>` +
 			`</svg>`))
 
-	iconBookmark     = iconSVG(`<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>`)
-	iconPlus         = iconSVG(`<path d="M5 12h14"/><path d="M12 5v14"/>`)
-	iconChevronRight = iconSVG(`<path d="m9 18 6-6-6-6"/>`)
+	iconBookmark = iconSVG(`<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>`)
+	iconPlus     = iconSVG(`<path d="M5 12h14"/><path d="M12 5v14"/>`)
 	// 面板把手的收起 / 展开键是 14px / 2.8 描边，比常规 2px 粗一档。
-	// baseline 展开时用 ChevronRight（指向面板里），收起时用 ChevronLeft。
+	// 面板展开时用 ChevronRight（指向面板里），收起时用 ChevronLeft。
 	iconChevronRightBold = ui.MustParseSVG([]byte(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
 			`stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">` +
@@ -105,24 +104,22 @@ var (
 	iconCheck   = iconSVG(`<path d="M20 6 9 17l-5-5"/>`)
 	iconUser    = iconSVG(`<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>`)
 	iconLogOut  = iconSVG(`<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>`)
-	// iconX 是 2px 描边的关闭叉号（baseline 输入框的清除键、订阅 chip 的删除键都用它）
+	// iconX 是 2px 描边的关闭叉号（输入框的清除键、订阅 chip 的删除键都用它）
 	iconX = iconSVG(`<path d="M18 6 6 18"/><path d="m6 6 12 12"/>`)
 	// 数据同步：导出 / 导入按钮，以及导入结果的成功提示
 	iconUpload   = iconSVG(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>`)
 	iconDownload = iconSVG(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>`)
 	iconOkCircle = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="m8.5 12 2.5 2.5 4.5-5"/>`)
-	// AlertCircle：toast 的 info 色调（baseline ToastProvider 的 TONE_ICON.info）
+	// AlertCircle：toast 的 info 色调
 	iconAlert = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="M12 7v6"/><path d="M12 16.5v.5"/>`)
-	// TriangleAlert：toast 的 error 色调（baseline ToastProvider 的 TONE_ICON.error）
+	// TriangleAlert：toast 的 error 色调
 	iconTriangleAlert = iconSVG(`<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>`)
 
 	// 播放页 chrome
-	iconBack = iconSVG(`<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>`)
 	// 这两条是 lucide v1.72 的路径：play 是带圆角的填充三角形（不是 polygon），
 	// pause 的两根竖条是 5 宽、18 高、rx 1，比早先版本的 4×16 更粗。
-	iconPlay   = iconFilled(`<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>`)
-	iconPause  = iconFilled(`<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>`)
-	iconVolume = iconSVG(`<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>`)
+	iconPlay  = iconFilled(`<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>`)
+	iconPause = iconFilled(`<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>`)
 	// Maximize2：全屏 / 退出全屏
 	iconFullscreen = iconSVG(`<path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>`)
 	// Maximize：窗口全屏（铺满应用窗口，不动系统窗口）
@@ -135,7 +132,7 @@ var (
 	// PictureInPicture2：小窗播放
 	iconPip      = iconSVG(`<path d="M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4"/><rect width="10" height="7" x="12" y="13" rx="2"/>`)
 	iconDanmuOff = iconSVG(`<path d="M19 19H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.7.7 0 0 1 2 21.286V5a2 2 0 0 1 1.184-1.826"/><path d="m2 2 20 20"/><path d="M8.656 3H20a2 2 0 0 1 2 2v11.344"/>`)
-	// baseline 的开启态是 <MessageSquare fill="currentColor" fillOpacity={0.18}>；
+	// 弹幕开关的开启态是 <MessageSquare fill="currentColor" fillOpacity={0.18}>；
 	// MyGo 的 SVG 解析不认 fill-opacity，所以这里只有描边。
 	iconDanmu      = iconSVG(`<path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>`)
 	iconSettings2  = iconSVG(`<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>`)
@@ -147,7 +144,6 @@ var (
 	iconVolumeMute = iconSVG(`<path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"/><path d="m16.5 14.5 5-5"/><path d="m16.5 9.5 5 5"/>`)
 	iconVolumeLow  = iconSVG(`<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/>`)
 	iconVolumeHigh = iconSVG(`<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>`)
-	iconSettings   = iconSVG(`<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/>`)
 
 	iconMinimize = iconSVGThin(`<path d="M6 12h12"/>`)
 	iconMaximize = iconSVGThin(`<rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/>`)

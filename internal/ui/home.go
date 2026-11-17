@@ -79,7 +79,7 @@ type App struct {
 	PlayerRemote bool // 播放项来自 a.Remote 而不是示例池
 	Volume       float32
 	Playing      bool // 播放页的播放 / 暂停状态
-	WinFull      bool // 窗口全屏（baseline 的 cssFullscreen）：播放页铺满窗口，应用顶栏让位
+	WinFull      bool // 窗口全屏：播放页铺满窗口，应用顶栏让位
 	// InfoOpen 是播放页灵动岛是否展开。展开态现在常驻（岛同时承担「正在看谁」
 	// 和「声音从哪来」），所以这个字段只表示「进过这个房间」，不再有收起。
 	// infoRoom 记着当前房间，用来判断是不是换了直播间。
@@ -89,8 +89,8 @@ type App struct {
 	QualityOpen bool
 	Line        string
 	LineOpen    bool
-	// 这三个浮层是 hover 触发的（baseline 的 ControlsDropdown / 设置面板都是
-	// onMouseEnter 开、onMouseLeave 排一个 220ms 后关的定时器），
+	// 这三个浮层是 hover 触发的（onMouseEnter 开、onMouseLeave 排一个 220ms
+	// 后关的定时器），
 	// hoverLeft 记指针最后一次离开按钮和面板的时刻。
 	QualityHover       hoverClose
 	LineHover          hoverClose
@@ -111,13 +111,13 @@ type App struct {
 	DanmuOn bool
 	// Danmu 是画面上正在飞的那批，飞完就剪掉。
 	// DanmuLog 是右侧面板的历史，收到就留着，和飞行状态无关——
-	// baseline 里两者本来就是两份数据（messages 留 300，Overlay 只管当帧）。
+	// 两者本来就是两份数据（messages 留 300，Overlay 只管当帧）。
 	Danmu    []danmuLine
 	DanmuLog []danmuLine
 	danmuSeq int
 	danmu    danmuState
 
-	// 弹幕设置（baseline 的 dtv_danmu_preferences_v1）
+	// 弹幕设置（落盘键 dtv_danmu_preferences_v1）
 	DanmuSettingsOpen bool
 	DanmuFont         float32
 	DanmuDur          time.Duration
@@ -134,7 +134,7 @@ type App struct {
 	DanmuFilterQuery  string
 	danmuFilterScroll ui.ScrollState
 
-	// 右侧弹幕列表（baseline 的 DanmuPanel）
+	// 右侧弹幕列表
 	DanmuPanelOn bool
 	DanmuPanelW  float32
 	PanelScroll  ui.ScrollState
@@ -264,7 +264,7 @@ type App struct {
 	SyncError  string
 
 	// 播放页悬浮 chrome（顶栏 / 控制条 / 窗口按钮）的自动隐藏，
-	// baseline 的 chromeHidden：指针静止 2.8 秒后淡出，一动就回来。
+	// 指针静止 2.8 秒后淡出，一动就回来。
 	ChromeHidden  bool
 	chromeIdleAt  time.Time // 空闲计时的起点：指针最后一次活动的时刻
 	chromePtrX    float32
@@ -272,12 +272,10 @@ type App struct {
 	chromePtrOver bool // 指针是否还停在画面上
 	chromeFull    bool // 上一帧是否处于全屏：进出全屏要先把 chrome 亮出来
 
-	// 启动层：冷启动到首屏数据就绪之间盖一层（baseline 的 #dtv-splash）
+	// 启动层：冷启动到首屏数据就绪之间盖一层
 	Splash       bool
 	splashFading bool
 	splashAt     time.Time
-	// 截图验收用：启动层不自动淡出
-	SplashHold bool
 
 	// 顶栏平台顺序（拖拽排序与持久化共用）
 	PlatformOrder []string
@@ -290,12 +288,12 @@ type App struct {
 	Follows []FollowRecord
 	// 关注状态刷新的闸门：自动刷新和手动刷新共用，避免两轮请求叠在一起
 	followsBusy bool
-	// 刷新进度：面板按钮上的圆环按 done/total 画弧（baseline 的 refreshProgress）。
+	// 刷新进度：面板按钮上的圆环按 done/total 画弧。
 	// 每查完一条就推进一格，所以环是连续往前走的，不是等整批结束才跳。
 	followRefreshDone  int
 	followRefreshTotal int
 
-	// Toast：右下角一条短提示，3.2s 后自动消失（baseline 的 ToastProvider）。
+	// Toast：右下角一条短提示，3.2s 后自动消失。
 	// Tone 决定左侧图标与颜色；Seq 每条自增，用来换代播入场动画。
 	ToastText string
 	ToastTone string
@@ -373,20 +371,6 @@ func NewApp() *App {
 	a.Splash = true
 	a.splashAt = time.Now()
 	a.bindAuth()
-	return a
-}
-
-// NewMockApp 造一份带示例数据的 App，供视图测试与截图验收使用。
-//
-// 列表内容来自 mock.go。真实接口可能为空、可能不够铺满一屏、封面还要联网
-// 下载，靠它没法稳定断言布局——这正是 mock 层存在的理由。名字里带 Mock，
-// 是为了在任何调用点都一眼看出它不该出现在应用里。
-func NewMockApp() *App {
-	a := newApp()
-	a.Streamers = mockStreamers()
-	a.Groups = mockGroups()
-	a.subCategories = mockSubCategories
-	a.restore()
 	return a
 }
 
@@ -499,7 +483,7 @@ func (a *App) currentWebLogin() (*live.WebLogin, bool) {
 
 // Shell 是窗口的根视图：地面 + 主区（顶栏 + 内容）+ 悬浮灵动岛。
 //
-// baseline 的背景只有两层——实色地面和一层极淡的胶片颗粒。颗粒是 SVG
+// 外壳背景只有两层——实色地面和一层极淡的胶片颗粒。颗粒是 SVG
 // feTurbulence 平铺、opacity 5%，原生侧暂时省掉（视觉上几乎不可见，
 // 而且每帧重绘一张噪点纹理不划算）。
 func (a *App) Shell(c *ui.Context) {
@@ -518,7 +502,7 @@ func (a *App) Shell(c *ui.Context) {
 	// 挂起的切平台在这里收尾：目标平台的首屏数据和封面齐了才换。
 	a.tickPlatformSwitch()
 
-	// baseline：Ctrl/Cmd + K 唤起搜索；输入框里打字时不抢
+	// Ctrl/Cmd + K 唤起搜索；输入框里打字时不抢
 	// 没有平台上下文的页面连搜索入口都没有，快捷键也不该把它打开。
 	if a.searchAvailable() && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyK) {
 		a.SearchOpen = true
@@ -534,8 +518,8 @@ func (a *App) Shell(c *ui.Context) {
 		a.leavePlayer()
 	}
 
-	// 播放页的两种全屏下应用外壳整体让位给画面（baseline 的 playerShell 是
-	// position:fixed inset:0 z-index:9999，顶栏和灵动岛都被盖住）。
+	// 播放页的两种全屏下应用外壳整体让位给画面（外壳是 position:fixed
+	// inset:0 z-index:9999，顶栏和灵动岛都被盖住）。
 	// 窗口全屏是我们自己的状态，原生全屏是系统状态，两者都算。
 	fullscreen := a.playerFullscreen()
 
@@ -599,7 +583,7 @@ func (a *App) Shell(c *ui.Context) {
 
 // Home 是首页内容：分区栏 + 卡片网格。
 //
-// baseline 的 appBody 是 padding 0 14，分区栏自己带 margin-bottom 14，
+// 正文区是 padding 0 14，分区栏自己带 margin-bottom 14，
 // 列表区不再额外留间距。
 func (a *App) Home(c *ui.Context) {
 	if a.LiveMode {
@@ -665,13 +649,13 @@ func (a *App) categoryBarSkeleton(c *ui.Context) {
 }
 
 // resetCards 让列表的入场动画从头播一遍：
-// 切平台、切分区、切订阅都算换了一份新列表，baseline 也是重新挂载卡片。
+// 切平台、切分区、切订阅都算换了一份新列表，卡片因此重新挂载。
 func (a *App) resetCards() {
 	a.CardsIn = false
 	a.EnterSeq++
 }
 
-// bodyPadX 是正文左右 padding：baseline 常态 14，1240 以下收到 10。
+// bodyPadX 是正文左右 padding：常态 14，1240 以下收到 10。
 func (a *App) bodyPadX(c *ui.Context) float32 {
 	w, _ := c.Size()
 	if w <= 1240 {
@@ -682,7 +666,7 @@ func (a *App) bodyPadX(c *ui.Context) float32 {
 
 // errorBar 是加载失败的提示条。
 //
-// baseline：padding 10 14、圆角 12、background color-mix(danger 8%, bg-secondary)，
+// 尺寸与配色：padding 10 14、圆角 12、background color-mix(danger 8%, bg-secondary)，
 // 右侧一枚 30 高的重试按钮。
 func (a *App) errorBar(c *ui.Context) {
 	ui.Row(c).Padding(10, 14, 10, 14).Gap(12).Radius(theme.RadiusMD).
@@ -749,7 +733,7 @@ func (a *App) filterStreamers(platform, category, sub string) []Streamer {
 
 // grid 铺卡片网格。
 //
-// baseline 是 `grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))`：
+// 网格是 `grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))`：
 // 列数随可用宽度自动增减、每列等宽、内容区始终满宽。
 // 这里先按同一条公式自己算出列数与卡片宽度，再用 Grid 的固定列数落下——
 // GridView 内部还叠了一层自己的取整，会少一列、右侧留白。
@@ -759,8 +743,8 @@ func (a *App) filterStreamers(platform, category, sub string) []Streamer {
 // 行高由 List 自己测量（我们的卡片高度是算出来的固定值），不用手动喂。
 func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func()) {
 	w, _ := c.Size()
-	// appBody 的左右 padding，再减掉 baseline 里常驻滚动条占的 10px：
-	// 列宽按 baseline 的可用宽度算，滚动条也不会压在最后一列上。
+	// 正文的左右 padding，再减掉常驻滚动条占的 10px：
+	// 列宽按可用宽度算，滚动条也不会压在最后一列上。
 	avail := w - 2*a.bodyPadX(c) - theme.ScrollbarW
 	if avail < theme.CardMinWidth {
 		avail = theme.CardMinWidth
@@ -795,7 +779,7 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 	rows := (len(list) + cols - 1) / cols
 
 	// 行数 + 1：最后一行是页脚（「正在加载更多…」/「继续下滑加载更多」/「已显示最近 N 条」），
-	// 它跟着内容一起滚，位置和 baseline 一样在列表末尾。
+	// 它跟着内容一起滚，位置在列表末尾。
 	// 触底补页交给 EndReached：它在用户真的滚到末尾附近时调用一次，
 	// 不像自己读 Visible 那样，换数据源的头一帧就被旧的可见范围触发。
 	if onMore != nil && a.LiveMode {
@@ -812,7 +796,7 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 				i := i
 				st := list[i]
 				in := enter
-				// baseline 只给前 6 张错峰；这里也只让首屏可见的卡参与入场，
+				// 错峰只给前 6 张；这里也只让首屏可见的卡参与入场，
 				// 一屏之外的行 List 根本不会构建。
 				if i >= 12 {
 					in = EnterAnim{}
@@ -854,7 +838,7 @@ func (a *App) skeletonGrid(c *ui.Context, avail float32, cols int, cardW float32
 		for i := 0; i < 12; i++ {
 			sk := ui.Column(c).Width(cardW).Radius(theme.RadiusMD).
 				Background(theme.BgSecondary)
-			// baseline 的 skeleton-pulse：1.6s ease-in-out 循环，opacity 0.55 ↔ 1；
+			// 骨架的脉冲：1.6s ease-in-out 循环，opacity 0.55 ↔ 1；
 			// reduced motion 下 animation: none、固定 0.8。
 			if c.Preferences().ReduceMotion {
 				sk.Opacity(0.8)
@@ -934,7 +918,7 @@ func (a *App) emptyGrid(c *ui.Context) {
 func (a *App) gridFooter(c *ui.Context, avail float32, n int) {
 	ui.Row(c).Width(avail).Height(52).Padding(4, 0, 18, 0).Center().
 		Children(func() {
-			// baseline 的三态：加载中 / 还有下一页 / 到底了
+			// 页脚的三态：加载中 / 还有下一页 / 到底了
 			switch {
 			case a.ListLoadingMore:
 				ui.Row(c).Gap(8).Center().Children(func() {
@@ -956,7 +940,7 @@ func (a *App) gridFooter(c *ui.Context, avail float32, n int) {
 
 // Navbar 是自绘标题栏。
 //
-// baseline：整条高 64、左右 padding 14、gap 14、背景就是 bg-primary；
+// 顶栏整条高 64、左右 padding 14、gap 14、背景就是 bg-primary；
 // 左侧平台 tablist，右侧一组 actions（gap 10）：
 // 搜索按钮 → 工具组 → 1px 分隔线 → 窗口按钮。
 // 工具组把「同步 / 配色」两颗 38×38 的图标按钮包进一层 fill-quaternary 的胶囊里
@@ -964,7 +948,7 @@ func (a *App) gridFooter(c *ui.Context, avail float32, n int) {
 func (a *App) Navbar(c *ui.Context) {
 	pad, gap := float32(14), float32(14)
 	if a.narrow(c) {
-		// baseline ≤1240：gap 8、左右 padding 10
+		// ≤1240：gap 8、左右 padding 10
 		pad, gap = 10, 8
 	}
 	bar := ui.Row(c).Height(theme.NavbarHeight).Padding(0, pad, 0, pad).Gap(gap).
@@ -978,7 +962,7 @@ func (a *App) Navbar(c *ui.Context) {
 		ui.Box(c).Grow(1) // 中间弹性空白
 
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			// baseline 的 toolGroup：搜索、同步、配色三颗按钮在同一个胶囊里；
+			// 工具组：搜索、同步、配色三颗按钮在同一个胶囊里；
 			// 值得搜索的只有某个平台的直播列表：订阅页、全部关注页都没有平台上下文，
 			// 全部关注页自带页内搜索，那里不摆搜索按钮。
 			ui.Row(c).Gap(4).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
@@ -1014,9 +998,6 @@ func (a *App) Navbar(c *ui.Context) {
 	})
 }
 
-// toast 弹一条右下角提示（baseline 的默认色调是 info），3.2 秒后由后台清掉。
-func (a *App) toast(msg string) { a.toastTone(msg, toastInfo) }
-
 // toastTone 是带色调的 toast：success / info / error 决定图标和图标颜色。
 func (a *App) toastTone(msg, tone string) {
 	a.ToastText = msg
@@ -1036,14 +1017,14 @@ func (a *App) toastTone(msg, tone string) {
 	})
 }
 
-// toast 的三种色调，取值与 baseline 的 ToastTone 一致。
+// toast 的三种色调。
 const (
 	toastSuccess = "success"
 	toastInfo    = "info"
 	toastError   = "error"
 )
 
-// toastIcon 是每种色调左侧的那枚图标，对应 baseline 的 TONE_ICON。
+// toastIcon 是每种色调左侧的那枚图标。
 func toastIcon(tone string) *ui.SVG {
 	switch tone {
 	case toastSuccess:
@@ -1054,8 +1035,7 @@ func toastIcon(tone string) *ui.SVG {
 	return iconAlert
 }
 
-// toastIconColor 是图标颜色：success / danger / text-tertiary，
-// 和 baseline ToastProvider.module.css 里 .icon 的三条规则一致。
+// toastIconColor 是图标颜色：success / danger / text-tertiary。
 func toastIconColor(tone string) ui.Color {
 	switch tone {
 	case toastSuccess:
@@ -1068,7 +1048,7 @@ func toastIconColor(tone string) ui.Color {
 
 // toastView 是右下角那条提示。
 //
-// baseline ToastProvider：right/bottom 18、min-height 38、padding 7 8 7 12、
+// 尺寸与位置：right/bottom 18、min-height 38、padding 7 8 7 12、
 // 圆角 12、bg-elevated + 描边 + popover 阴影；左侧 15px 图标，间距 9；
 // 入场是 opacity 0→1、translateY 8→0，220ms ease-out（reduced motion 下不播）。
 func (a *App) toastView(c *ui.Context) {
@@ -1100,7 +1080,7 @@ func (a *App) toastView(c *ui.Context) {
 	})
 }
 
-// narrow 报告窗口是否落在 baseline 的 ≤1240 断点里。
+// narrow 报告窗口是否落在 ≤1240 断点里。
 func (a *App) narrow(c *ui.Context) bool {
 	w, _ := c.Size()
 	return w <= 1240
@@ -1225,7 +1205,7 @@ func (a *App) commitPlatformSwitch(id string) {
 	// 但要保住新平台已经预取好的首屏封面，否则用户还是要等一遍解码。
 	// 原始字节（L2）全部留着——切回去时能直接解码，不用重新下载。
 	media.Default.ReleaseTexturesExcept(a.feedURLs(id))
-	// baseline：切平台清空搜索，上一个平台的结果不能留在浮层里。
+	// 切平台清空搜索，上一个平台的结果不能留在浮层里。
 	// 代次 +1 让还在路上的那次请求作废。
 	a.SearchQuery, a.SearchResults, a.SearchErr, a.SearchLoading = "", nil, "", false
 	a.SearchHit = 0
@@ -1236,12 +1216,12 @@ func (a *App) commitPlatformSwitch(id string) {
 
 // platformTabs 是顶栏左侧的 tablist：关注 + 订阅 + 四个平台。
 //
-// baseline 用一条**绝对定位的 accent 滑块**在 tab 之间滑过去（220ms），
+// 选中态靠一条**绝对定位的 accent 滑块**在 tab 之间滑过去（220ms），
 // 而不是给选中的 tab 换底色——切换时是「光块移动」，不是「色块跳变」。
 // tab 等宽（每列至少 64px，中文两字 + 28 padding 正好 64），
 // 所以滑块位置直接按序号乘宽度算，不用量 DOM。
 func (a *App) platformTabs(c *ui.Context) {
-	// 顺序读 a.PlatformOrder：baseline 的 tab 顺序可拖拽重排并持久化。
+	// 顺序读 a.PlatformOrder：tab 顺序可拖拽重排并持久化。
 	// 前两格固定：「全部关注」和「订阅」——它们不是平台，但和平台同级。
 	type tabItem struct{ id, label string }
 	tabs := make([]tabItem, 0, len(a.tabIDs()))
@@ -1256,7 +1236,7 @@ func (a *App) platformTabs(c *ui.Context) {
 	tabW := float32(64)
 	tabH := float32(34)
 	if a.narrow(c) {
-		// baseline ≤1240：列宽 56、tab 高 36
+		// ≤1240：列宽 56、tab 高 36
 		tabW, tabH = 56, 36
 	}
 
@@ -1273,7 +1253,7 @@ func (a *App) platformTabs(c *ui.Context) {
 	track := ui.Row(c).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
 		Background(theme.FillQuaternary)
 	if !theme.Current().Dark {
-		// baseline 的 [data-theme="light"] .track：白底 + 1px 描边
+		// 浅色下的轨道：白底 + 1px 描边
 		track.Background(ui.Hex("#ffffff")).Border(1, theme.Border)
 	}
 
@@ -1302,7 +1282,7 @@ func (a *App) platformTabs(c *ui.Context) {
 					if tab.Clicked() {
 						a.switchTab(t.id)
 					}
-					// baseline：平台 tab 可拖拽重排（关注与订阅不参与）。
+					// 平台 tab 可拖拽重排（关注与订阅不参与）。
 					// 拖起来的那枚 dim 到 0.35，经过的目标描一圈 accent 65% 的内阴影。
 					if t.id != "subscribe" && t.id != "follows" {
 						tab.Drag(t.id)
@@ -1376,7 +1356,7 @@ func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string, on func()) {
 
 // windowControls 是右上角的最小化 / 最大化 / 关闭。
 //
-// baseline 是实色胶囊组：外层 3px padding + fill-quaternary 底 + 1px 描边，
+// 一组实色胶囊：外层 3px padding + fill-quaternary 底 + 1px 描边，
 // 里面三枚 40×34 的圆角按钮，图标 16px、1.8 描边，关闭键 hover 变红。
 func (a *App) windowControls(c *ui.Context) {
 	ui.Row(c).Gap(2).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
@@ -1404,7 +1384,7 @@ func (a *App) windowControls(c *ui.Context) {
 func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on func()) {
 	w, h := float32(40), float32(34)
 	if a.narrow(c) {
-		// baseline ≤1240：34×32
+		// ≤1240：34×32
 		w, h = 34, 32
 	}
 	btn := ui.Box(c).Size(w, h).Radius(theme.RadiusFull).

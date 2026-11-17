@@ -1,6 +1,8 @@
 package live
 
 import (
+	"os"
+	"slices"
 	"testing"
 )
 
@@ -93,12 +95,59 @@ func TestVisibleName(t *testing.T) {
 		"我是一颗小虎牙":    "我是一颗小虎牙",
 		"  spaced  ": "spaced",
 		"￴ ￴":        "", // 抖音打码昵称：全是不可见特殊字符
-		"​":          "",
+		"​":          "", //nolint:staticcheck // 故意的：这条测的就是零宽空格本身
 		"":           "",
 	}
 	for in, want := range cases {
 		if got := visibleName(in); got != want {
 			t.Fatalf("visibleName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestWebLoginAppliesSession 登录、退出、启动恢复三条路都要把会话交给数据层。
+//
+// 补这条的原因：WebLogin 曾经只写会话文件，从不回填 provider 的 authCookie，
+// 于是抖音和虎牙登录后所有请求仍按游客走——setAuthCookie 成了没人调用的死
+// 代码，是 golangci-lint 的 unused 把它挖出来的。
+func TestWebLoginAppliesSession(t *testing.T) {
+	// 用一个不存在的平台名：会话文件落在 %APPDATA%\alive\test-wlogin.json，
+	// 不碰真实平台的登录态，跑完删掉。
+	const p Platform = "test-wlogin"
+	t.Cleanup(func() { removeAuthSession(p) })
+
+	spec := WebLoginSpec{
+		URL:    "about:blank",
+		Domain: "test.invalid",
+		Detect: func(fields map[string]string) (BrowserUser, bool) {
+			if fields["sid"] == "" {
+				return BrowserUser{}, false
+			}
+			return BrowserUser{UID: "42", Name: "测试用户"}, true
+		},
+	}
+
+	var got []string
+	w := newWebLogin(p, spec, nil, nil)
+	w.SetSessionHandler(func(cookies string) { got = append(got, cookies) })
+
+	// 1. 登录成功：会话要交出去
+	if err := w.Finish([]BrowserCookie{{Name: "sid", Value: "abc"}}); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	// 2. 退出：交空串，之后的请求才能退回游客态
+	w.Logout()
+
+	// 3. 启动恢复：新实例从会话文件读回来，同样要交出去
+	if err := os.WriteFile(authSessionPath(p), []byte(`{"cookies":"sid=restored"}`), 0o600); err != nil {
+		t.Fatalf("准备会话文件: %v", err)
+	}
+	w2 := newWebLogin(p, spec, nil, nil)
+	w2.SetSessionHandler(func(cookies string) { got = append(got, cookies) })
+	w2.Restore()
+
+	want := []string{"sid=abc", "", "sid=restored"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("回填 = %q，期望 %q", got, want)
 	}
 }

@@ -46,7 +46,7 @@ func TestGridBuildsOnlyVisibleCards(t *testing.T) {
 	}
 }
 
-// 页脚是列表的最后一行，三态文案要跟着分页状态走（baseline 的 footer 三态）。
+// 页脚是列表的最后一行，三态文案要跟着分页状态走。
 func TestGridFooterStates(t *testing.T) {
 	cases := []struct {
 		name    string

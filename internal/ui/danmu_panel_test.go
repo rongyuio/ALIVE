@@ -9,7 +9,7 @@ import (
 	"alive/internal/live"
 )
 
-// 右侧弹幕面板按 baseline 的默认宽度 196 展开，且必须和舞台分列。
+// 右侧弹幕面板按默认宽度 196 展开，且必须和舞台分列。
 func TestDanmuPanelWidth(t *testing.T) {
 	app := NewMockApp()
 	app.Player = app.Streamers[0]

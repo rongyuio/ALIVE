@@ -1,4 +1,4 @@
-// Package theme 把 DTV baseline 的设计令牌（src/styles/theme.css）原样搬到 Go。
+// Package theme 是全部视觉令牌的唯一来源：颜色、字号、圆角、间距、动效。
 //
 // 视觉语言一句话：平涂表面 + 色阶分层，只给真正需要边界的浮层加 1px 描边；
 // 石墨黑底 + 暖白字 + 信号青柠（chartreuse），青柠只出现在主操作、激活态和 LIVE。
@@ -74,7 +74,7 @@ var (
 	// 切换配色时由 Apply 按配色的明暗换成合适的值。
 	TopLight = ui.RGBA(255, 255, 255, 0.04)
 
-	// 阴影令牌：baseline 的 --shadow-popover / --shadow-lg。
+	// 阴影令牌：--shadow-popover / --shadow-lg。
 	// 深色主题近乎纯黑；浅色主题是低透明度的蓝黑（daylight / paper 的值）。
 	// 由 Apply 按配色明暗切换——浅色主题套用深色阴影会压出一圈脏灰。
 	ShadowPopover = ui.RGBA(0, 0, 0, 0.80)
@@ -119,9 +119,9 @@ const (
 	GridGap      float32 = 16
 	CardMetaH    float32 = 60 // 封面下方的信息条高度
 
-	// ScrollbarW 是 baseline 的 `::-webkit-scrollbar { width: 10px }`。
+	// ScrollbarW 是 `::-webkit-scrollbar { width: 10px }`。
 	// 浏览器里滚动条常驻，占掉内容宽度；MyGo 的滚动条画在内容上不占位，
-	// 所以正文区域自己让出这条宽度，列宽才和 baseline 算出来的一致。
+	// 所以正文区域自己让出这条宽度，列宽才准。
 	ScrollbarW float32 = 10
 )
 
@@ -139,7 +139,7 @@ const (
 
 // ---------------------------------------------------------------- 主题
 
-// EaseOut 是 baseline 的 `--ease-out`：cubic-bezier(0.22, 1, 0.36, 1)。
+// EaseOut 是 `--ease-out`：cubic-bezier(0.22, 1, 0.36, 1)。
 //
 // 起步快、收尾缓；MyGo 的 spring 尾段拖得长，观感明显更慢，
 // 所以所有 CSS 里写了 `--dur-N var(--ease-out)` 的过渡都用它。
@@ -147,7 +147,7 @@ func EaseOut(d time.Duration) ui.Animation {
 	return ui.Animation{Duration: d, Ease: ui.CubicBezier(0.22, 1, 0.36, 1)}
 }
 
-// EaseInOut 是 baseline 的 `--ease-in-out`：cubic-bezier(0.4, 0, 0.2, 1)。
+// EaseInOut 是 `--ease-in-out`：cubic-bezier(0.4, 0, 0.2, 1)。
 func EaseInOut(d time.Duration) ui.Animation {
 	return ui.Animation{Duration: d, Ease: ui.CubicBezier(0.4, 0, 0.2, 1)}
 }
@@ -170,7 +170,7 @@ func SlideFar() ui.Animation {
 	return ui.Animation{Spring: ui.SpringOptions{Stiffness: 260, Damping: 32, Mass: 1}}
 }
 
-// Theme 按当前配色返回控件主题：窗口背景、正文色与控件度量都对齐 baseline。
+// Theme 按当前配色返回控件主题：窗口背景、正文色与控件度量。
 func Theme() *ui.Theme {
 	t := ui.DarkTheme()
 	if current != nil && !current.Dark {
@@ -187,9 +187,9 @@ func Theme() *ui.Theme {
 	t.AccentPressed = AccentActive
 	t.AccentText = AccentText
 	t.Radius = RadiusMD
-	t.Spacing = 4 // baseline 的 4px 基线
+	t.Spacing = 4 // 4px 基线
 	t.FontSize = TextMD
-	// baseline 的 `::-webkit-scrollbar`（base.css）：轨道 10 宽、底色透明，
+	// `::-webkit-scrollbar`（base.css）：轨道 10 宽、底色透明，
 	// 滑块靠 3.5 的透明边框挤成视觉 3px、圆角胶囊，平时是 text-primary 18%，
 	// 指针压上去（或拖动）时变成 accent 实色。
 	t.ScrollbarStyle = ui.ScrollbarStyle{

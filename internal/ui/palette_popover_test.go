@@ -8,8 +8,7 @@ import (
 	"alive/internal/theme"
 )
 
-// 配色面板必须贴着配色按钮的右边缘展开：
-// baseline 是 `right: 0`（按钮 wrapper 的绝对定位子元素），宽度 352。
+// 配色面板必须贴着配色按钮的右边缘展开，宽度 352（按钮 wrapper 的绝对定位子元素）。
 func TestPalettePopoverAnchorsToButton(t *testing.T) {
 	app := NewMockApp()
 	app.PaletteOpen = true

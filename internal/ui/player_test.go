@@ -9,7 +9,7 @@ import (
 	"alive/internal/live"
 )
 
-// 控制条的三档尺寸必须和 PlayerControls.module.css 的两个媒体查询对齐：
+// 控制条的三档尺寸：
 // 常态 12/10/96，≤1100 间距收 8、滑条 90，≤980 滑条 72 且百分比让位。
 // 这几档是纯数值，用 tester 直接读，不依赖真实窗口。
 func TestControlMetrics(t *testing.T) {
@@ -81,7 +81,7 @@ func TestHoverOpensDropdown(t *testing.T) {
 	}
 }
 
-// 双击画面切窗口全屏（baseline 的 onStageDoubleClick）：
+// 双击画面切窗口全屏：
 // 画面空白处生效，控制条上的按钮不参与——连点一颗按钮不该把画面顶成全屏。
 func TestDoubleClickStageTogglesWindowFullscreen(t *testing.T) {
 	app := NewMockApp()
@@ -152,7 +152,7 @@ func TestFullscreenHidesIsland(t *testing.T) {
 	}
 }
 
-// 悬浮 chrome 的自动隐藏（baseline 的 chromeHidden）：指针静止 2.8 秒后
+// 悬浮 chrome 的自动隐藏：指针静止 2.8 秒后
 // 淡出，一动就回来；暂停时一律常显。
 func TestChromeAutoHidesWhenIdle(t *testing.T) {
 	app := NewMockApp()

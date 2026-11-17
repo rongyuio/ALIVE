@@ -6,7 +6,7 @@ import (
 	"alive/internal/live"
 )
 
-// 刷新结束的提示文案要和 baseline 的 handleRefresh 一致：
+// 刷新结束的提示文案：
 // 全成功报数、部分失败报两边、全军覆没报失败。色调也要对上——它决定图标。
 func TestRefreshSummary(t *testing.T) {
 	cases := []struct {
@@ -27,7 +27,7 @@ func TestRefreshSummary(t *testing.T) {
 	}
 }
 
-// 关注面板的排序要和 baseline FollowsList 一致：
+// 关注面板的排序：
 // 在播优先 → 同状态内按顶栏平台顺序 → 组内保持原关注顺序。
 func TestSortFollowStreamers(t *testing.T) {
 	order := []string{"douyu", "huya", "douyin", "bilibili"}
@@ -93,14 +93,14 @@ func TestApplyStreamInfo(t *testing.T) {
 	if f.Live {
 		t.Errorf("取流说没在播，Live 应为 false")
 	}
-	// baseline 的 fallback 分支同样不写 viewers，封面来源也不在取流接口里
+	// fallback 分支同样不写 viewers，封面来源也不在取流接口里
 	if f.CoverURL != "old-cover" || f.Viewers != 1234 {
 		t.Errorf("取流不该覆盖封面 (%q) 与人气 (%d)", f.CoverURL, f.Viewers)
 	}
 }
 
 // 房间信息里上游留空的字段要保留原值，人气为 0 时同样不覆盖——
-// 0 在关注列表里既可能是真实 0 也可能是上游没给，按 baseline 的 `||` 语义留着。
+// 0 在关注列表里既可能是真实 0 也可能是上游没给，按 `||` 语义留着。
 func TestApplyRoomInfo(t *testing.T) {
 	f := FollowRecord{
 		Name: "旧名", Title: "旧标题", Category: "旧分区",

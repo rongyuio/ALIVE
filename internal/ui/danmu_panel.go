@@ -11,9 +11,8 @@ import (
 	"alive/internal/theme"
 )
 
-// 右侧弹幕列表的尺寸取自 baseline 的 DanmuPanel.module.css：
-// 默认 196 宽（可拖 168–320），列表 padding 12 10 16、行 gap 3、
-// 每条 6×9 padding、圆角 8、13px / line-height 1.5。
+// 右侧弹幕列表的尺寸：默认 196 宽（可拖 168–320），列表 padding 12 10 16、
+// 行 gap 3、每条 6×9 padding、圆角 8、13px / line-height 1.5。
 const (
 	danmuPanelMinW     float32 = 168
 	danmuPanelMaxW     float32 = 320
@@ -38,9 +37,9 @@ func (a *App) panelWidth() float32 {
 
 // danmuPanel 是播放页右侧的弹幕列表。
 //
-// 收起时它仍然占一个零宽的位置：baseline 的 .panelSlot 就是这样——面板
-// 本身不渲染，但边缘把手始终在，鼠标移到右边缘才浮出小舌。之前我把把手
-// 写在面板内部，一收起就整个消失，再没有入口能把它叫回来。
+// 收起时它仍然占一个零宽的位置——面板本身不渲染，但边缘把手始终在，
+// 鼠标移到右边缘才浮出小舌。之前我把把手写在面板内部，一收起就整个
+// 消失，再没有入口能把它叫回来。
 func (a *App) danmuPanel(c *ui.Context) {
 	open := a.DanmuPanelOn
 	w := a.panelWidth()
@@ -66,7 +65,7 @@ func (a *App) danmuPanel(c *ui.Context) {
 	})
 }
 
-// danmuResizer 是面板左沿 5px 的可拉伸热区（baseline 的 .resizer）。
+// danmuResizer 是面板左沿 5px 的可拉伸热区。
 //
 // 两处坑：
 //
@@ -124,7 +123,7 @@ func (a *App) danmuResizer(c *ui.Context) {
 
 // danmuPanelHandle 是面板左沿那个收起 / 展开小舌。
 //
-// baseline 的 .panelHandle：20×168 的透明热区垂直居中，里面 20×64 的
+// 面板左沿的把手：20×168 的透明热区垂直居中，里面 20×64 的
 // 强调色标签，border-radius 只有靠面板外侧的两个角是圆的，图标 14px /
 // 2.8 描边——展开时指向面板里，收起时指回来。
 //
@@ -167,7 +166,7 @@ func (a *App) danmuPanelList(c *ui.Context) {
 	// 跟随底部；用户上滑后累计新弹幕，浮出「N 条新弹幕」胶囊。
 	//
 	// 面板读的是 DanmuLog（收到就留的历史），不是 Danmu（画面上正在飞的那批）——
-	// baseline 里 messages 和 Overlay 本来就是两份数据，后者飞完就没了。
+	// messages 和 Overlay 本来就是两份数据，后者飞完就没了。
 	a.panelStick = a.PanelScroll.Y >= a.PanelScroll.MaxY-32
 	if n := len(a.DanmuLog) - a.panelSeen; n != 0 {
 		if n > 0 {
@@ -208,7 +207,7 @@ func (a *App) danmuPanelList(c *ui.Context) {
 			a.panelPending = 0
 		}
 		pill.Children(func() {
-			// baseline 的胶囊前面有一枚 ArrowDown（12px / 2.6）
+			// 胶囊前面有一枚 ArrowDown（12px / 2.6）
 			ui.Icon(c, iconArrowDown).FontSize(12).TextColor(theme.AccentText)
 			ui.Text(c, fmt.Sprintf("%d 条新弹幕", a.panelPending)).
 				FontSize(theme.TextXS).FontWeight(600).TextColor(theme.AccentText)
@@ -218,12 +217,12 @@ func (a *App) danmuPanelList(c *ui.Context) {
 
 // danmuPanelItem 是面板里的一条弹幕。
 //
-// baseline 的 DanmuRow 分两种：
-//   - chat：两行，上面 Lv 胶囊 + 哈希色昵称，下面正文；
+// 弹幕行分两种：
+//   - chat：两行，上面 Lv 胶囊 + 昵称，下面正文；
 //   - 其它（礼物 / 系统）：一行，`·` + 正文，11px、text-tertiary，上下 padding 压到 4。
 //
 // 正文的 line-height 是 1.5（继承自 .item），Meta 行也一样——不写的话
-// MyGo 的默认行高会把每条弹幕撑得比 baseline 高出一截。
+// MyGo 的默认行高会把每条弹幕撑得高出一截。
 func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 	if d.Kind == danmuSuperChat {
 		a.danmuPanelSuperChat(c, d)
@@ -274,12 +273,16 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 
 		// 正文里的 [表情名] 换成图。没有可渲染的表情时还是普通文本，
 		// 不为了一个 U+FFFC 走富文本。
+		//
+		// 正文颜色跟「彩色弹幕」开关走：开了用平台下发的原生字色（白映射回
+		// 主题正文色，浅色主题下才是白字压白底），关了统一用主题正文色。
+		fg := danmuColor(d, a.DanmuColorful, theme.TextPrimary)
 		if rs := buildDanmuSpans(d.Platform, d.Text, d.Emotes, theme.TextSM); rs.hasEmote {
-			rs.richText(c, theme.TextSM, theme.TextPrimary).LineHeight(1.5)
+			rs.richText(c, theme.TextSM, fg).LineHeight(1.5)
 			return
 		}
 		ui.Text(c, d.Text).FontSize(theme.TextSM).LineHeight(1.5).
-			TextColor(theme.TextPrimary)
+			TextColor(fg)
 	})
 }
 
@@ -290,30 +293,40 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 //
 // bg 是平台徽章底色，零值表示平台没有对应配色规则，用中性胶囊；
 // bgEnd 非零且与 bg 不同时按平台的 45° 渐变画（B 站 v2 双色牌子）。
+//
+// 字色不按底色深浅变：有平台底色就是纯白，四个平台网页端都这么画。
+// 之前按亮度给浅底白字加过一圈 1 DIP、黑 45% 的描边，在 11px 中文上
+// 直接糊成黑框，浅橙 / 浅金牌子的字看着像被圈了一圈。
 func (a *App) danmuChip(c *ui.Context, text string, bg, bgEnd ui.Color) {
 	chip := ui.Box(c).Padding(1, 5, 1, 5).Radius(theme.RadiusFull).
 		Shrink(0).MaxWidth(96)
-	fg := theme.TextSecondary
-	var stroke float32
+	fg := chipTextColor(bg)
 	if bg.A != 0 {
 		if bgEnd.A != 0 && bgEnd != bg {
 			chip.Gradient(bg, bgEnd, 45)
 		} else {
 			chip.Background(bg)
 		}
-		fg, stroke = chipTextOn(bg)
 	} else {
 		chip.Background(theme.FillTertiary)
 	}
 	chip.Children(func() {
-		t := ui.Text(c, text).FontSize(theme.Text2XS).FontWeight(600).
+		ui.Text(c, text).FontSize(theme.Text2XS).FontWeight(600).
 			SingleLine().LineHeight(1.5).TextColor(fg).
 			FontFeatures("tnum")
-		if stroke > 0 {
-			// 浅底牌子：白字加一圈半透明暗描边，11px 下也能压住浅金/浅蓝底。
-			t.TextStroke(stroke, ui.RGBA(0, 0, 0, 0.45))
-		}
 	})
+}
+
+// chipTextColor 是胶囊上的字色。
+//
+// 有平台底色：纯白，不描边、不按亮度换深字——底色是平台定的，网页端
+// 也是白字直铺，我们自己加描边只会在 11px 中文笔画间糊出黑框。
+// 没有平台配色（中性胶囊）时退一档灰，不抢平台上真牌子的位置。
+func chipTextColor(bg ui.Color) ui.Color {
+	if bg.A == 0 {
+		return theme.TextSecondary
+	}
+	return ui.Hex("#ffffff")
 }
 
 // danmuPanelSuperChat 是醒目留言那一行。
@@ -341,9 +354,12 @@ func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 			badge := ui.Box(c).Padding(1, 6, 1, 6).Radius(theme.RadiusFull).
 				Background(tint).Shrink(0)
 			badge.Children(func() {
+				// 金额徽章固定白字：四个平台的 SC 协议都不下发字色（B 站只给
+				// 背景色系、斗鱼只给 danmucr 头色、虎牙只给背景色），网页端也是一
+				// 律白字。按亮度分深浅会让同一条列表里 ¥10 白字、¥100 黑字。
 				ui.Text(c, fmt.Sprintf("¥%d", d.Price)).
 					FontSize(theme.Text2XS).FontWeight(700).
-					TextColor(scBadgeText(tint)).FontFeatures("tnum")
+					TextColor(ui.Hex("#ffffff")).FontFeatures("tnum")
 			})
 			ui.Box(c).Grow(1).Children(func() {
 				ui.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).
@@ -354,19 +370,6 @@ func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 		ui.Text(c, d.Text).FontSize(theme.TextSM).LineHeight(1.5).
 			TextColor(theme.TextPrimary)
 	})
-}
-
-// scBadgeText 是金额徽章上的文字颜色。
-//
-// 三个平台都会给 SC 下发颜色：B 站和虎牙给的是浅底（B 站营销色、虎牙
-// 留言板各档的粉彩），用深字；斗鱼高能弹幕的头部色是饱和的蓝/红/黄，
-// 白字才看得清。按亮度分流，不按平台分支。
-func scBadgeText(bg ui.Color) ui.Color {
-	lum := (0.299*float32(bg.R) + 0.587*float32(bg.G) + 0.114*float32(bg.B)) / 255
-	if lum > 0.62 {
-		return ui.Hex("#0b0c08")
-	}
-	return ui.Hex("#ffffff")
 }
 
 func abs32(v float32) float32 {

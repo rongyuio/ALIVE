@@ -11,12 +11,12 @@ import (
 	"alive/internal/theme"
 )
 
-// 分区栏的全部尺寸都取自 baseline 的 CategoryBar.module.css，不要改写成整十数。
+// 分区栏的全部尺寸都在这里定，不要改写成整十数。
 const (
 	groupTabH    float32 = 34
 	groupTabPadH float32 = 14
 	groupGap     float32 = 4
-	groupFont    float32 = 14 // .groupTab font-size: 14px（不在字号阶梯上，是 baseline 的原值）
+	groupFont    float32 = 14 // .groupTab font-size: 14px（不在字号阶梯上，就取 14）
 
 	chipH    float32 = 32
 	chipPadH float32 = 14
@@ -98,7 +98,7 @@ func (a *App) selectGroup(i int) {
 		return
 	}
 	a.navFlip(&a.navSeq, a.GroupIndex, i)
-	// baseline：切一级分区时自动选中它的第一个二级分区，三级回到「全部」
+	// 切一级分区时自动选中它的第一个二级分区，三级回到「全部」
 	a.GroupIndex = i
 	a.CategoryIndex = 0
 	a.SubCatIndex = -1
@@ -180,7 +180,7 @@ func (a *App) toggleSubscribe() {
 
 // categoryBar 是分区栏：一级文字 tab + 二级 chip + 三级 chip（仅斗鱼）。
 //
-// baseline 的一整块面板是 radius 16 + 1px 描边 + shadow-low，
+// 一整块面板是 radius 16 + 1px 描边 + shadow-low，
 // 三行之间 gap 10，行内一律横滑、永不换行。
 func (a *App) categoryBar(c *ui.Context) {
 	if len(a.Groups) == 0 {
@@ -212,7 +212,7 @@ func (a *App) primaryRow(c *ui.Context) {
 	box := measureRow(c, names, groupFont, labelWeight, groupTabPadH, groupGap, 0)
 
 	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-		// baseline 的这两行是 overflow-x:auto + 隐藏滚动条，只是能横滑
+		// 这一行是 overflow-x:auto + 隐藏滚动条，只是能横滑
 		ui.ScrollHorizontal(c).Scrollbars(false).Grow(1).Padding(2).Children(func() {
 			ui.Row(c).Gap(groupGap).Children(func() {
 				slider(c, "group-slide", box, a.GroupIndex, groupTabH, theme.RadiusMD, theme.AccentSoft)
@@ -265,14 +265,14 @@ func (a *App) groupTab(c *ui.Context, i int, name string, w float32) {
 
 // categorySearch 是分区搜索：胶囊输入框 + 结果浮层。
 //
-// baseline 常态宽 176，聚焦或有输入时 240ms 过渡到 220；边框在聚焦时变 accent-ink。
+// 搜索框常态宽 176，聚焦或有输入时 240ms 过渡到 220；边框在聚焦时变 accent-ink。
 func (a *App) categorySearch(c *ui.Context) {
 	field := ui.Row(c).Height(catSearchH).Padding(0, 8, 0, 12).Gap(7).
 		Radius(theme.RadiusFull).Background(theme.FillQuaternary).
 		Center().Cursor(ui.CursorText).Label("分区搜索框")
 
-	// baseline：输入框一拿到焦点就展开到 220，不等用户开始打字
-	//（CategoryBar 的 data-expanded = searchOpen || query !== ""）。
+	// 输入框一拿到焦点就展开到 220，不等用户开始打字
+	//（展开条件：搜索已打开，或者输入框里已经有内容）。
 	if field.FocusWithin() {
 		a.CategorySearchOpen = true
 	}
@@ -307,7 +307,7 @@ func (a *App) categorySearch(c *ui.Context) {
 				clear.Background(theme.FillTertiary)
 			}
 			if clear.Clicked() {
-				// baseline：清空后焦点还给输入框，保持展开
+				// 清空后焦点还给输入框，保持展开
 				a.CategoryQuery = ""
 				a.CategorySearchHandle.Focus(c)
 			}
@@ -379,7 +379,7 @@ func (a *App) categorySearchKey(c *ui.Context, k ui.TextKey) bool {
 	return false
 }
 
-// categoryHits 把全部一级分组下的二级分区摊平，按 baseline 的规则匹配并排序：
+// categoryHits 把全部一级分组下的二级分区摊平，按这套规则匹配并排序：
 // 分区名命中排在前面，其次是分组名命中带出来的那些，最多 40 条。
 func (a *App) categoryHits() []categoryHit {
 	q := strings.TrimSpace(a.CategoryQuery)
@@ -583,7 +583,7 @@ func (a *App) moreButton(c *ui.Context, row ui.Element) {
 
 func caretAngle(open bool) float32 {
 	if open {
-		return 180 // baseline：展开时箭头旋转 180°
+		return 180 // 展开时箭头旋转 180°
 	}
 	return 0
 }

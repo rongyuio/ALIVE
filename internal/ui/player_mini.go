@@ -13,7 +13,7 @@ import (
 // ---------------------------------------------------------------- 小窗播放
 
 // 小窗的初始尺寸与最小尺寸：16:9，和画面比例一致，
-// 缩到 320 宽仍然能用（baseline 的浏览器 PiP 最小差不多也是这个量级）。
+// 缩到 320 宽仍然能用（浏览器 PiP 最小差不多也是这个量级）。
 const (
 	miniW    = 400
 	miniH    = 225
@@ -31,7 +31,7 @@ func (a *App) miniOpen() bool {
 
 // togglePip 开关小窗播放。
 //
-// baseline 走浏览器的 Picture-in-Picture（一个由系统托管的视频浮窗）；
+// 浏览器那边的 Picture-in-Picture 是由系统托管的视频浮窗；
 // 原生这边没有那套 API，就真开一个无边框置顶窗口来装画面。
 //
 // 开小窗时主窗口收起来——小窗接管画面，原来的界面留着只会碍事；
@@ -83,20 +83,37 @@ func (a *App) showMain() {
 // MiniPlayer 是小窗的根视图。
 //
 // 整个画面就是拖动区（我的窗口移动不了比什么都难受），
-// 控制条浮在底部、指针进来才淡入——baseline 的 PiP 也是鼠标移上去才出控件。
+// 控制条浮在底部、指针进来才淡入——系统的 PiP 也是鼠标移上去才出控件。
 func (a *App) MiniPlayer(c *ui.Context) {
-	s := a.current()
+	// 小窗存在的时候主窗口是收起来的，播放页不再构建——那边每帧做的
+	// syncPlayer / trackFirstFrame 全部停摆，得在这里接上：
+	//   syncPlayer    暂停键翻了 a.Playing 之后真的要推给播放器
+	//   trackFirstFrame  首帧预算、地址到期、断流看门狗
+	a.syncPlayer()
+	a.trackFirstFrame()
+
 	root := ui.Box(c).Fill().Background(ui.RGB(0, 0, 0)).Clip()
 	hovered := root.Hovered()
 
 	root.Children(func() {
-		// 画面：真流接上之前用封面顶着，和播放页同一张图、同一份缓存
-		w, _ := c.Size()
-		if bmp := media.Default.Bitmap(s.CoverURL, w); bmp != nil {
-			ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
-		} else {
-			// 封面还在路上：给小窗自己排一次重绘，否则它不会跟着缓存刷新
-			c.After(200 * time.Millisecond)
+		// 画面：和播放页同一条优先级——有播放器就画真流，首帧没到（或者
+		// 播放器还没建出来）再用封面顶着。
+		//
+		// Video 必须画：MyGo 的播放器只在「窗口可见、并且这一帧把它画出来」
+		// 时推进，mpv 的画面也是那时才被取走。之前这里只有封面，主窗口一藏，
+		// 全应用就没有任何一帧在显示这个播放器，画面自然永远是静止的封面。
+		p := a.media.player
+		if p != nil {
+			ui.Video(c, p).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
+		}
+		if p == nil || !p.Ready() {
+			w, _ := c.Size()
+			if bmp := media.Default.Bitmap(a.currentCover(), w); bmp != nil {
+				ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
+			} else {
+				// 封面还在路上：给小窗自己排一次重绘，否则它不会跟着缓存刷新
+				c.After(200 * time.Millisecond)
+			}
 		}
 
 		// 拖动区：铺满整个画面。控制条后画，所以仍然可点。
@@ -104,7 +121,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 
 		// 底部控制条：半透明长条，和主控制台同一套材质。
 		//
-		// baseline 的 PiP 由浏览器托管，里面一个自绘控件都没有；原生版的窗口
+		// 浏览器的 PiP 由系统托管，里面一个自绘控件都没有；原生版的窗口
 		// 没有系统给的关闭键，所以留最少的两个：播放/暂停、关闭。别的都不放，
 		// 小窗越小越不碍事。
 		bar := ui.Row(c).Absolute().Left(8).Right(8).Bottom(8).Height(36).
@@ -142,6 +159,16 @@ func (a *App) MiniPlayer(c *ui.Context) {
 			})
 		})
 	})
+
+	// 续帧：播放器停帧不会主动报错，只靠用户操作触发帧会漏掉故障。
+	// 节拍和播放页一致——等首帧时催得紧，出图之后降成健康检查。
+	if p := a.media.player; a.Playing && p != nil && p.Err() == nil {
+		if !a.media.firstFrame {
+			c.After(firstFramePollInterval)
+		} else {
+			c.After(playbackHealthPollInterval)
+		}
+	}
 }
 
 // miniBtn 是小窗控制条上的一枚图标按钮：无底色，hover 才亮。
@@ -184,7 +211,7 @@ func boolF(v bool) float32 {
 // ------------------------------------------------- 全屏下的窗口按钮（Win11 样式）
 
 // 10×10 的 1px 描边，和系统标题栏按钮同尺寸同线宽。
-// 这几个不是 lucide：baseline 手写了 SVG 去对齐 Win11 自己的 caption 按钮。
+// 这几个不是 lucide：都是手写 SVG 去对齐 Win11 自己的 caption 按钮。
 func captionSVG(inner string) *ui.SVG {
 	return ui.MustParseSVG([]byte(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" fill="none" ` +

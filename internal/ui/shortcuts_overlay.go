@@ -6,7 +6,7 @@ import (
 	"alive/internal/theme"
 )
 
-// shortcuts 是播放页的快捷键说明，文案与 baseline 的 SHORTCUTS 一致。
+// shortcuts 是播放页的快捷键说明。
 var shortcuts = []struct{ key, action string }{
 	{"Space / K", "播放 / 暂停"},
 	{"F", "进入 / 退出全屏"},

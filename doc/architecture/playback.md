@@ -203,8 +203,6 @@ mpv 把「连接被关」当成文件播完——`phase=ended`，画面停在最
 
 - 用 `id` 关联一轮起播，`ms` 相对本轮起点。
 - 首帧可用表示第一帧交给呈现端，不是精确的屏幕呈现时刻。
-- `ALIVE_MPV_LOG=1` 打开 mpv 的 error 级日志。正常播放时它什么也不说，出问题时是唯一
-  能说明「卡在哪一层」的东西。
 - 签名地址与本地令牌不进入诊断。
 
 ## 验收要求
@@ -222,7 +220,8 @@ mpv 把「连接被关」当成文件播完——`phase=ended`，画面停在最
 make check        # gofmt + build + vet + mygo vet + test
 ```
 
-跨平台矩阵与上游对照（都要连公网，默认跳过）：
+跨平台矩阵与上游对照（都要连公网，默认跳过）。这两个测试不进仓库——脚本在
+`.tmp/probes/playback/`，跑之前先拷回 `internal/playback/`：
 
 ```sh
 $env:ALIVE_MATRIX="1"; $env:ALIVE_MATRIX_PLATFORMS="bilibili,douyu,huya,douyin"

@@ -14,8 +14,8 @@ import (
 )
 
 // 虎牙适配层：分区来自随包静态表，列表与搜索走两个公开的匿名接口。
-// 协议细节参考 DTV baseline 的 platforms/huya（那边已在线跑过），这里只保留
-// 数据层要用的部分，并按本包的 cache / limiter / 错误分类重写。
+// 协议细节已在线验证过，这里只保留数据层要用的部分，
+// 并按本包的 cache / limiter / 错误分类重写。
 const (
 	huyaAreaTTL   = 30 * time.Minute
 	huyaListTTL   = 15 * time.Second
@@ -62,13 +62,16 @@ func newHuya() *huyaProvider {
 		areas:  newCache[[]CategoryGroup](),
 		rooms:  newCache[Page](),
 		search: newCache[[]Room](),
-		// 对齐 baseline 的关注刷新并发：6 并发，6 个 worker 不会互相卡住。
+		// 关注刷新并发 6：6 个 worker 不会互相卡住。
 		// 60ms 间隔只防同一瞬间齐发，风控冷却机制照常生效。
 		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
 	// 登录态由 webview 登录写入，所有请求自动带上。
 	p.api.cookies = p.authCookieString
 	p.login = newWebLogin(Huya, huyaWebLoginSpec(), huyaVerifyCookie, huyaCookieOrder)
+	// 登录态要回填给请求层：authCookie 是所有请求带 cookie 的唯一来源。
+	// 必须在 Restore 之前挂上，否则启动时恢复出来的会话进不去。
+	p.login.SetSessionHandler(p.setAuthCookie)
 	p.login.Restore()
 	return p
 }

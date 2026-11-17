@@ -13,7 +13,7 @@ import (
 	"alive/internal/theme"
 )
 
-// danmuPrefs 是弹幕设置的落盘形状，对应 baseline 的 dtv_danmu_preferences_v1。
+// danmuPrefs 是弹幕设置的落盘形状，对应 dtv_danmu_preferences_v1。
 type danmuPrefs struct {
 	Font     float32  `json:"font"`
 	DurMs    int64    `json:"durationMs"`
@@ -28,7 +28,7 @@ func colorBytes(c ui.Color) [4]uint8 { return [4]uint8{c.R, c.G, c.B, c.A} }
 
 // persisted 是落地到 %APPDATA%/alive/state.json 的 UI 状态。
 //
-// 对应 baseline 的一组 localStorage 键：主题（theme_preference）、平台顺序
+// 各字段对应一个 localStorage 键：主题（theme_preference）、平台顺序
 // （dtv_platform_tab_order_v1）、关注（followedStreamers）、订阅
 // （dtv_custom_categories_v1）、播放器清晰度 / 线路 / 音量。
 // 指针字段用来区分「没存过」和「存了一个空值」：用户可以把订阅和关注清空，
@@ -265,7 +265,7 @@ func isLegacyDemoSubs(subs []Subscription) bool {
 
 // movePlatform 把拖起来的平台放到目标 tab 的位置。
 //
-// baseline 在 dragenter 时就实时交换；这里在释放时一次落位，最终顺序一致：
+// 拖拽项的交换也可以边拖边换；这里在释放时一次落位，最终顺序一致：
 // 先摘掉拖拽项，再插到目标原来的索引上。
 func (a *App) movePlatform(dragID, targetID string) {
 	order := normalizePlatformOrder(a.PlatformOrder)
@@ -289,8 +289,7 @@ func (a *App) movePlatform(dragID, targetID string) {
 	a.markDirty()
 }
 
-// normalizePlatformOrder 把任意顺序整理成「认识的平台各一次，缺的补在后面」，
-// 和 baseline 的 normalize 一致。
+// normalizePlatformOrder 把任意顺序整理成「认识的平台各一次，缺的补在后面」。
 func normalizePlatformOrder(in []string) []string {
 	known := map[string]bool{"douyu": true, "huya": true, "douyin": true, "bilibili": true}
 	seen := map[string]bool{}

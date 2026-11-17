@@ -2,9 +2,8 @@ package theme
 
 import "github.com/egoist/mygo/ui"
 
-// Palette 是一套完整配色。baseline 的 4.1 版把「只换强调色」改成了
-// 六套成对（同色系日夜各一套）的完整配色，所以这里存的是全量色板，
-// 不是几个变量覆盖。
+// Palette 是一套完整配色：不是只换强调色，而是六套成对（同色系日夜各一套）的完整配色，
+// 所以这里存全量色板，不是几个变量覆盖。
 type Palette struct {
 	ID          string
 	Name        string
@@ -212,7 +211,7 @@ func Apply(id string) {
 	StatusLive, StatusOffline = p.StatusLive, p.StatusOffline
 	TopLight = p.TopLight
 
-	// baseline 的阴影按明暗分成两套；浅色主题用蓝黑而不是纯黑。
+	// 阴影按明暗分成两套；浅色主题用蓝黑而不是纯黑。
 	if p.Dark {
 		ShadowPopover = ui.RGBA(0, 0, 0, 0.80)
 		ShadowLg = ui.RGBA(0, 0, 0, 0.85)

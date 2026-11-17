@@ -11,19 +11,18 @@ import (
 	"alive/internal/theme"
 )
 
-// 播放页里常用的半透明底色。baseline 的控制条和顶栏胶囊都是
+// 播放页里常用的半透明底色。控制条和顶栏胶囊都是
 // 「深色半透明 + 1px 白色 12% 描边」，叠在画面上才压得住。
 var (
 	playerBarBg     = ui.RGBA(9, 10, 12, 0.55)
 	playerBarBorder = ui.RGBA(255, 255, 255, 0.09)
 	playerIcon      = ui.RGBA(255, 255, 255, 0.88)
 	playerIconOn    = ui.Hex("#ffffff")
-	playerTextDim   = ui.RGBA(244, 244, 239, 0.58)
 )
 
 // PlayerPage 是播放页。
 //
-// 结构对齐 baseline 的 PlayerPage：
+// 版式分这几层：
 //
 //	playerShell（圆角 16 的整块）
 //	└─ stage（黑底画面，铺满）
@@ -57,8 +56,8 @@ func (a *App) PlayerPage(c *ui.Context) {
 			c.After(playbackHealthPollInterval)
 		}
 	}
-	// 左右 14（窄屏 10）、底部不留：baseline 的 appBodyPlayer 就是这样，
-	// 播放页整块一直铺到窗口下沿。两种全屏下四边都不留（shellFull 是 inset:0）。
+	// 左右 14（窄屏 10）、底部不留：整块一直铺到窗口下沿。
+	// 两种全屏下四边都不留（shellFull 是 inset:0）。
 	//
 	// 判据必须和 Shell 一样用 playerFullscreen()：之前只认 WinFull，系统全屏时
 	// 顶栏让位了，画面四周却还留着 14 的留白和 16 的圆角。
@@ -85,19 +84,19 @@ func (a *App) PlayerPage(c *ui.Context) {
 				a.syncChromeIdle(c, stage)
 				chromeOff := a.ChromeHidden
 				if chromeOff {
-					// baseline 的 .stageIdle：控件让位之后连光标一起藏掉
+					// 空闲态：控件让位之后连光标一起藏掉
 					stage.Cursor(ui.CursorNone)
 				}
 				stage.Children(func() {
 					a.stageFrame(c)
 					a.danmuLayer(c)
-					// 状态层压在画面和弹幕之上、chrome 之下：baseline 的
-					// .overlay 是 z-index 15，控制条和顶栏是 20。
+					// 状态层压在画面和弹幕之上、chrome 之下：它是 z-index 15，
+					// 控制条和顶栏是 20。
 					a.stageOverlay(c)
 					a.bufferingPill(c)
 					a.noticePill(c)
 					// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域
-					// （baseline 的 .dragRegion：navbar 高度 64，压在视频之上、
+					// （拖窗区：navbar 高度 64，压在视频之上、
 					// chrome 之下）。只铺顶部一条，整块铺满会把画面下方的
 					// 双击也吃掉。
 					//
@@ -107,8 +106,8 @@ func (a *App) PlayerPage(c *ui.Context) {
 					// 把它挡掉，实际只剩 14px 高的一条能拖。
 					//
 					// chrome 淡出时这层必须撤掉：它在原生侧就是标题栏，鼠标一
-					// 进去页面就收不到 move，控制条再也唤不回来（baseline 的
-					// 注释就是为这个写的）。
+					// 进去页面就收不到 move，控制条再也唤不回来（那段注释
+					// 就是为这个写的）。
 					if a.WinFull && !chromeOff {
 						ui.Box(c).Absolute().Top(0).Left(0).Right(0).
 							Height(theme.NavbarHeight).DragWindow()
@@ -133,7 +132,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 						a.WinFull = true
 					}
 				}
-				// 右侧弹幕列表（baseline 的 panelSlot）。
+				// 右侧弹幕列表。
 				//
 				// 只有系统全屏不给：那是真全屏，画面独占整块屏幕。窗口全屏
 				// （应用内沉浸、任务栏还在）照常保留——那边弹幕列表本身就是
@@ -147,7 +146,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 	})
 }
 
-// 悬浮 chrome 的自动隐藏参数，照抄 baseline 的 CHROME_IDLE_MS 与 --dur-3。
+// 悬浮 chrome 的自动隐藏参数：2800ms 后淡出，280ms 淡完。
 const (
 	chromeIdleAfter = 2800 * time.Millisecond
 	chromeFadeDur   = 280 * time.Millisecond
@@ -162,7 +161,7 @@ const (
 
 // syncChromeIdle 决定这一帧悬浮 chrome（顶栏 / 控制条 / 窗口按钮）要不要淡出。
 //
-// 时序照抄 baseline：指针静止 2800ms 之后淡出，一动立刻回来；暂停、信息岛
+// 时序：指针静止 2800ms 之后淡出，一动立刻回来；暂停、信息岛
 // 展开、任一下拉或面板开着时一律常显——那几种状态人正在操作，按钮不能自己
 // 跑掉。进出全屏也先把 chrome 亮出来，别让人切回来的那一刻对着空画面找按钮。
 //
@@ -220,7 +219,7 @@ func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
 
 // chromeFade 让一块 chrome 跟着自动隐藏淡出，返回当前透明度。
 //
-// baseline 是 opacity + visibility 过渡；这边 opacity 走 AnimateTo，隐藏态
+// 隐藏靠 opacity + visibility 过渡；这边 opacity 走 AnimateTo，隐藏态
 // 再补一个 PassThrough——不穿透的话，淡到 0 的顶栏和控制条仍然占着命中
 // 矩形，画面上的双击和点击播放会被它们吃掉。
 func (a *App) chromeFade(e ui.Element) float32 {
@@ -288,8 +287,8 @@ func (a *App) leavePlayer() {
 func (a *App) stageFrame(c *ui.Context) {
 	// 四边贴死：只写 Fill 的话元素会按自己的比例排，容器比 16:9 高时
 	// 底下就空出一条黑边（控制条会浮在那条黑边上）。
-	// contain 是 baseline 的选择：宁可留黑边也不裁、不拉伸，
-	// 弹幕层再盖到黑边上去（PlayerPage.module.css:83）。
+	// contain 是有意选的：宁可留黑边也不裁、不拉伸，
+	// 弹幕层再盖到黑边上去。
 	p := a.media.player
 	if p != nil {
 		// Video 元素必须一直在：视频只有在被显示时才会往下走，藏起来
@@ -309,7 +308,7 @@ func (a *App) stageFrame(c *ui.Context) {
 		Background(ui.RGBA(0, 0, 0, 0.22))
 }
 
-// stageOverlay 是画面上的状态层。baseline 一共有五种：拉流中、断流重连、
+// stageOverlay 是画面上的状态层。状态一共五种：拉流中、断流重连、
 // 缓冲中、未开播、取流失败。这里先做三种——断流自动重连还没做（需要
 // ffmpeg 退出的信号），其余三种的状态都已经在 media 上。
 func (a *App) stageOverlay(c *ui.Context) {
@@ -351,7 +350,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 
 	case m.stream.RoomID != "" && !m.stream.Live:
 		a.overlayLayer(c, func() {
-			// 58 圆底 + 26 图标：baseline 的 .offlineIcon
+			// 58 圆底 + 26 图标
 			icon := ui.Box(c).Size(58, 58).Radius(29).Margin(0, 0, 4, 0).
 				Background(ui.RGBA(255, 255, 255, 0.08)).
 				Border(1, ui.RGBA(255, 255, 255, 0.10)).Center()
@@ -369,7 +368,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 
 // overlayLayer 是状态层的底板：铺满 stage 的深色半透明 + 居中的一列。
 //
-// baseline 的 .overlay 是 pointer-events: none（只有按钮重新开启命中），
+// 底板是 pointer-events: none（只有按钮重新开启命中），
 // 为的是样式全屏时窗口拖拽还能穿透。这边控制在它之后画，所以直接把
 // 底板做实——状态层出现时本来也没有别的东西要点。
 func (a *App) overlayLayer(c *ui.Context, fn func()) {
@@ -380,7 +379,7 @@ func (a *App) overlayLayer(c *ui.Context, fn func()) {
 }
 
 // overlayText 是状态层的说明文字：13px / 白 86% / 居中 / 行高 1.7，
-// 最大宽度取窗口的 70%（baseline 的 .overlayText）。
+// 最大宽度取窗口的 70%。
 func (a *App) overlayText(c *ui.Context, text string) {
 	w, _ := c.Size()
 	ui.Text(c, text).FontSize(theme.TextSM).
@@ -388,7 +387,7 @@ func (a *App) overlayText(c *ui.Context, text string) {
 		LineHeight(1.7).TextAlign(ui.Center).MaxWidth(w * 0.7)
 }
 
-// overlayButton 是状态层上的主按钮（baseline 的 .primaryBtn）：
+// overlayButton 是状态层上的主按钮：
 // 40 高、左右 24、纯白胶囊、深色字。
 func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 	btn := ui.Row(c).Height(40).Padding(0, 24, 0, 24).Radius(theme.RadiusFull).
@@ -406,7 +405,7 @@ func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 	})
 }
 
-// bufferingPill 是左下角的「缓冲中…」小胶囊（baseline 的 .buffering）：
+// bufferingPill 是左下角的「缓冲中…」小胶囊：
 // left 16 / bottom 76 / 30 高 / 胶囊底，压在控制条下面。
 //
 // 判定看的是「画面有没有在动」，不是 VideoPlayer.Buffering() ——
@@ -484,7 +483,7 @@ func (a *App) playerTopbar(c *ui.Context) {
 			a.Router.Back()
 		}
 		back.Children(func() {
-			// baseline 用的是 X（关闭），不是返回箭头
+			// 关闭用 X，不是返回箭头
 			ui.Icon(c, iconPlayerBack).FontSize(19).TextColor(ui.RGBA(255, 255, 255, 0.92))
 		})
 
@@ -496,13 +495,14 @@ func (a *App) playerTopbar(c *ui.Context) {
 
 // playerControls 是底部控制台。
 //
-// 对齐 baseline 的 PlayerControls：一条半透明毛玻璃长条，左边播放/刷新/音量，
-// 右边弹幕组 + 清晰度 + 线路 + 两种全屏。按钮本身没有底色和圆角，
+// 控制条是一条半透明毛玻璃长条，左边播放/刷新/音量，
+// 右边依次是清晰度 + 线路 + 弹幕组 + 小窗 + 两种全屏（清晰度和线路排在弹幕组
+// 左侧，是这里有意选的顺序）。按钮本身没有底色和圆角，
 // 只在 hover 时变白、激活时变强调色——之前给每个按钮加方块底是错的。
 func (a *App) playerControls(c *ui.Context) {
 	m := metricsFor(c)
 	dock := ui.Box(c).Absolute().Left(14).Right(14).Bottom(12)
-	// baseline 的 .controlsHidden：淡出的同时往下让 10px
+	// 淡出的同时整个控制条往下让 10px
 	dock.Translate(0, (1-a.chromeFade(dock))*10)
 	dock.Children(func() {
 		bar := ui.Row(c).Height(44).Padding(7, 14, 7, 14).Radius(16).FillWidth().
@@ -534,10 +534,24 @@ func (a *App) playerControls(c *ui.Context) {
 
 			ui.Box(c).Grow(1)
 
-			// ------------------------------ 右：弹幕组 / 清晰度 / 线路 / 小窗 / 两种全屏
+			// ------------------------------ 右：清晰度 / 线路 / 弹幕组 / 小窗 / 两种全屏
 			ui.Row(c).Gap(m.rightGap).AlignItems(ui.Center).Children(func() {
-				// 弹幕组：开关 / 设置 / 屏蔽词，组内 gap 10（baseline 的 danmuGroup），
-				// 和右边几个下拉之间才是 12（窄屏 8）。
+				// 清晰度 / 线路：选项全部来自平台返回值，还没取到流时整块
+				// 不出现。摆一个本平台根本不存在的档位，只是先骗一下眼睛。
+				// 这两个是「看什么流」的选择，排在弹幕那组前面更顺手。
+				if qOpts := a.qualityOptions(); len(qOpts) > 0 {
+					a.playerDropdown(c, "清晰度", qOpts,
+						&a.Quality, &a.QualityOpen, &a.QualityHover, a.PickQuality)
+				}
+				// 线路只列平台真实给出的节点：抖音这类没有多线路概念的平台
+				// 整块不出现——网页端也没有「自动线路」这一项。
+				if lineOpts := a.lineOptions(); len(lineOpts) > 0 {
+					a.playerDropdown(c, "线路", lineOpts,
+						&a.Line, &a.LineOpen, &a.LineHover, a.pickLine)
+				}
+
+				// 弹幕组：开关 / 设置 / 屏蔽词，组内 gap 10，
+				// 和外层几个控件之间才是 12（窄屏 8）。
 				ui.Row(c).Gap(m.danmuGap).AlignItems(ui.Center).Children(func() {
 					danmuIcon := iconDanmuOff
 					if a.DanmuOn {
@@ -555,19 +569,6 @@ func (a *App) playerControls(c *ui.Context) {
 					a.danmuFilterButton(c)
 				})
 
-				// 清晰度 / 线路：选项全部来自平台返回值，还没取到流时整块
-				// 不出现。摆一个本平台根本不存在的档位，只是先骗一下眼睛。
-				if qOpts := a.qualityOptions(); len(qOpts) > 0 {
-					a.playerDropdown(c, "清晰度", qOpts,
-						&a.Quality, &a.QualityOpen, &a.QualityHover, a.PickQuality)
-				}
-				// 线路只列平台真实给出的节点：抖音这类没有多线路概念的平台
-				// 整块不出现——网页端也没有「自动线路」这一项。
-				if lineOpts := a.lineOptions(); len(lineOpts) > 0 {
-					a.playerDropdown(c, "线路", lineOpts,
-						&a.Line, &a.LineOpen, &a.LineHover, a.pickLine)
-				}
-
 				// 小窗播放：真开一个独立的置顶小窗，不是换张图标了事
 				pipLabel := "小窗播放"
 				if a.miniOpen() {
@@ -575,7 +576,7 @@ func (a *App) playerControls(c *ui.Context) {
 				}
 				a.playerIconBtn(c, iconPip, 18, a.miniOpen(), pipLabel, a.togglePip)
 
-				// 窗口全屏：铺满应用窗口、任务栏仍可见（baseline 的 cssFullscreen）。
+				// 窗口全屏：铺满应用窗口、任务栏仍可见。
 				// 和右边的系统全屏是两件事，但两者互斥：进来一个就退掉另一个，
 				// 收尾统一走 toggleWinFull / toggleFullscreen。
 				//
@@ -608,7 +609,7 @@ func (a *App) playerControls(c *ui.Context) {
 
 // controlMetrics 是控制条在当前窗口宽度下的尺寸。
 //
-// baseline 用 @media (max-width: 1100px) / (max-width: 980px) 两档：
+// 控制条的尺寸分 @media (max-width: 1100px) / (max-width: 980px) 两档：
 // 窄一档间距 12/10 收到 8/8、滑条 96 收 90；再窄一档滑条 72，
 // 并且百分比整个让位，免得控制条被挤到换行。
 type controlMetrics struct {
@@ -665,7 +666,7 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 				// 松开、或系统取消了这次按压
 				a.volumeDragging = false
 			} else {
-				// baseline 取整到 1%：既不抖，百分比数字也稳
+				// 音量取整到 1%：既不抖，百分比数字也稳
 				v := min(1, max(0, x/m.volumeW))
 				v = float32(math.Round(float64(v)*100)) / 100
 				if v != a.Volume {
@@ -699,12 +700,12 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 
 // playerDropdown 是控制台里的清晰度 / 线路下拉。
 //
-// baseline 的 ControlsDropdown：触发条 30 高，菜单在按钮**上方**（bottom 44），
+// 下拉面板：触发条 30 高，菜单在按钮**上方**（bottom 44），
 // 圆角 14、玻璃底 rgba(16,19,28,.82)、1px 白 12% 描边，
 // 选项 8×12 padding、13px，选中项 accent 字 + accent 24% 底 + 勾。
 // hoverClose 是 hover 触发浮层的关门计时。
 //
-// baseline 的 ControlsDropdown 和设置面板都是 onMouseEnter 打开、
+// 下拉和设置面板都是 onMouseEnter 打开、
 // onMouseLeave 排一个 220ms 的定时器关闭，指针从按钮移到面板上会 cancelClose。
 // MyGo 没有可取消的定时器，就记「最后一次确认离开」的时刻：按钮和面板
 // 都不 hover 时开始计时，到点后的第一帧关门。
@@ -716,7 +717,7 @@ type hoverClose struct {
 	suppress bool
 }
 
-// baseline 的 scheduleClose：window.setTimeout(..., 220)。
+// 关门计时是 window.setTimeout(..., 220)。
 const hoverCloseDelay = 220 * time.Millisecond
 
 // hover 收一次悬停状态：true 取消计时并打开，false 开始计时，
@@ -751,7 +752,7 @@ func (h *hoverClose) hover(c *ui.Context, hovering bool, open *bool) {
 }
 
 // clicked 是浮层触发条被点下的处理：开着就关（并压住 hover 重开），
-// 关着就开。baseline 的 onClick 也是 toggle。
+// 关着就开：点一下就是 toggle。
 func (h *hoverClose) clicked(open *bool) {
 	if *open {
 		*open = false
@@ -766,7 +767,7 @@ func (h *hoverClose) clicked(open *bool) {
 // onPick 在选中一项之后调用：值和菜单的关闭在本函数里完成，但「选中之后
 // 要做什么」是调用方的事（换清晰度要重起一路流，换线路要重新取流）。
 func (a *App) playerDropdown(c *ui.Context, label string, options []string, value *string, open *bool, h *hoverClose, onPick func(string)) {
-	// baseline 的 .controlItem：gap 6、左右各 6 的 padding、12px 白字，
+	// 触发条：gap 6、左右各 6 的 padding、12px 白字，
 	// 没有底色也没有圆角，hover / 展开时只是把字提亮到纯白。
 	btn := ui.Row(c).Height(30).Padding(0, 6, 0, 6).Gap(6).
 		AlignItems(ui.Center).Cursor(ui.CursorPointer).Label(label)
@@ -789,7 +790,7 @@ func (a *App) playerDropdown(c *ui.Context, label string, options []string, valu
 	})
 
 	ui.PopoverBase(c, btn, open, func(panel ui.Element) {
-		// baseline 是 min-width: 130px，不是固定宽：档位名带「1080P 原画」
+		// 下拉面板是 min-width: 130px，不是固定宽：档位名带「1080P 原画」
 		// 这种前缀，写死 130 会把「自动（720P 超清）」挤成两行。
 		panel.MinWidth(130).Padding(10, 12, 10, 12).Radius(14).
 			Background(ui.RGBA(16, 19, 28, 0.82)).
@@ -797,7 +798,7 @@ func (a *App) playerDropdown(c *ui.Context, label string, options []string, valu
 			Shadow(0, 18, 36, 0, ui.RGBA(0, 0, 0, 0.35)).
 			Margin(0, 0, 8, 0).
 			AttachTo(btn, ui.AnchorTopRight, ui.AnchorBottomRight)
-		// 指针从按钮滑进面板时要取消关闭计时（baseline 面板自己也有
+		// 指针从按钮滑进面板时要取消关闭计时（面板自己也有
 		// onMouseEnter={cancelClose}），否则菜单会从手底下消失。
 		h.hover(c, panel.Hovered(), open)
 		panel.Children(func() {
@@ -851,7 +852,7 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open 
 // playerIconBtn 是控制台里的一枚图标按钮：30×30 热区，没有底色也没有圆角，
 // 只靠颜色变化表达 hover / 激活——加方块底会让控制条看起来碎。
 //
-// size 是图标字号。label 对应 baseline 的 aria-label：既是无障碍名，也让自动化
+// size 是图标字号。label 就是 aria-label：既是无障碍名，也让自动化
 // 能按名字点到这颗按钮——自绘 Box 不进无障碍树，没有 Label 就只能靠坐标猜。
 func (a *App) playerIconBtn(c *ui.Context, ico *ui.SVG, size float32, active bool, label string, on func()) {
 	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label(label)

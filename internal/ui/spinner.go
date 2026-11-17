@@ -9,11 +9,10 @@ import (
 	"alive/internal/theme"
 )
 
-// spinner 是 baseline 的 Spinner 组件（components/ui/Spinner.tsx）：
-// 一个 0.8s 匀速转一圈的圆环，四边不同色——顶边 accent-ink、右边 accent 60%、
-// 其余两边 accent 18%，转起来就是一道拖着浅色尾巴的光弧。
+// spinner 是一个 0.8s 匀速转一圈的圆环，四边不同色——顶边 accent-ink、
+// 右边 accent 60%、其余两边 accent 18%，转起来就是一道拖着浅色尾巴的光弧。
 //
-// MyGo 自带的 Spinner 是十二根辐条那种（AppKit 风格），和 baseline 不是一套，
+// MyGo 自带的 Spinner 是十二根辐条那种（AppKit 风格），和这个不是一套，
 // 所以这里自己画。Path 没有弧线原语，用每象限 6 段折线逼近整圆。
 func spinner(c *ui.Context, size float32) ui.Element {
 	return spinnerTint(c, size, theme.Accent)
@@ -41,7 +40,7 @@ func spinnerTint(c *ui.Context, size float32, base ui.Color) ui.Element {
 		spinTurn = el.Loop("spin", 800*time.Millisecond, ui.Linear)
 	}
 	phase := spinTurn
-	stroke := max(2, float32(int(size/10+0.5))) // baseline: max(2, round(size/10))
+	stroke := max(2, float32(int(size/10+0.5))) // max(2, round(size/10))
 
 	el.Draw(func(p *ui.Painter, r ui.Rect) {
 		cx, cy := r.X+r.W/2, r.Y+r.H/2

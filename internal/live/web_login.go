@@ -87,6 +87,12 @@ type WebLogin struct {
 	// 后台 webview，让平台自己把会话续上。返回 true 表示交给它处理，
 	// 这时不删会话文件。
 	onInvalid func() bool
+	// onSession 把当前会话交给数据层。
+	//
+	// provider 的 authCookie 是请求层唯一的登录态来源，所以写入、删除、
+	// 启动恢复都要走它——漏一处就是「界面显示已登录、请求仍按游客走」，
+	// 抖音和虎牙的 setAuthCookie 一度就是这样成了没人调用的死代码。
+	onSession func(cookies string)
 }
 
 func newWebLogin(p Platform, spec WebLoginSpec, verify func(context.Context, string) (authUser, error), order []string) *WebLogin {
@@ -120,6 +126,25 @@ func (w *WebLogin) SetAuthListener(fn func()) {
 	w.mu.Lock()
 	w.on = fn
 	w.mu.Unlock()
+}
+
+// SetSessionHandler 挂上会话回填。
+//
+// 必须在 Restore 之前调用：启动时恢复出来的会话只在 Restore 里交出去一次。
+func (w *WebLogin) SetSessionHandler(fn func(string)) {
+	w.mu.Lock()
+	w.onSession = fn
+	w.mu.Unlock()
+}
+
+// applySession 把会话交给数据层。空串表示退出登录。
+func (w *WebLogin) applySession(cookies string) {
+	w.mu.Lock()
+	fn := w.onSession
+	w.mu.Unlock()
+	if fn != nil {
+		fn(cookies)
+	}
 }
 
 // LoginURL 是界面要加载的登录页。
@@ -159,6 +184,7 @@ func (w *WebLogin) Logout() {
 	w.state = AuthState{Platform: w.platform}
 	w.mu.Unlock()
 	removeAuthSession(w.platform)
+	w.applySession("")
 	w.notify()
 }
 
@@ -174,6 +200,7 @@ func (w *WebLogin) Restore() {
 	w.mu.Lock()
 	w.state = AuthState{Platform: w.platform, LoggedIn: true, Name: sess.Name, Avatar: sess.Avatar}
 	w.mu.Unlock()
+	w.applySession(sess.Cookies)
 	go w.verifyLoop(sess)
 }
 
@@ -234,6 +261,7 @@ func (w *WebLogin) verifySession(parent context.Context, sess authSession) {
 			return
 		}
 		removeAuthSession(w.platform)
+		w.applySession("")
 		w.mu.Lock()
 		w.state = AuthState{Platform: w.platform}
 		w.mu.Unlock()
@@ -269,6 +297,7 @@ func (w *WebLogin) Finish(cookies []BrowserCookie) error {
 	raw := buildCookieString(fields, w.cookieOrder)
 	sess := authSession{Cookies: raw, UID: user.UID, Name: user.Name, Avatar: user.Avatar}
 	w.writeSession(sess)
+	w.applySession(sess.Cookies)
 
 	w.mu.Lock()
 	w.state = AuthState{

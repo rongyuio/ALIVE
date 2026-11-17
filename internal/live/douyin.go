@@ -67,7 +67,7 @@ func newDouyin() *douyinProvider {
 		areas: newCache[[]CategoryGroup](),
 		rooms: newCache[Page](),
 		ids:   newCache[douyinRoomRef](),
-		// 对齐 baseline 的关注刷新并发（前台 6、后端不限流）。
+		// 关注刷新并发：前台 6，后端不限流。
 		// 抖音的单房间是两次请求（房间页 + reflow），6 并发是最激进的；
 		// 一旦拿到验证页，wrap 里的 block() 会把整个平台冷下来兜住。
 		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
@@ -76,6 +76,9 @@ func newDouyin() *douyinProvider {
 	// 抖音的 verify 留空：用户信息接口同样要 secsdk 签名，与其在启动时
 	// 赌一次风控，不如信 cookie——会话坏了取流会自己失败。
 	p.login = newWebLogin(Douyin, douyinWebLoginSpec(), douyinVerifyCookie, douyinCookieOrder)
+	// 登录态要回填给请求层：authCookie 是所有请求带 cookie 的唯一来源。
+	// 必须在 Restore 之前挂上，否则启动时恢复出来的会话进不去。
+	p.login.SetSessionHandler(p.setAuthCookie)
 	p.login.Restore()
 	return p
 }
@@ -176,8 +179,8 @@ func (p *douyinProvider) Rooms(ctx context.Context, areaID string, page, size in
 
 // Search 把关键词当房间号查房间信息。
 //
-// 抖音匿名的关键词搜索接口一律返回 2483「请先登录」，baseline 的抖音
-// 「搜索」实际就是「按直播间号查房间」（DTV baseline 的 src/api/douyin.ts）。
+// 抖音匿名的关键词搜索接口一律返回 2483「请先登录」，抖音的
+// 「搜索」实际就是「按直播间号查房间」。
 // 因此这里只有两种结果：查到了给一条，查不到（业务错误）给空列表——
 // 错误不往上抛，否则 UI 会把「没这个房间」显示成「搜索失败」。
 // 风控是例外：必须让上层提示「请求过于频繁」，不能假装没结果。

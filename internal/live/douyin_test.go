@@ -462,7 +462,8 @@ func TestDouyinMsToken(t *testing.T) {
 	}
 	for i := 0; i < len(token); i++ {
 		c := token[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !isAlnum {
 			t.Fatalf("第 %d 位字符 %q 不在字母数字集合内", i, c)
 		}
 	}

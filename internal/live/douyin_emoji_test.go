@@ -7,7 +7,9 @@ import (
 
 // 手搓 protobuf 的字段写入，只为本文件构造样本用。
 func pbVarint(dst []byte, num int, v uint64) []byte {
-	dst = binary.AppendUvarint(dst, uint64(num)<<3|0)
+	// 字段号占高位，低 3 位是 wire type；varint 的 wire type 就是 0，
+	// 所以左移 3 位即可，不用再或上什么。
+	dst = binary.AppendUvarint(dst, uint64(num)<<3)
 	return binary.AppendUvarint(dst, v)
 }
 

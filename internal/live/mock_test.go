@@ -1,6 +1,9 @@
+//go:build mock
+
 package live
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -191,7 +194,7 @@ func anyRepeat(m map[string]int) bool {
 // ffmpeg 转封装，画面留在封面上，UI 仍可完整操作。
 func TestMockStreamSkipsPlayback(t *testing.T) {
 	prov := newMockProvider(Bilibili, MockDanmu)
-	s, err := prov.Stream(nil, "mock-1", "")
+	s, err := prov.Stream(context.Background(), "mock-1", "")
 	if err != nil {
 		t.Fatalf("取流失败: %v", err)
 	}
@@ -203,7 +206,7 @@ func TestMockStreamSkipsPlayback(t *testing.T) {
 	}
 
 	off := newMockProvider(Bilibili, MockOffline)
-	s, err = off.Stream(nil, "mock-1", "")
+	s, err = off.Stream(context.Background(), "mock-1", "")
 	if err != nil {
 		t.Fatalf("取流失败: %v", err)
 	}

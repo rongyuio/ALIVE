@@ -7,7 +7,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// baseline：分区搜索框拿到焦点就展开，176 → 220，240ms ease-out。
+// 分区搜索框拿到焦点就展开，176 → 220，240ms ease-out。
 func TestCategorySearchExpandsOnFocus(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -19,7 +19,7 @@ func TestCategorySearchExpandsOnFocus(t *testing.T) {
 	if err := tt.Click("搜索分区"); err != nil {
 		t.Fatal(err)
 	}
-	// 只聚焦不应该弹结果浮层（baseline 的渲染条件是 query 非空）
+	// 只聚焦不应该弹结果浮层（渲染条件是 query 非空）
 	if tt.HasText("没有匹配的分区") {
 		t.Error("空查询下出现了「没有匹配的分区」")
 	}

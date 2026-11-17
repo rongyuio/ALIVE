@@ -8,7 +8,7 @@ import (
 
 // 配色面板的尺寸与锚点。
 //
-// baseline 里面板是按钮 wrapper 的绝对定位子元素（top: 100% + 10, right: 0），
+// 面板挂在配色按钮下方（top: 100% + 10, right: 0），
 // 原生这边面板画在 Shell 最上层（否则会被页面内容盖住），所以位置按
 // 「按钮右边缘距窗口右边多远」直接算：padding 14 + 窗口按钮 118 + 间隔 8
 // + 分隔线 1 + 间隔 8 ≈ 149。
@@ -93,7 +93,7 @@ func (a *App) syncThemeMode(systemDark bool) {
 
 // palettePanel 是六套配色的选择面板。
 //
-// 布局对齐 baseline：352 宽、两列、每格上方一条三色预览带，
+// 布局：352 宽、两列、每格上方一条三色预览带，
 // 下面写配色名和明暗；选中项用强调色描边 + 右上角一枚勾。
 func (a *App) palettePanel(c *ui.Context) {
 	dark := theme.Current().Dark

@@ -112,3 +112,34 @@ func TestEmoteSize(t *testing.T) {
 		t.Fatalf("宽高缺失应按 1:1：得到 %.1f×%.1f", w, h)
 	}
 }
+
+// 平台原生字色只在「彩色弹幕」开着时生效。
+//
+// 三个平台都从协议里取到了颜色（B 站 RGB 整数、斗鱼 1–7 索引、虎牙 RGB），
+// 以前 UI 层从来不读，彩色弹幕全被压成设置里的字色。这条盯住那个开关：
+// 关掉必须回到设置色，开着才让平台色上屏。
+//
+// 平台的白是「没选颜色」的默认值（B 站和虎牙都发 0xFFFFFF），要换算回
+// fallback——飞屏用设置字色、面板用主题正文色，否则浅色主题下面板会白字压白底。
+func TestDanmuColor(t *testing.T) {
+	fallback := ui.Hex("#ffe680")
+	cases := []struct {
+		name     string
+		color    string
+		colorful bool
+		want     ui.Color
+	}{
+		{"彩色弹幕开着 + 平台色", "#e33fff", true, ui.Hex("#e33fff")},
+		{"彩色弹幕关掉", "#e33fff", false, fallback},
+		{"平台发白（小写）", "#ffffff", true, fallback},
+		{"平台发白（大写）", "#FFFFFF", true, fallback},
+		{"平台没给色", "", true, fallback},
+	}
+	for _, tc := range cases {
+		got := danmuColor(danmuLine{Color: tc.color}, tc.colorful, fallback)
+		if got != tc.want {
+			t.Errorf("%s：danmuColor(%q, colorful=%v) = %v，期望 %v",
+				tc.name, tc.color, tc.colorful, got, tc.want)
+		}
+	}
+}

@@ -11,8 +11,8 @@ import (
 
 // 顶栏搜索浮层。
 //
-// baseline 里浮层是搜索按钮 wrapper 的绝对定位子元素（top: 100% + 10, right: 0,
-// 宽 380, padding 8, 圆角 12）。原生这边用 MyGo 的 PopoverBase：位置由锚点算，
+// 浮层挂在搜索按钮下方（top: 100% + 10, right: 0，宽 380, padding 8, 圆角 12）。
+// 原生这边用 MyGo 的 PopoverBase：位置由锚点算，
 // 点外部 / Esc 关闭也交给它，不用自己写全局监听。
 const (
 	searchPanelW  float32 = 380
@@ -20,7 +20,7 @@ const (
 	searchListMax float32 = 300
 )
 
-// searchPlaceholder / searchHint 逐字取自 baseline 的 PLACEHOLDER 与 SEARCH_HINT：
+// searchPlaceholder / searchHint 的文案按平台分：
 // 四个平台里只有抖音不收关键词，文案也不同。
 func searchPlaceholder(platform string) string {
 	if platform == "douyin" {
@@ -74,7 +74,7 @@ func (a *App) authAvailable() bool {
 
 // searchButton 是顶栏右侧那颗搜索图标按钮，同时是浮层的锚点。
 //
-// baseline 不在顶栏常驻输入框——常驻输入框会把宽度撑开、顶到中间的灵动岛。
+// 顶栏不常驻输入框——常驻输入框会把宽度撑开、顶到中间的灵动岛。
 func (a *App) searchButton(c *ui.Context) {
 	btn := ui.Box(c).Size(38, 38).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label("搜索")
@@ -144,7 +144,7 @@ func (a *App) searchPopover(c *ui.Context) {
 			Placeholder(searchPlaceholder(a.viewPlatform())).PlaceholderColor(theme.TextTertiary).
 			AutoFocus().
 			OnTextKey(a.searchKey)
-		// baseline：加载中转圈；不在加载且有关键词时才给清空按钮
+		// 加载中转圈；不在加载且有关键词时才给清空按钮
 		switch {
 		case a.SearchLoading:
 			spinner(c, 14)
@@ -167,12 +167,12 @@ func (a *App) searchPopover(c *ui.Context) {
 		}
 	})
 
-	// baseline 的面板只看「有没有输入」：没结果也要露出来，才能给出空态文案
+	// 面板只看「有没有输入」：没结果也要露出来，才能给出空态文案
 	if strings.TrimSpace(a.SearchQuery) != "" {
 		a.searchResults(c)
 	}
 
-	// ---- 底部提示：baseline 是「平台名 · 平台文案」
+	// ---- 底部提示是「平台名 · 平台文案」
 	ui.Text(c, fmt.Sprintf("%s · %s", platformLabel(a.viewPlatform()), searchHint(a.viewPlatform()))).
 		FontSize(theme.Text2XS).LetterSpacing(0.02).
 		TextColor(theme.TextTertiary).Padding(0, 8, 2, 8).SingleLine()
@@ -180,8 +180,8 @@ func (a *App) searchPopover(c *ui.Context) {
 
 // searchResults 是结果区：11px 标题 + 计数胶囊 + 最多 300 高的列表。
 //
-// 三种内容态对齐 baseline：错误原样给出、无结果给空态文案、
-// 加载中且还没有结果时只留头部（baseline 此时列表是空的）。
+// 三种内容态：错误原样给出、无结果给空态文案、
+// 加载中且还没有结果时只留头部（此时列表是空的）。
 func (a *App) searchResults(c *ui.Context) {
 	hits := a.searchHits()
 
@@ -286,7 +286,7 @@ func (a *App) searchKey(k ui.TextKey) bool {
 			a.openSearchHit(hits[a.SearchHit])
 			return true
 		}
-		// baseline：没有高亮项时，纯数字直接当房间号进
+		// 没有高亮项时，纯数字直接当房间号进
 		if q := strings.TrimSpace(a.SearchQuery); q != "" && isRoomNumber(q) {
 			a.openRoomNumber(q)
 			return true
@@ -296,7 +296,7 @@ func (a *App) searchKey(k ui.TextKey) bool {
 	return false
 }
 
-// isRoomNumber 报告关键词是不是一串纯数字（baseline 用 /^\d+$/）。
+// isRoomNumber 报告关键词是不是一串纯数字（按 /^\d+$/ 判定）。
 func isRoomNumber(s string) bool {
 	for _, r := range s {
 		if r < '0' || r > '9' {
@@ -366,8 +366,8 @@ func (a *App) openSearchHit(hit searchHit) {
 	a.Router.Push(routePlayer)
 }
 
-// openRoomNumber 用房间号直接进播放页：baseline 的 onSubmit 在没有高亮项、
-// 而关键词是纯数字时就按号码直达，不等搜索接口。
+// openRoomNumber 用房间号直接进播放页：没有高亮项、而关键词是纯数字时就按号码
+// 直达，不等搜索接口。
 func (a *App) openRoomNumber(id string) {
 	a.Player = Streamer{Platform: a.viewPlatform(), RoomID: id, Name: "直播间 " + id}
 	a.PlayerRemote = true

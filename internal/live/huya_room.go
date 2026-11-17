@@ -10,8 +10,7 @@ import (
 
 // 虎牙单房间实时信息。
 //
-// 链路参考 DTV baseline 的 platforms/huya/stream_url.go：它取流前先拉同一个
-// profileRoom 档案，档案里已经带了卡片要的全部字段，所以这里不再走
+// 链路是：取流前先拉 profileRoom 档案，档案里已经带了卡片要的全部字段，所以这里不再走
 // WUP/TARS 那条只有取流才需要的 RPC。
 //
 // 档案接口回的是「房间快照」而不是列表，不存在分页；房间不存在时 HTTP 仍是

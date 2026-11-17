@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// refreshConcurrency 是关注列表刷新的前台 worker 数，取 baseline 的
-// REFRESH_CONCURRENCY（6）。各平台限流器的并发不低于它，否则刷新会卡在
-// 平台闸门上——baseline 的后端不限流，6 个 worker 始终跑满。
+// refreshConcurrency 是关注列表刷新的前台 worker 数，值为 6。各平台限流器的
+// 并发不低于它，否则刷新会卡在平台闸门上——6 个 worker 要一直跑满。
 const refreshConcurrency = 6
 
 // limiter 控制一个平台的请求节奏：最多若干并发，两次请求之间至少间隔 gap；

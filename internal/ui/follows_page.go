@@ -78,7 +78,7 @@ func (a *App) followsBar(c *ui.Context) {
 
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			// 搜索框：34 高、图标在左，真输入框。动效跟分区搜索同一套：常态 176，聚焦或有输入时 240ms 展开到 220。
-			// baseline 的 .panelSearch：focus-within 时边框变 accent-ink，190ms。
+			// 搜索框在 focus-within 时边框变 accent-ink，190ms。
 			search := ui.Row(c).Height(34).Padding(0, 8, 0, 11).Gap(7).
 				Radius(theme.RadiusFull).Background(theme.FillQuaternary).
 				Center().Cursor(ui.CursorText)
@@ -135,7 +135,7 @@ func (a *App) followsBar(c *ui.Context) {
 
 // followsGrid 是主播行列表。
 //
-// 行宽按 baseline 的 minmax(248px, 1fr)、gap 4 算：列数随可用宽度增减，
+// 行宽按 minmax(248px, 1fr)、gap 4 算：列数随可用宽度增减，
 // 和首页网格同一条公式，只是最小列宽更大（每格是一整行信息）。
 func (a *App) followsGrid(c *ui.Context, list []Streamer) {
 	w, _ := c.Size()
@@ -147,7 +147,7 @@ func (a *App) followsGrid(c *ui.Context, list []Streamer) {
 	cellW := (avail - gap*float32(cols-1)) / float32(cols)
 
 	ui.Scroll(c).Grow(1).Children(func() {
-		// baseline 的空态：padding 64 20、居中、13px tertiary
+		// 空态：padding 64 20、居中、13px tertiary
 		if len(list) == 0 {
 			// 空态分两种：一个都没关注，和筛选/搜索之后没命中
 			empty := "没有匹配的主播"
@@ -180,7 +180,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 
 	// 动画 key 绑在主播身份上：列表重排时同一行的渐亮状态跟着它走，不会重启。
 	key := s.Platform + "|" + s.RoomID + "|" + s.Name
-	// baseline 的 .panelCard 是 transition: background-color 190ms ease-out，
+	// 行底色的过渡是 background-color 190ms ease-out，
 	// 鼠标扫过列表是整片渐亮，不是一格一格地闪。
 	rowBg := ui.Transparent
 	if hovered {
@@ -220,7 +220,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 			// 环会永远停在 scale 0.75、缩在点内部看不见。
 			dotKey := "live-" + s.Platform + "|" + s.Name + "|" + s.Category
 			if s.Live {
-				// baseline 的 live-pulse：2px 绿环从 scale 0.75 扩到 1.85、
+				// 脉冲环：2px 绿环从 scale 0.75 扩到 1.85、
 				// 透明度 0.9 → 0，2s ease-out 循环，70%–100% 停在扩满的无形状态。
 				//
 				// 相位用 Loop 驱动：这版 MyGo 的 Keyframes + RepeatForever
@@ -229,7 +229,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 					Absolute().Right(-1).Bottom(-1).Size(15, 15).
 					Radius(theme.RadiusFull).Border(2, theme.StatusOnline)
 				if c.Preferences().ReduceMotion {
-					// baseline 在 reduced motion 下关掉脉冲，只留静态绿点
+					// reduced motion 下关掉脉冲，只留静态绿点
 					ring.Opacity(0)
 				} else {
 					p := ring.Loop("live-pulse", 2*time.Second, ui.Linear)
@@ -245,7 +245,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 			if s.Live {
 				dot.Background(theme.StatusOnline)
 			} else {
-				// baseline：离线点深色主题 #475569，浅色主题 #94a3b8
+				// 离线点：深色主题 #475569，浅色主题 #94a3b8
 				off := ui.Hex("#475569")
 				if !theme.Current().Dark {
 					off = ui.Hex("#94a3b8")
@@ -259,7 +259,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 			if hovered {
 				nameCol = theme.AccentInk
 			}
-			// baseline 的 .panelName 也是 190ms 过渡：hover 时名字才慢慢染成强调色
+			// 名字同样是 190ms 过渡：hover 时才慢慢染成强调色
 			name := ui.Text(c, s.Name).FontSize(theme.TextSM).FontWeight(600).
 				SingleLine()
 			name.TextColor(name.AnimateColor("follows-row-name-"+key, nameCol,
@@ -277,14 +277,14 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 
 // followsAction 是页头里的刷新按钮（28×28 圆形）。
 //
-// 对齐 baseline 的 .actionBtn：常态只吃 hover 底色；busy 时按 :disabled
+// 按钮常态只吃 hover 底色；busy 时按 :disabled
 // 处理——降透明度、光标变回箭头、不再有悬停反馈也不再响应点击。
 // progress ≥ 0 且 busy 时，图标外再套一圈进度环。
 func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool, progress float32, on func()) {
-	// baseline 的按钮有 aria-label / title，读屏和自动化都靠它认按钮
+	// 按钮有 aria-label / title，读屏和自动化都靠它认按钮
 	btn := ui.Box(c).Size(28, 28).Radius(theme.RadiusFull).Center().Label(label)
 	if busy {
-		// baseline：.actionBtn:disabled { cursor: default; opacity: .72 }
+		// 禁用态：cursor: default; opacity: .72
 		btn.Opacity(0.72).Cursor(ui.CursorDefault)
 	} else {
 		btn.Cursor(ui.CursorPointer)
@@ -297,9 +297,8 @@ func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool,
 		on()
 	}
 
-	// 进度环：值走 AnimateTo，复现 baseline .indicator 的 220ms
-	// stroke-dashoffset 过渡；不显示时也把动画值拉回 0，
-	// 否则下一轮会从上一次的满格倒着缩回来。
+	// 进度环：值走 AnimateTo，220ms 的 stroke-dashoffset 过渡；不显示时也要把
+	// 动画值拉回 0，否则下一轮会从上一次的满格倒着缩回来。
 	ringTarget := float32(0)
 	if busy && progress >= 0 {
 		ringTarget = progress
@@ -322,14 +321,14 @@ func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool,
 			btn.Jump("action-spin-stop", phase)
 			icon.Rotate(phase)
 		} else {
-			// baseline：.actionBtn svg 的 transform 有 500ms 过渡，
+			// 图标的 transform 有 500ms 过渡，
 			// 转圈停下时图标滑回正位，而不是啪地跳回去。
 			icon.Rotate(btn.AnimateTo("action-spin-stop", 0, followsSpinStop))
 		}
 	})
 }
 
-// followsAction 的进度环与收尾动画度量，均取自 baseline 的 FollowsList.module.css。
+// followsAction 的进度环与收尾动画度量。
 const (
 	// RingProgress size=26 / stroke=2
 	followsRingSize   float32 = 26
@@ -347,7 +346,7 @@ var followsSpinStop = ui.Animation{
 	Ease:     ui.CubicBezier(0.16, 1, 0.3, 1),
 }
 
-// refreshRing 画关注刷新按钮上的圆环进度，对齐 baseline 的 RingProgress：
+// refreshRing 画关注刷新按钮上的圆环进度：
 // 0% 在 12 点方向顺时针，轨道是 text-secondary 26%，指示色 accent-ink。
 func refreshRing(p *ui.Painter, r ui.Rect, v float32) {
 	v = min(max(v, 0), 1)

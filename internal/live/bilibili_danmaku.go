@@ -657,7 +657,7 @@ func biliEmotes(body []byte, d blivedmmsg.Danmaku) []Emote {
 		// 正文里的占位符就是去掉前缀的那一段。普通纯图表情这里是
 		// 空串或 emoji_224，留空名，交给纯图分支渲染。
 		name := strings.TrimPrefix(e.EmoticonUnique, "upower_")
-		if !(strings.HasPrefix(name, "[") && strings.HasSuffix(name, "]") && len(name) >= 3) {
+		if !strings.HasPrefix(name, "[") || !strings.HasSuffix(name, "]") || len(name) < 3 {
 			name = ""
 		}
 		push(name, e.Url, e.Width, e.Height, e.IsDynamic)

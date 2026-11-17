@@ -1,0 +1,27 @@
+# golangci-lint 配置。
+#
+# 只用默认的 linter 集（standard：errcheck / govet / ineffassign /
+# staticcheck / unused），不额外启用。
+#
+# 手工跑：golangci-lint run ./...
+# 默认只报同一种问题的前 3 条（max-same-issues），要数全量加
+# `--max-same-issues=0 --max-issues-per-linter=0`。
+#
+# 二进制装的是官方 release，不是 `go install`：后者拿不到构建元数据
+# （`--version` 会显示 from (unknown…)），官方也明说不保证能用。
+
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # 关掉对 Close 的检查。这一层是薄壳：响应体读完就 Close，它的错误
+      # 没有可做的补救，项目里十几处一律是 `defer resp.Body.Close()`。
+      # 与其把它们逐个改成 `_ = ...`（只为骗过 linter），不如在这里说清楚。
+      exclude-functions:
+        - (io.Closer).Close
+
+# 默认只报同一种问题的前 3 条，很容易以为「就这几个」。CI 上必须看全量。
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0

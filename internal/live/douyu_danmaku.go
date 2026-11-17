@@ -15,7 +15,7 @@ import (
 
 // 斗鱼弹幕：裸 TCP + STT 私有协议。
 //
-// 与 baseline 一致，这里**不走 WebSocket**：danmuproxy.douyu.com 的
+// 这里**不走 WebSocket**：danmuproxy.douyu.com 的
 // 8501–8506 端口已经不再提供 TLS/WebSocket 服务（Go 和 Node 客户端都在
 // 握手阶段被拒），而 8601–8603 上的明文 TCP 仍然可用，报文格式是同一套
 // STT 包。差别只在传输层——TCP 要自己按长度字段切包，而 WebSocket 时代
@@ -27,7 +27,7 @@ var douyuDanmakuEndpoints = []string{
 }
 
 const (
-	// 心跳 45s，与 baseline 一致；服务端也会发 pingreq 要求立刻回。
+	// 心跳 45s；服务端也会发 pingreq 要求立刻回。
 	douyuHeartbeat   = 45 * time.Second
 	douyuReadTimeout = 90 * time.Second
 	douyuDialTimeout = 10 * time.Second
@@ -223,8 +223,7 @@ func douyuDial(ctx context.Context) (net.Conn, error) {
 
 // handlePacket 解析一个 STT 包。
 //
-// 取包范围是 packet[12:len-1]：跳过 12 字节头、去掉尾部 \0，
-// 与 baseline 的切法逐字节一致。
+// 取包范围是 packet[12:len-1]：跳过 12 字节头、去掉尾部 \0。
 func (s *douyuDanmaku) handlePacket(conn net.Conn, packet []byte) {
 	if len(packet) < 13 {
 		return
@@ -424,7 +423,7 @@ func douyuEnergyColor(idx int) string {
 
 // douyuEncodeSTT 把一条指令编码成协议包。
 //
-// 包结构（与 baseline 的 encode_msg 逐字节一致）：
+// 包结构：
 //
 //	u32 LE 长度(=len(msg)+9) | u32 LE 同一长度 | u16 LE 689 | 0x00 0x00 | msg | 0x00
 //

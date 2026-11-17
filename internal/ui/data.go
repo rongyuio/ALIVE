@@ -289,7 +289,6 @@ func (a *App) loadRooms() {
 		// 没缓存就清空，宁可先看到骨架也不能让上一份内容继续挂着。
 		// 那次「保留旧列表避免闪白」的改动是错的：切平台时挂着的是另一个
 		// 平台的房间，切分区时是上一个分区的，用户会以为切失败了。
-		// baseline 的 useStreamerFeed 在没缓存时也是直接清空。
 		a.Rooms = nil
 		a.ListLoading = true
 		a.ListHasMore = false
@@ -337,8 +336,8 @@ func (a *App) loadRooms() {
 
 // loadMoreRooms 追加下一页：滚动到距底部 320px 以内时由触底哨兵触发。
 //
-// 三道闸：正在拉首屏、已经在拉下一页、上游说没有更多，都不重复发请求
-// （baseline 用 busyRef 防的是同一件事——滚动事件会连着来好几次）。
+// 三道闸：正在拉首屏、已经在拉下一页、上游说没有更多，都不重复发请求——
+// 触底事件会连着来好几次。
 func (a *App) loadMoreRooms() {
 	if !a.LiveMode || a.ListLoading || a.ListLoadingMore || !a.ListHasMore {
 		return
@@ -379,7 +378,7 @@ func (a *App) loadMoreRooms() {
 				return
 			}
 
-			// 上游翻页偶尔会返回重复房间，按房间号去重（baseline 同样处理）
+			// 上游翻页偶尔会返回重复房间，按房间号去重
 			seen := make(map[string]bool, len(a.Rooms))
 			for _, s := range a.Rooms {
 				seen[s.RoomID] = true
@@ -423,11 +422,8 @@ const (
 	// 只备两三行的话，切过去第一帧会有几张卡空着封面，等下载回来才补上。
 	prefetchCovers = listPageSize
 	// feedTTL 是分区列表的缓存时间：60s 内切回同一个分区直接渲染缓存，
-	// 不重新请求（baseline 的 feedCache 是同一个策略）。
+	// 不重新请求。
 	feedTTL = 60 * time.Second
-	// loadMoreMargin 是触底预取的距离：距底部还有这么多 DIP 就开始拉下一页，
-	// 滚到底时数据往往已经回来了（baseline 的 PREFETCH_THRESHOLD）。
-	loadMoreMargin float32 = 320
 )
 
 // feedEntry 是某个分区已经加载到的位置。
@@ -490,7 +486,7 @@ func (a *App) currentCategoryIDs() []string { return a.currentGroup().CategoryID
 // ---------------------------------------------------------------- 顶栏搜索
 
 const (
-	// searchDebounce 对齐 baseline 搜索框的 220ms 防抖：
+	// searchDebounce 是搜索框的 220ms 防抖：
 	// 连续输入只在停下来之后发一次请求。
 	searchDebounce = 220 * time.Millisecond
 	// searchTimeout 比列表请求短：搜索是前台交互，等不起 20 秒。
@@ -500,7 +496,7 @@ const (
 // syncSearch 在查询词或平台变化时启动一次防抖搜索。
 //
 // view 每帧重建，所以用「已经发起的查询词」判断，只有真的变了才调度一次；
-// 连续输入时更早的响应靠代次丢弃（baseline 用 cancelled 标记做同一件事）。
+// 连续输入时更早的响应靠代次丢弃。
 func (a *App) syncSearch() {
 	q := strings.TrimSpace(a.SearchQuery)
 	platform := a.viewPlatform()

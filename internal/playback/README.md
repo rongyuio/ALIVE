@@ -49,10 +49,10 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error)
 make test    # recipe 里带 ALIVE_MPV_LIB
 ```
 
-| 测试 | 需要 | 干什么 |
-|---|---|---|
-| `TestLiveEngine` | `ALIVE_LIVE_ROOM` + `ALIVE_LIVE_PLATFORM` | 真实流端到端：首帧、音频连续、**CPU 转换必须有内容且 alpha 全 255** |
-| `TestMatrix` | `ALIVE_MATRIX=1` | 跨平台 × 分区 × 房间 × 档位，输出首帧/解码/上屏/丢帧/断供 |
-| `TestFfmpegControl` | `ALIVE_CTRL_ROOM` + `ALIVE_CTRL_PLATFORM` | 同一份签名地址跑 ffmpeg 命令行，判断慢是上游还是我们 |
+包里只剩纯逻辑测试（音频门控、CPU 采样），不需要网络也不需要真实流。
 
-后两个会连公网，默认跳过。`TestFfmpegControl` 不打印地址——它带签名。
+手动的基准测量不进仓库——`TestLiveEngine`（真实流端到端：首帧、音频连续、**CPU 转换
+必须有内容且 alpha 全 255**）、`TestMatrix`（跨平台 × 分区 × 房间 × 档位）、
+`TestFfmpegControl`（同一份签名地址跑 ffmpeg 命令行，判断慢是上游还是我们）、
+`TestLocalStream`、`TestVideoResume`。脚本在 `.tmp/probes/playback/`，跑之前拷回本目录。
+它们要连公网或要本地推流，默认跳过；`TestFfmpegControl` 不打印地址——它带签名。

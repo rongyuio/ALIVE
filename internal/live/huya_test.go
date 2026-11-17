@@ -1,12 +1,9 @@
 package live
 
 import (
-	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
-	"time"
 )
 
 // 下面两个样本取自 2026-11 的真实响应（只裁掉未使用的字段），
@@ -493,113 +490,5 @@ func TestNormalizeHuyaRoomID(t *testing.T) {
 		if !c.wantErr && got != c.want {
 			t.Errorf("normalizeHuyaRoomID(%q) = %q，想要 %q", c.in, got, c.want)
 		}
-	}
-}
-
-// TestHuyaLive 打真实接口，默认跳过：
-//
-//	LIVE_INTEGRATION=1 go test ./internal/live -run TestHuyaLive
-func TestHuyaLive(t *testing.T) {
-	if os.Getenv("LIVE_INTEGRATION") == "" {
-		t.Skip("设置 LIVE_INTEGRATION=1 才打真实接口")
-	}
-	p := newHuya()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	groups, err := p.Categories(ctx)
-	if err != nil {
-		t.Fatalf("分区树失败：%v", err)
-	}
-	t.Logf("分区组 %d 个，第一组 %q 有 %d 个二级分区", len(groups), groups[0].Name, len(groups[0].Categories))
-
-	// 英雄联盟 = gid 1
-	page, err := p.Rooms(ctx, "1", 1, 40)
-	if err != nil {
-		t.Fatalf("直播列表失败：%v", err)
-	}
-	t.Logf("英雄联盟第 1 页 %d 条，hasMore=%v", len(page.Rooms), page.HasMore)
-	if len(page.Rooms) > 0 {
-		r := page.Rooms[0]
-		t.Logf("首条：%s / %s / 分区=%s / 封面=%q", r.Nickname, r.Title, r.Area, r.Cover)
-	}
-
-	page2, err := p.Rooms(ctx, "1", 2, 40)
-	if err != nil {
-		t.Fatalf("直播列表第 2 页失败：%v", err)
-	}
-	t.Logf("英雄联盟第 2 页 %d 条，hasMore=%v", len(page2.Rooms), page2.HasMore)
-	if len(page.Rooms) > 0 && len(page2.Rooms) > 0 {
-		t.Logf("第 1 页首条房间=%s，第 2 页首条房间=%s", page.Rooms[0].RoomID, page2.Rooms[0].RoomID)
-		// 列表按实时热度排序，两次请求之间名次会变，跨页重复是上游抖动、
-		// 不是切片错位；这里只记录数量，不做断言。
-		seen := make(map[string]struct{}, len(page.Rooms))
-		for _, r := range page.Rooms {
-			seen[r.RoomID] = struct{}{}
-		}
-		overlap := 0
-		for _, r := range page2.Rooms {
-			if _, dup := seen[r.RoomID]; dup {
-				overlap++
-			}
-		}
-		t.Logf("第 1、2 页重叠房间 %d 个（实时热度排序导致，预期可能非 0）", overlap)
-	}
-
-	// 翻到最后一页之后 hasMore 必须收住（iTotalPage≈4，40 条逻辑页的第 12 页）。
-	last, err := p.Rooms(ctx, "1", 12, 40)
-	if err != nil {
-		t.Fatalf("直播列表末页失败：%v", err)
-	}
-	t.Logf("第 12 页 %d 条，hasMore=%v", len(last.Rooms), last.HasMore)
-	if last.HasMore {
-		t.Error("末尾逻辑页的 HasMore 应为 false")
-	}
-
-	rooms, err := p.Search(ctx, "英雄联盟")
-	if err != nil {
-		t.Fatalf("搜索失败：%v", err)
-	}
-	t.Logf("搜索「英雄联盟」%d 条", len(rooms))
-	if len(rooms) > 0 {
-		t.Logf("搜索首条：%s / %s / 在播=%v", rooms[0].Nickname, rooms[0].Title, rooms[0].Live)
-	}
-
-	// 用列表里的真实房间号验证单房间查询：列表只返回在播房间，
-	// 所以刚查到的房间必须仍然是 Live。
-	if len(page.Rooms) > 0 {
-		id := page.Rooms[0].RoomID
-		info, err := p.RoomInfo(ctx, id)
-		if err != nil {
-			t.Fatalf("房间信息 %s 失败：%v", id, err)
-		}
-		t.Logf("房间 %s：%s / %s / 分区=%s / 人气=%d / 在播=%v / 封面=%q",
-			info.RoomID, info.Nickname, info.Title, info.Area, info.Viewers, info.Live, info.Cover)
-		if info.RoomID != id {
-			t.Errorf("RoomID = %q，想要 %q", info.RoomID, id)
-		}
-		if !info.Live {
-			t.Errorf("列表里的在播房间 %s 在单房间查询里变成了未开播", id)
-		}
-		if info.Nickname == "" || info.Area == "" {
-			t.Errorf("房间信息缺字段：%+v", info)
-		}
-		if info.Cover != "" && !strings.HasPrefix(info.Cover, "https://") {
-			t.Errorf("Cover 不是 https：%q", info.Cover)
-		}
-		if info.Avatar != "" && !strings.HasPrefix(info.Avatar, "https://") {
-			t.Errorf("Avatar 不是 https：%q", info.Avatar)
-		}
-	}
-
-	// 不存在的房间必须是 UpstreamError，不能被当成风控
-	if _, err := p.RoomInfo(ctx, "99999999"); err == nil {
-		t.Error("不存在的房间应返回错误")
-	} else {
-		var upstream *UpstreamError
-		if !errors.As(err, &upstream) {
-			t.Errorf("不存在房间的错误 = %v，想要 UpstreamError", err)
-		}
-		t.Logf("不存在房间的错误：%v", err)
 	}
 }

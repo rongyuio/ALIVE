@@ -18,7 +18,7 @@ import (
 
 // 斗鱼取流。
 //
-// 流程与 baseline 对齐（同一套 pure_live 结论）：
+// 流程如下（同一套 pure_live 结论）：
 //   - websec/getEncryption 拿加密描述符，缓存 5 分钟，失败强制刷新重试一次；
 //   - 用 MD5 链算 auth，POST getH5PlayV1，表单里必须带
 //     enc_data / tt / did / auth / cdn / rate / hevc / fa / ive / ver / iar；
@@ -32,8 +32,6 @@ const (
 	douyuEncryptionURL = "https://www.douyu.com/wgapi/livenc/liveweb/websec/getEncryption?did=%s"
 	// 房间号走路径。
 	douyuH5PlayURL = "https://www.douyu.com/lapi/live/getH5PlayV1/%s"
-	// 不指定线路时用它，这是网页端默认的 ws-h5 节点。
-	douyuDefaultCDN = "ws-h5"
 
 	douyuEncCacheMax = 5 * time.Minute
 	// 距到期不足 30 秒就重新取，避免请求途中描述符过期。
@@ -101,13 +99,6 @@ type douyuRate struct {
 	Name string
 	Rate int
 	Bit  int
-}
-
-// douyuQualityURLs 是一个档位的解析结果。
-type douyuQualityURLs struct {
-	URLs        []string
-	AppliedRate *int
-	Unconfirmed bool
 }
 
 // Stream 返回房间详情和全部清晰度 / 线路。
@@ -585,8 +576,7 @@ func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate i
 
 // douyuSign 生成 getH5PlayV1 的表单。
 //
-// 字段值与 baseline 逐一对应；Go 的 url.Values 会把 key 排序，
-// 而斗鱼只校验字段值，不校验顺序。
+// Go 的 url.Values 会把 key 排序，而斗鱼只校验字段值，不校验顺序。
 func (p *douyuProvider) douyuSign(ctx context.Context, roomID string, rate int, cdn string, force bool) (string, string, error) {
 	enc, err := p.douyuEncryption(ctx, force)
 	if err != nil {

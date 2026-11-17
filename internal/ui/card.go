@@ -14,7 +14,7 @@ import (
 
 // EnterAnim 是一张卡片的入场动画参数。
 //
-// baseline 的 card-in：260ms ease-out，opacity 0→1 + translateY 10px→0，
+// 入场动画：260ms ease-out，opacity 0→1 + translateY 10px→0，
 // 前 6 张各错峰 20ms。MyGo 的 Animation 自带 Delay，默认曲线就是 ease-out；
 // Key 每代递增，切分区时从头播，而不是倒着播。
 type EnterAnim struct {
@@ -41,7 +41,7 @@ type Streamer struct {
 
 // CardHeight 返回给定列宽下卡片的总高度。
 //
-// 封面严格 16:9（对齐 baseline 的 `aspect-ratio: 16/9`），信息条固定高度，
+// 封面严格 16:9（`aspect-ratio: 16/9`），信息条固定高度，
 // 这样 GridView 的 rowHeight 才能和实际布局一致。
 func CardHeight(w float32) float32 {
 	return w*9/16 + theme.CardMetaH
@@ -49,7 +49,7 @@ func CardHeight(w float32) float32 {
 
 // Card 构建一张主播卡片。
 //
-// 结构与 baseline 的 StreamerCard 一致：封面（16:9，悬停放大 1.02）+
+// 结构是封面（16:9，悬停放大 1.02）+
 // 信息条（头像 32、昵称 13/600、标题 12、分类胶囊）。
 // hover 时表面亮一档、播放按钮与关注按钮淡入。
 func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onOpen, onToggleFollow func()) ui.Element {
@@ -60,7 +60,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 	card.InsetShadow(0, 1, 0, 0, theme.TopLight)
 
 	// 入场：透明度与位移共用同一个进度。opacity 不标 NonMotion——
-	// baseline 在 reduced motion 下整段动画关掉，卡片直接出现。
+	// reduced motion 下整段动画关掉，卡片直接出现。
 	if in.Key != "" {
 		o := card.AnimateTo(in.Key, in.To, ui.Animation{
 			Duration: 260 * time.Millisecond,
@@ -76,7 +76,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 	card.Label("直播间:" + s.Name)
 	cardBg := theme.BgSecondary
 	if hovered {
-		// baseline: color-mix(bg-secondary 88%, bg-tertiary)
+		// 悬停色 color-mix(bg-secondary 88%, bg-tertiary)
 		cardBg = theme.BgSecondary.Mix(theme.BgTertiary, 0.12)
 	}
 	card.Background(cardBg)
@@ -87,11 +87,11 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 	card.Children(func() {
 		// ---------------------------------------------------------- 封面区
 		// 封面只把上两个角切圆：底部负 inset 让封面延伸到信息条底下，
-		// 信息条用同色不透明底封住，等价于 baseline 的 overflow: hidden。
+		// 信息条用同色不透明底封住，等价于 overflow: hidden。
 		cover := ui.Box(c).Width(w).Height(coverH)
 		cover.ClipInset(0, 0, -theme.RadiusMD, 0, theme.RadiusMD)
 		cover.Children(func() {
-			// 封面本体单独包一层：baseline 悬停时把封面从 1 放大到 1.02
+			// 封面本体单独包一层：悬停时把封面从 1 放大到 1.02
 			//（320ms ease-out），缩放只作用于画面，不带动角标。
 			art := ui.Box(c).Width(w).Height(coverH)
 			target := float32(1)
@@ -103,14 +103,14 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 			art.Children(func() {
 				// 真封面优先；还没下载完就先用渐变占位撑住版式，加载完成后
 				// 图片缓存会触发一次 Update，下一帧自动换成真图。
-				if bmp := media.Default.Bitmap(s.CoverURL, w); bmp != nil && !ForcePlaceholder {
+				if bmp := media.Default.Bitmap(s.CoverURL, w); bmp != nil {
 					ui.Image(c, bmp).Fill().Fit(ui.Cover)
 				} else {
 					coverArt(c, s, w, coverH)
 				}
 			})
 
-			// baseline 的封面上没有压暗遮罩，LIVE 角标直接落在画面上。
+			// 封面上没有压暗遮罩，LIVE 角标直接落在画面上。
 
 			// 观看人数胶囊：右上角，高 22，圆角胶囊
 			ui.Row(c).Absolute().Top(10).Right(10).Height(22).
@@ -122,9 +122,9 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 						TextColor(theme.White94).FontFeatures("tnum")
 				})
 
-			// baseline 的卡片不显示直播 / 未开播状态：首页拉的直播间天然是在播的
+			// 卡片不显示直播 / 未开播状态：首页拉的直播间天然是在播的
 
-			// 关注按钮：左上角。baseline 里 hover 淡入，已关注时一直显示
+			// 关注按钮：左上角。hover 淡入，已关注时一直显示
 			if hovered || followed {
 				follow := ui.Box(c).Absolute().Left(8).Top(8).Size(32, 32).Radius(16).
 					Center().Cursor(ui.CursorPointer)
@@ -147,7 +147,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 					onToggleFollow()
 				}
 				follow.Children(func() {
-					// baseline：未关注是空心星（白 90%），已关注是实心星（accent 底上的深色）
+					// 未关注是空心星（白 90%），已关注是实心星（accent 底上的深色）
 					if followed {
 						ui.Icon(c, iconStarFilled).FontSize(15).TextColor(theme.AccentText)
 						return
@@ -192,8 +192,6 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 
 // coverArt 是封面图还没到时的占位：两段同色相渐变 + 一处柔光，
 // 让版式和明暗关系先立住，不至于是一块死色。
-// ForcePlaceholder 让所有封面都画占位（截图验收用，看占位样式）。
-var ForcePlaceholder bool
 
 func coverArt(c *ui.Context, s Streamer, w, h float32) {
 	// 封面没到之前是一块安静的底色加一个旋转的圆环。
@@ -240,7 +238,7 @@ func initial(name string) string {
 	return "?"
 }
 
-// viewerText 把人气格式化成 baseline 的写法：1.6万 / 982。
+// viewerText 把人气格式化成 1.6万 / 982 这种写法。
 func viewerText(n int) string {
 	if n >= 10000 {
 		return fmt.Sprintf("%.1f万", float64(n)/10000)

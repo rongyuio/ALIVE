@@ -10,7 +10,7 @@ import (
 	"alive/internal/theme"
 )
 
-// 弹幕设置面板的尺寸取自 baseline 的 DanmuSettingsControl.module.css：
+// 弹幕设置面板的尺寸：
 // 面板 232 宽、padding 14 16、圆角 16、玻璃底 rgba(17,20,28,.88)；
 // 每行 8×10 padding、圆角 10、底色白 5%、描边白 8%。
 const (
@@ -26,7 +26,7 @@ const (
 // danmuSettingsButton 是控制台里的弹幕设置入口。
 //
 // 和清晰度 / 线路两个下拉一样是 hover 打开、离开 220ms 关
-// （baseline 的 DanmuSettingsControl 触发条也是 onMouseEnter 开）。
+// （触发条也是 onMouseEnter 开）。
 func (a *App) danmuSettingsButton(c *ui.Context) {
 	// 和其它控制条按钮同一套：30×30 无底色，只变色
 	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label("弹幕设置")
@@ -178,7 +178,8 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, frac float32, s
 	})
 }
 
-// formatDanmuDuration / formatDanmuArea 逐字取自 baseline 的 danmuSettings.ts。
+// formatDanmuDuration / formatDanmuArea 是滑杆右侧那串档位文案：
+// 时长分 5 档、显示区域按四等分，滑杆本身存的是原始值（毫秒 / 比例）。
 func formatDanmuDuration(d time.Duration) string {
 	switch ms := d.Milliseconds(); {
 	case ms <= 4500:

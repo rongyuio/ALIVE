@@ -53,7 +53,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 }
 
-// DTV baseline 导出的配置文件也要能读：字段名和平台大小写都不一样。
+// DTV 导出的配置文件也要能读：字段名和平台大小写都不一样。
 func TestParseDTVConfig(t *testing.T) {
 	entries := map[string]string{
 		"followedStreamers": `[{"id":"555","platform":"BILIBILI","nickname":"老王",` +

@@ -3,10 +3,9 @@
 #   make              构建（等价于 make build）
 #   make run          直接跑当前代码
 #   make dev          开发模式：改 .go 自动重建重启
-#   make check        gofmt + build + vet + mygo vet + test，一次跑完
+#   make check        gofmt + build + vet + mygo vet + lint + test，一次跑完
 #   make mock         用 mock 数据层跑（在播 + 弹幕，不需要网络）
 #   make mock-offline 用 mock 数据层跑未开播态（验空态覆盖层）
-#   make probe        打真实接口的探针：列表 → 取流 → 弹幕
 #   make help         全部目标
 #
 # 注意：recipe 里不要写中文。Windows 上 Make 把 recipe 交给 sh 时会按
@@ -31,16 +30,16 @@ RUNENV  = ALIVE_MPV_LIB="$(MPVLIB)"
 FMT_UNFORMATTED = $(shell gofmt -l . 2>/dev/null)
 
 .DEFAULT_GOAL := build
-.PHONY: help build run dev fmt fmt-check vet test check mock mock-offline probe e2e tidy tools clean
+.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline e2e tidy tools clean
 
 help:
 	@echo "build         package into $(BUILD_DIR)/<os>-<arch>/"
 	@echo "run           run from source"
 	@echo "dev           dev mode, rebuild on save"
-	@echo "check         gofmt + build + vet + mygo vet + test"
+	@echo "check         gofmt + build + vet + mygo vet + lint + test"
 	@echo "fmt           gofmt -w ."
 	@echo "test          go test ./..."
-	@echo "probe         hit real platform APIs (needs network)"
+	@echo "lint          golangci-lint run"
 	@echo "mock          run with mock data layer (online + danmaku)"
 	@echo "mock-offline  run with mock data layer (offline state)"
 	@echo "e2e           build with the automation plugin"
@@ -65,26 +64,27 @@ fmt-check:
 
 vet:
 	$(GO) build ./...
-	$(GO) vet ./...
+	$(GO) vet -tags mock ./...
 	$(MYGO) vet .
 
 test:
-	$(RUNENV) $(GO) test ./... -count=1
+	$(RUNENV) $(GO) test -tags mock ./... -count=1
 
-check: fmt-check vet test
+# 和 vet / test 一样带 -tags mock：假数据层和它的测试也要检查。
+# 二进制要用官方 release，`go install` 装的版本官方不保证可用（见 .golangci.yml）。
+lint:
+	golangci-lint run --build-tags mock ./...
+
+check: fmt-check vet lint test
 	@echo "all checks passed"
 
-# mock 只需要环境变量：数据层在首次初始化时读一次 ALIVE_MOCK，
-# 然后整体换掉四个平台的 provider（分区、列表、房间信息、取流、弹幕）。
+# mock 走 -tags mock：整个假数据层（internal/live/mock.go）只在这个构建里存在，
+# 正式二进制里既没有它也没有指向它的分支。ALIVE_MOCK 选在播态还是未开播态。
 mock:
-	$(RUNENV) ALIVE_MOCK=danmu $(GO) run .
+	$(RUNENV) ALIVE_MOCK=danmu $(GO) run -tags mock .
 
 mock-offline:
-	$(RUNENV) ALIVE_MOCK=offline $(GO) run .
-
-# 探针会真的打平台接口：列表 → 取流 → 连弹幕。不会真的转封装。
-probe:
-	$(RUNENV) ALIVE_PROBE=1 $(GO) test ./internal/live -run TestManual -count=1 -v
+	$(RUNENV) ALIVE_MOCK=offline $(GO) run -tags mock .
 
 # automation 插件只在 e2e 构建里存在（见 automation_e2e.go）。产物要能直接跑，
 # 所以运行库跟着一起放过去。

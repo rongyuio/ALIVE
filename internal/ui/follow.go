@@ -15,7 +15,7 @@ import (
 
 // FollowRecord 是一条关注记录。
 //
-// 与 baseline 的 FollowRecord 一致：只存渲染关注面板要用的字段。
+// FollowRecord 只存渲染关注面板要用的字段。
 // 人气和在线状态是关注当时的快照，之后靠列表刷新补——关注面板本身
 // 不会为了十几个主播逐个去打房间信息接口。
 type FollowRecord struct {
@@ -30,11 +30,6 @@ type FollowRecord struct {
 	Live       bool
 	FollowedAt time.Time
 }
-
-// followKeyOf 是关注状态的唯一键：平台 + 房间号。
-//
-// 用房间号而不是主播名：主播改名不该丢关注，同名主播也不该互相串。
-func followKeyOf(s Streamer) string { return s.Platform + "|" + s.RoomID }
 
 // isFollowed 报告一位主播是否已关注。
 //
@@ -94,7 +89,7 @@ func (a *App) toggleFollow(s Streamer) {
 		return
 	}
 
-	// baseline 的 toggleFollow 把新关注的放到数组最前面，面板里立刻能看见；
+	// 新关注的放到数组最前面，面板里立刻能看见；
 	// 这里同样是前插，第三层「保持关注顺序」才有原序可言。
 	a.Follows = append([]FollowRecord{{
 		Platform:   s.Platform,
@@ -129,9 +124,8 @@ func followStreamer(r FollowRecord) Streamer {
 
 // followStreamers 是关注面板的数据源。
 //
-// 顺序对齐 baseline FollowsList 的 visibleFollows：在播的排前面 → 同状态内
-// 按顶栏的平台顺序分组 → 组内保持用户自己的关注顺序。baseline 第三层靠 JS
-// 的稳定排序拿到，这里用 sort.SliceStable 表达同一条规则。
+// 顺序：在播的排前面 → 同状态内按顶栏的平台顺序分组 → 组内保持用户自己的
+// 关注顺序。第三层靠稳定排序拿到，这里用 sort.SliceStable 表达同一条规则。
 func (a *App) followStreamers() []Streamer {
 	out := make([]Streamer, 0, len(a.Follows))
 	for _, r := range a.Follows {
@@ -141,7 +135,7 @@ func (a *App) followStreamers() []Streamer {
 	return out
 }
 
-// sortFollowStreamers 按 baseline 的规则就地重排关注面板。
+// sortFollowStreamers 按下面的规则就地重排关注面板。
 //
 // 平台顺序每帧实时取顶栏的 PlatformOrder：拖一次 tab，面板里的分组立刻跟着变。
 // 不在顺序表里的平台排到最后；两个未知平台互相比相等，稳定排序会保留原顺序。
@@ -167,7 +161,7 @@ func sortFollowStreamers(list []Streamer, platformOrder []string) {
 
 // refreshWorkers 是刷新关注状态时的总并发。
 //
-// baseline 取 6：关注通常跨 2~4 个平台，单平台瞬时并发落在 2~3，
+// 总并发取 6：关注通常跨 2~4 个平台，单平台瞬时并发落在 2~3，
 // 既明显快，又不会把上游惹毛（各平台自己的 limiter 还在下面兜着）。
 const refreshWorkers = 6
 
@@ -177,12 +171,12 @@ func (a *App) RefreshFollows() { a.refreshFollows(false) }
 // refreshFollowsManual 是关注面板刷新按钮的动作。
 //
 // 和自动刷新同一条流程，区别只在刷完要给一条 toast：
-// 启动时那次刷新不该打扰用户，手动点了就必须有结果（baseline 的 handleRefresh）。
+// 启动时那次刷新不该打扰用户，手动点了就必须有结果。
 func (a *App) refreshFollowsManual() { a.refreshFollows(true) }
 
 // refreshFollows 刷新关注主播的实时状态。
 //
-// 沿用 baseline 的做法：一条队列、若干 worker，谁拿到谁去查，
+// 刷新靠一条队列加若干 worker 摊开：谁拿到谁去查，
 // 每回来一条就立刻写回，不等整批结束——面板上的绿灯是逐个变化的，
 // 刷新按钮上的圆环也一格一格往前走。
 func (a *App) refreshFollows(report bool) {
@@ -190,7 +184,7 @@ func (a *App) refreshFollows(report bool) {
 		return
 	}
 	if len(a.Follows) == 0 {
-		// baseline：手动点了却没有关注任何人，也得说一声
+		// 手动点了却没有关注任何人，也得说一声
 		if report {
 			a.toastTone("还没有关注任何主播", toastInfo)
 		}
@@ -241,7 +235,7 @@ func (a *App) refreshFollows(report bool) {
 
 // followRingProgress 是刷新按钮圆环的填充比例（0~1）。
 //
-// 一条都没查过时返回 0：baseline 的 RingProgress 在 total 为 0 时同样画空。
+// 一条都没查过时返回 0：没有总数就没什么可画的。
 func (a *App) followRingProgress() float32 {
 	if a.followRefreshTotal <= 0 {
 		return 0
@@ -249,7 +243,7 @@ func (a *App) followRingProgress() float32 {
 	return float32(a.followRefreshDone) / float32(a.followRefreshTotal)
 }
 
-// followRefreshLabel 是刷新按钮的读屏文案，对齐 baseline 的 refreshHint：
+// followRefreshLabel 是刷新按钮的读屏文案：
 // 刷新中报进度，空闲时报动作。
 func (a *App) followRefreshLabel() string {
 	if !a.followsBusy {
@@ -261,7 +255,7 @@ func (a *App) followRefreshLabel() string {
 	return "正在刷新…"
 }
 
-// refreshSummary 是刷新结束后那条提示，和 baseline 的 handleRefresh 一致：
+// refreshSummary 是刷新结束后那条提示：
 // 全成功报数、部分失败报两边、全军覆没报失败。色调同时给出——success 打勾、
 // info 打 info、error 打三角警告，图标跟着结果变。
 func refreshSummary(updated, failed int) (string, string) {
@@ -277,7 +271,7 @@ func refreshSummary(updated, failed int) (string, string) {
 
 // refreshOne 查一位主播的实时状态并写回关注记录，成功时返回 true。
 //
-// 两段式，和 baseline 的 refreshStatuses 一致：先走轻量房间信息；挂了再退回
+// 两段式：先走轻量房间信息；挂了再退回
 // 取流接口试一次。取流更重（要签名、换播放列表），但它和房间详情走的是两条
 // 链路——某平台单独改了房间详情接口时，取流还活着就能把状态救回来。
 func (a *App) refreshOne(win *mygo.Window, r FollowRecord) bool {
@@ -357,7 +351,7 @@ func applyRoomInfo(f *FollowRecord, room live.Room) {
 // applyStreamInfo 用取流信息覆盖关注记录。
 //
 // 取流接口只给昵称、标题、头像和直播状态：人气和封面它没有，这两个字段
-// 保持刷新前的值（baseline 的 fallback 分支同样不写 viewers）。
+// 保持刷新前的值（取流这条分支同样不写 viewers）。
 func applyStreamInfo(f *FollowRecord, s live.Stream) {
 	if s.Nickname != "" {
 		f.Name = s.Nickname

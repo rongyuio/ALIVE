@@ -171,11 +171,6 @@ func (p *douyinProvider) authCookieString() string {
 	return p.authCookie
 }
 
-// douyinCookieHeaderValue 给弹幕等手工拼头的场景用。
-func (p *douyinProvider) douyinCookieHeaderValue() string {
-	return strings.TrimSpace(p.authCookieString())
-}
-
 // visibleName 过滤掉只有不可见字符的昵称。
 //
 // 抖音的 profile/self 对部分账号返回的是打码昵称（U+FFF4 这类特殊字符），

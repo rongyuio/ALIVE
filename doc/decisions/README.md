@@ -4,8 +4,8 @@
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
-| [0001](0001-player-backend.md) | 播放器后端：系统解码 vs 自带解码 vs libmpv | 已决定，已落地 |
-| [0002](0002-ffmpeg-provisioning.md) | FFmpeg 随包分发与版本锁定 | 已落地 |
+| [0001](0001-player-backend.md) | 播放器后端：系统解码 vs 自带解码 vs libmpv | 已决定，已落地；实现方式已由 0003 → 0004 取代 |
+| [0002](0002-ffmpeg-provisioning.md) | FFmpeg 随包分发与版本锁定 | 已废止（落地方式由 0004 取代） |
 | [0003](0003-libav-in-process.md) | 自带解码的实现方式：cgo + libav 进程内 | 已取代（见 0004） |
 | [0004](0004-libmpv.md) | 播放实现换成 libmpv（purego 运行时加载） | 已决定，已落地 |
 

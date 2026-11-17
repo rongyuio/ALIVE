@@ -10,10 +10,10 @@ import (
 	"alive/internal/theme"
 )
 
-// 启动层：对齐 baseline 的 index.html #dtv-splash。
+// 启动层：从冷启动到首屏数据就绪之间盖一层，用户不会先看到分区栏和卡片
+// 骨架再跳变。
 //
-// 冷启动到首屏数据就绪之间盖一层，用户不会先看到分区栏和卡片骨架再跳变。
-// 最短停留 splashMin——baseline 也是这个数，避免启动很快时只闪一帧；
+// 最短停留 splashMin，避免启动很快时只闪一帧；
 // 最长 splashMax，网络慢的时候不能让这层一直挡着。
 const (
 	splashMin     = 520 * time.Millisecond
@@ -74,9 +74,6 @@ func (a *App) splash(c *ui.Context) {
 //   - 没有列表可等：请求出错、或者这个分区本来就空，那就直接露出空态；
 //   - 等到 splashMax：网络卡住时，让用户看到骨架也好过一直黑屏。
 func (a *App) splashReady() bool {
-	if a.SplashHold {
-		return false // 截图验收：停在这一帧
-	}
 	elapsed := time.Since(a.splashAt)
 	if elapsed < splashMin {
 		return false
@@ -144,7 +141,7 @@ func (a *App) splashReady() bool {
 
 // splashMark 是那四根高低不同的竖条：每根独立呼吸，相位错开。
 func (a *App) splashMark(c *ui.Context) {
-	// 高度与延迟都取自 baseline 的 .dtv-splash-mark i
+	// 四根竖条的高度与动画延迟
 	heights := [4]float32{12, 22, 30, 18}
 	// CSS 的 animation-delay 是负的，等价于把相位往前推
 	offsets := [4]float32{0.39, 0.26, 0.13, 0}

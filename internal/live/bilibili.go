@@ -53,7 +53,7 @@ func newBilibili() *bilibiliProvider {
 		areas: newCache[[]CategoryGroup](),
 		rooms: newCache[Page](),
 		uids:  newCache[biliRoomRef](),
-		// 对齐 baseline 的关注刷新并发（前台 6 个 worker、后端不限流）：
+		// 关注刷新并发：前台 6 个 worker，后端不限流。
 		// 平台限流器开到 6 并发，刷新时 6 个 worker 不会互相卡住。
 		// 60ms 只用来避免同一瞬间把 6 个请求一起打出去；真被风控时
 		// block() 仍会把整个平台冷下来。

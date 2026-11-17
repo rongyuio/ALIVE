@@ -10,3 +10,8 @@ mygo_windows_*.syso
 # 本地临时文件
 /.task/
 /.tmp/
+
+# 探针不进仓库：要连公网、要真实流、跑不进 make check 的测试放 .tmp/probes/ 下，
+# 需要时拷回对应包。见 AGENTS.md「测试与验证」。
+*_probe_test.go
+zz_*_test.go

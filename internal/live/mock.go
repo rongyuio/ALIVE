@@ -1,28 +1,48 @@
+//go:build mock
+
+// Mock 数据层：不联网看 UI 用。
+//
+// 整个文件只在 -tags mock 下参与编译——正式构建里既没有这几百行剧本，也没有
+// 任何指向它的分支。跑法见 Makefile 的 mock / mock-offline。
+//
+// 做成「假 provider」而不是在 UI 里塞假数据，是为了走同一条链路：弹幕要经过
+// Danmaku → applyDanmu → 面板 / 飞屏，被覆盖的才是真实代码。之前的 fake 池
+// 写在视图层，结果是真实弹幕到了以后两套并存，进直播间头几条永远是假的。
+//
+//	ALIVE_MOCK=danmu    在播、有弹幕（画面停在封面上，不起 ffmpeg）
+//	ALIVE_MOCK=offline  未开播（测空态覆盖层）
 package live
 
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 )
 
-// Mock 数据层。
-//
-// 只在 ALIVE_MOCK 有值时启用（见 registry.go）：它把四个平台全部换掉，
-// 于是 UI 和交互在没有网络、没有真实消息的情况下也能完整跑一遍。
-//
-// 做成「假 provider」而不是在 UI 里塞假数据，是为了走同一条链路：
-// 弹幕要经过 Danmaku → applyDanmu → 面板 / 飞屏，被覆盖的才是真实代码。
-// 之前的 fake 池写在视图层，结果是真实弹幕到了以后两套并存，进直播间
-// 头几条永远是假的。
-//
-//	ALIVE_MOCK=danmu    在播、有弹幕（画面停在封面上，不起 ffmpeg）
-//	ALIVE_MOCK=offline  未开播（测空态覆盖层）
 const (
 	MockDanmu   = "danmu"
 	MockOffline = "offline"
 )
+
+// init 在包初始化阶段就把数据层整体换掉。
+//
+// 用 init 而不是在 ProviderFor 里判断：providersOnce 是 Once，谁先跑谁定音；
+// init 一定早于任何调用，所以这里换掉之后 ProviderFor 不会再造真实 provider。
+// ALIVE_MOCK 为空时直接返回，那个 Once 留给 ProviderFor。
+func init() {
+	mode := os.Getenv("ALIVE_MOCK")
+	if mode == "" {
+		return
+	}
+	providersOnce.Do(func() {
+		providers = make(map[Platform]Provider, 4)
+		for _, platform := range []Platform{Douyu, Huya, Douyin, Bilibili} {
+			providers[platform] = newMockProvider(platform, mode)
+		}
+	})
+}
 
 // mockEmoteURL 当表情弹幕的图片源。
 //

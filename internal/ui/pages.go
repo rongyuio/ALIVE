@@ -6,7 +6,7 @@ import (
 	"alive/internal/theme"
 )
 
-// 路由路径。和 baseline 的 ROUTES 保持同一套形状，方便对照。
+// 路由路径，一个页面一条。
 const (
 	routeHome      = "/"
 	routeFollows   = "/follows"
@@ -27,7 +27,7 @@ type Subscription struct {
 
 // SubscribePage 是订阅分区页。
 //
-// 结构对齐 baseline 的 SubscriptionsPage：不设页头标题、不按平台分组，
+// 页面结构：不设页头标题、不按平台分组，
 // 所有已订阅分区在顶部平铺成一行 chip，把竖向空间尽量留给主播列表。
 // 选中哪个 chip 就拉那个分区自己的列表（平台可以和当前顶栏平台不同）。
 func (a *App) SubscribePage(c *ui.Context) {
@@ -92,7 +92,7 @@ func (a *App) subscribeBar(c *ui.Context) {
 				if chip.Clicked() {
 					if idx != a.SubIndex {
 						a.resetCards()
-						// baseline：换 chip 后列表回到顶部。换的是另一套行，
+						// 换 chip 后列表回到顶部。换的是另一套行，
 						// 整份状态重置（只挪偏移会先用旧位置铺新数据，闪一下）。
 						a.SubList = ui.ListState{}
 						a.navFlip(&a.subFeedSeq, a.SubIndex, idx)

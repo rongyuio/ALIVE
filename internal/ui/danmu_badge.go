@@ -159,20 +159,3 @@ func medalHexColor(hex string) ui.Color {
 	}
 	return ui.Color{}
 }
-
-// chipTextOn 返回胶囊文字颜色和描边宽度。
-//
-// 四个平台网页端的牌子都是白字，这里统一用白字，不按底色切换深/浅字——
-// 同一屏里一半黑字一半白字看着像出错。底色偏浅时给白字加一圈暗描边
-// （宽度 1），保证「Lv.14」这种浅金底也压得住。
-func chipTextOn(bg ui.Color) (ui.Color, float32) {
-	white := ui.Hex("#ffffff")
-	if bg.A == 0 {
-		return white, 0
-	}
-	lum := (0.299*float32(bg.R) + 0.587*float32(bg.G) + 0.114*float32(bg.B)) / 255
-	if lum > 0.62 {
-		return white, 1
-	}
-	return white, 0
-}

@@ -614,7 +614,7 @@ func (s *huyaDanmaku) nextID(at time.Time) string {
 // huyaColorHex 把平台给的十进制颜色转成 #RRGGBB。
 //
 // 上游对「默认白色」也回 0 或 16777215，两种都归到 #FFFFFF：
-// baseline 的虎牙弹幕就是白色，交回 UI 按昵称取色会跟基准对不上。
+// 虎牙弹幕就是白色，交回 UI 按昵称取色会跟基准对不上。
 func huyaColorHex(color int32) string {
 	if color <= 0 {
 		return "#FFFFFF"

@@ -33,8 +33,11 @@
 ## 测试
 
 ```sh
+make test                          # recipe 里带 -tags mock
 go test ./internal/live -count=1
 go test -race ./internal/live -count=1
 ```
 
-公网集成用例默认不启用，真实取流结果记在 [doc/reference/measurements.md](../../doc/reference/measurements.md)。
+包里只剩不联网的解析测试。打真实接口的用例（`TestBilibiliLive`、`TestDouyuLive`、
+`TestHuyaLive`）不进仓库，脚本在 `.tmp/probes/live/`，需要时拷回本目录。真实取流
+结果记在 [doc/reference/measurements.md](../../doc/reference/measurements.md)。

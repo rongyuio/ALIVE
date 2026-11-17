@@ -105,7 +105,7 @@ func (a *App) handleEscape() {
 	a.Router.Back()
 }
 
-// toggleWinFull 切换应用内窗口全屏（baseline 的 cssFullscreen：铺满应用窗口、
+// toggleWinFull 切换应用内窗口全屏（铺满应用窗口、
 // 任务栏仍在，不动系统窗口状态）。
 //
 // 两种全屏互斥。系统全屏里点这颗按钮，先退出系统全屏再进窗口全屏——不然两个

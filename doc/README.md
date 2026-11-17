@@ -26,7 +26,7 @@
 | 文档 | 内容 | 什么时候必读 |
 |---|---|---|
 | [0001-player-backend.md](decisions/0001-player-backend.md) | 播放器后端：Media Foundation、自带 FFmpeg 解码、libmpv 三条路线的取舍与迁移条件 | 想改播放器实现，或觉得"是不是该换 libmpv"之前 |
-| [0002-ffmpeg-provisioning.md](decisions/0002-ffmpeg-provisioning.md) | FFmpeg 随包分发、版本锁定、校验落盘 | 升级 FFmpeg、改下载源、加新的二进制依赖之前 |
+| [0002-ffmpeg-provisioning.md](decisions/0002-ffmpeg-provisioning.md) | FFmpeg 随包分发、版本锁定、校验落盘（**落地方式已废止**，播放改由 libmpv 自带的 FFmpeg） | 想知道为什么不再分发 FFmpeg、或又想把兜底路径加回来之前 |
 | [0003-libav-in-process.md](decisions/0003-libav-in-process.md) | cgo + libav 取代 ffmpeg 子进程的取舍与代价（**实现方式已被 0004 取代**） | 想知道为什么放弃子进程、或重提自研引擎时 |
 | [0004-libmpv.md](decisions/0004-libmpv.md) | 播放换成 libmpv：实测数据、mygo#124 为什么不能直接用、软件渲染的天花板、fork 了 mygo 哪一处 | 动播放层、怀疑「是不是该自己写引擎」、升级 mpv 之前 |
 
@@ -35,6 +35,7 @@
 | 文档 | 内容 | 什么时候必读 |
 |---|---|---|
 | [measurements.md](reference/measurements.md) | 所有实测：首帧成本模型、路径对照、验证矩阵、编码扫描 | 声称"变快了 / 变慢了"之前，先看基准数 |
+| [acceptance.md](reference/acceptance.md) | 驱动真实窗口做验收：mygo-automation 的命令、这个项目踩过的坑、怎么收尾 | 要验真实渲染 / 播放 / 内存，或改完 UI 要截图之前 |
 | [mygo.md](reference/mygo.md) | MyGo 版本演进、生命周期约束、已知限制 | 写 UI、升 MyGo 版本、怀疑是框架问题时 |
 
 ## 必读映射

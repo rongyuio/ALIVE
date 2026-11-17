@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -125,16 +127,38 @@ func TestMedalChipColor(t *testing.T) {
 	}
 }
 
-// 牌子统一白字；浅底额外加描边，深底不加。
-func TestChipTextOn(t *testing.T) {
+// 牌子上的字色：有平台底色就纯白，不描边、不按亮度换深字。
+//
+// 这条盯的是「别再加回去」：浅底白字曾经加过一圈 1 DIP、黑 45% 的描边，
+// 在 11px 中文上糊成黑框，四个平台网页端都没这么画。
+func TestChipTextColor(t *testing.T) {
 	white := ui.Hex("#ffffff")
-	if got, stroke := chipTextOn(ui.Hex("#e0e8f8")); got != white || stroke == 0 {
-		t.Errorf("浅色底 = %v / 描边 %v，应为白字加描边", got, stroke)
+	for _, bg := range []ui.Color{ui.Hex("#e0e8f8"), ui.Hex("#f89858"), ui.Hex("#2d0855")} {
+		if got := chipTextColor(bg); got != white {
+			t.Errorf("底色 %v 的字色 = %v，应为纯白", bg, got)
+		}
 	}
-	if got, stroke := chipTextOn(ui.Hex("#2d0855")); got != white || stroke != 0 {
-		t.Errorf("深色底 = %v / 描边 %v，应为白字不加描边", got, stroke)
+	if got := chipTextColor(ui.Color{}); got != theme.TextSecondary {
+		t.Errorf("中性胶囊的字色 = %v，应为 TextSecondary", got)
 	}
-	if got, stroke := chipTextOn(ui.Color{}); got != white || stroke != 0 {
-		t.Errorf("中性胶囊 = %v / 描边 %v", got, stroke)
+}
+
+// 弹幕胶囊不许给文字加描边。
+//
+// 这是字色之外的另一半：字色对、描边还留着，浅橙底上的白字照样被黑框
+// 圈住（就是当初那个 bug）。跑不了运行时断言——描边是渲染属性，元素树
+// 里看不到，只能查源码。范围限定在弹幕的画法文件，预估未来的 TextStroke
+// （正文里的字重强调等）不受影响。
+func TestChipTextHasNoStroke(t *testing.T) {
+	for _, path := range []string{"danmu_panel.go", "danmu_badge.go"} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.Contains(line, "TextStroke(") {
+				t.Errorf("%s:%d 给弹幕胶囊文字加了描边：%s", path, i+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }

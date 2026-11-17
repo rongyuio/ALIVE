@@ -338,17 +338,6 @@ func (m *playerMedia) engine() videoTrack { return engineOf(m.player) }
 // 必须从主线程调用；后台资源回收不依赖后续 Window.Update 回调。
 func (a *App) CloseMedia() { a.closeMedia() }
 
-// EnterBackgroundForCapture 让应用以「后台收听中」的样子启动（截图验收用）。
-//
-// 真的后台收听要有引擎才能成立，而截图验收时常常不接真流。这里只置状态位并
-// 回到首页，岛据此画出那颗圆胶囊——验收的是它的版式，不是播放链路。
-func (a *App) EnterBackgroundForCapture() {
-	a.media.roomKey = "capture|background"
-	a.media.background = true
-	a.media.detachedAt = time.Now()
-	a.Router = ui.NewRouter(routeHome)
-}
-
 // ensureMedia 保证当前正在播放的直播间已经接上真实流。
 //
 // 只在房间变化时启动；同一个房间反复进入播放页不会重复取流。
@@ -661,6 +650,9 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 	a.adoptBackgroundVideoOff()
 	logStage(sess.id, sess.start, "open", "mode", "native", "quality", upstream.Label,
 		"ready", p.Ready(), "declared_width", upstream.Width, "declared_height", upstream.Height)
+	// 小窗可能正开着而主窗口藏着：这一路是在主窗口的 Update 里接上的，
+	// 不叫小窗重画一次，它会一直停在「没有播放器」的那一帧封面上。
+	a.invalidateWindows()
 }
 
 // adoptBackgroundVideoOff 把人不在播放页时开出来的这一路按后台收听处理。
@@ -843,6 +835,9 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 		old.Close()
 	}
 	logStage(sess.id, sess.start, "swap-done", "reason", reason, "quality", v.Label, "background", a.media.background)
+	// 旧播放器是在小窗正显示的时候被换掉的，同样得让小窗重画：新引擎的
+	// wake 要等小窗下一次画 Video 才会指向它。
+	a.invalidateWindows()
 }
 
 func (m *playerMedia) stopPlayback() {
@@ -872,6 +867,9 @@ func (a *App) failPlayback(class, msg string) {
 	a.stopPlayback()
 	m.loading = false
 	m.err = msg
+	// 小窗里没有错误层，播放器一收它只能看到一张旧封面：重画一次，
+	// 至少让「画面没了」和「播放器被收掉」发生在同一帧上。
+	a.invalidateWindows()
 }
 
 // trackFirstFrame 记录首帧，并在超时和播放器报错时落到可重试终态。
@@ -1291,6 +1289,7 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 		Platform:   live.Platform(a.current().Platform),
 		Kind:       kind,
 		Emotes:     d.Emotes,
+		Color:      d.Color,
 		Price:      d.Price,
 		Background: d.Background,
 		Born:       time.Now(),

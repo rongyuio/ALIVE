@@ -10,7 +10,7 @@ import (
 	"alive/internal/theme"
 )
 
-// 光环的几何：baseline 的容器 1px 描边，::before inset:-1px + padding:2px，
+// 光环的几何：容器带 1px 描边，::before inset:-1px + padding:2px，
 // 环压在描边上并向外扩 1px。本体让出环的内侧 1px。
 const (
 	islandRingInset float32 = -1
@@ -133,7 +133,7 @@ func (a *App) Island(c *ui.Context) {
 	// 展开只让宽度往两边长，高度一像素都不动——这是灵动岛的死规矩。
 	island := ui.Box(c.Key("island")).Label("灵动岛").Absolute().Top(islandTop).
 		Height(theme.IslandH).Radius(theme.RadiusFull).
-		// baseline 的 .sidebar 有 1px 描边，光环正压在这条描边上
+		// 这颗岛带 1px 描边，光环正压在这条描边上
 		Border(1, theme.Border)
 
 	w := island.AnimateTo("island-w", targetW, ui.Snappy)
@@ -149,7 +149,7 @@ func (a *App) Island(c *ui.Context) {
 	}
 	island.Width(w).Left((winW - w) / 2)
 
-	// ---------- 投影：baseline 深浅两套（.sidebar 与 [data-theme="light"] .sidebar）。
+	// ---------- 投影：深色与浅色两套。
 	// 浅色主题用低透明度蓝黑，套深色的纯黑阴影会在白底上压出一圈脏灰。
 	//
 	// 收起态是很散的一层：0 24px 56px -28px，几乎看不出投影边界。
@@ -440,7 +440,7 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive boo
 	if size < 32 {
 		d = 8
 	}
-	// 呼吸环：和全部关注页那颗在线点同一套 baseline live-pulse——2px 绿环从
+	// 呼吸环：和全部关注页那颗在线点同一套 live-pulse——2px 绿环从
 	// scale 0.75 扩到 1.85、透明度 0.9 → 0，2 秒一循环，70% 之后停在扩满的
 	// 无形状态。环先画，压在点下面。
 	//
@@ -453,7 +453,7 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive boo
 		Left(ringLeft).Top(ringLeft).Size(ringSize, ringSize).
 		Radius(theme.RadiusFull).Border(2, theme.StatusOnline)
 	if c.Preferences().ReduceMotion {
-		// baseline 在 reduced motion 下关掉脉冲，只留静态绿点
+		// reduced motion 下关掉脉冲，只留静态绿点
 		ring.Opacity(0)
 	} else {
 		// 相位用 Loop 驱动：这版 MyGo 的 Keyframes + RepeatForever 播完一次
@@ -605,7 +605,7 @@ func clockColon(c *ui.Context) {
 
 // islandRing 画那圈贴着边缘跑的 conic 流光。
 //
-// baseline（Sidebar.module.css 的 .sidebar::before）：
+// 流光的构成：
 //   - conic 渐变，底子是 30% 的主题强调色，105° 处一道全亮的头
 //   - 4.5s 线性绕行一圈
 //   - 只留 padding 那一圈：content-box 取反的遮罩
@@ -645,7 +645,7 @@ func (a *App) islandRing(c *ui.Context, r float32) {
 
 // livePulse 把 0–1 的周期相位换成脉冲环的 scale / opacity：
 // 0% 时 0.75 / 0.9，70% 时扩到 1.85 并完全透明，之后保持到周期结束。
-// 缓动与 baseline 的 --ease-out 同一档。
+// 缓动用同一档 --ease-out。
 func livePulse(p float32) (scale, alpha float32) {
 	if p >= 0.7 {
 		return 1.85, 0
@@ -654,7 +654,7 @@ func livePulse(p float32) (scale, alpha float32) {
 	return 0.75 + e*1.10, 0.9 * (1 - e)
 }
 
-// easeOutUnit 是 baseline --ease-out 在 0–1 区间上的求值。
+// easeOutUnit 是 --ease-out 在 0–1 区间上的求值。
 func easeOutUnit(t float32) float32 {
 	return ui.CubicBezier(0.22, 1, 0.36, 1)(t)
 }

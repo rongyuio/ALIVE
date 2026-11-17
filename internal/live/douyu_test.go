@@ -3,10 +3,8 @@ package live
 import (
 	"context"
 	"errors"
-	"os"
 	"strconv"
 	"testing"
-	"time"
 )
 
 // 这些样本取自真实响应（字段做了裁剪，值保持原样）。
@@ -318,62 +316,6 @@ func TestDouyuWindow(t *testing.T) {
 	}
 }
 
-// 真实上游联通性检查，默认跳过：
-//
-//	LIVE_INTEGRATION=1 go test ./internal/live -run TestDouyuLive
-func TestDouyuLive(t *testing.T) {
-	if os.Getenv("LIVE_INTEGRATION") == "" {
-		t.Skip("设置 LIVE_INTEGRATION=1 才打真实接口")
-	}
-	p := newDouyu()
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
-
-	groups, err := p.Categories(ctx)
-	if err != nil {
-		t.Fatalf("分区树失败：%v", err)
-	}
-	t.Logf("分区组 %d 个，第一组 %q 有 %d 个二级分区",
-		len(groups), groups[0].Name, len(groups[0].Categories))
-
-	areaID := "1" // 英雄联盟
-	if len(groups) > 0 && len(groups[0].Categories) > 0 {
-		areaID = groups[0].Categories[0].ID
-	}
-	page, err := p.Rooms(ctx, areaID, 1, 40)
-	if err != nil {
-		t.Fatalf("直播列表失败：%v", err)
-	}
-	t.Logf("分区 %s 第 1 页 %d 条，hasMore=%v", areaID, len(page.Rooms), page.HasMore)
-	if len(page.Rooms) > 0 {
-		r := page.Rooms[0]
-		t.Logf("首条：%s / %s / 封面=%s", r.Nickname, r.Title, r.Cover)
-	}
-
-	page2, err := p.Rooms(ctx, areaID, 2, 40)
-	if err != nil {
-		t.Fatalf("第 2 页失败：%v", err)
-	}
-	t.Logf("分区 %s 第 2 页 %d 条，hasMore=%v", areaID, len(page2.Rooms), page2.HasMore)
-	if len(page2.Rooms) > 0 {
-		t.Logf("第 2 页首条：%s / %s", page2.Rooms[0].Nickname, page2.Rooms[0].Title)
-	}
-	// 逻辑分页按 40 条切上游 120 条一批，第 2 页必须从第 41 条开始。
-	if len(page.Rooms) > 0 && len(page2.Rooms) > 0 && page.Rooms[0].RoomID == page2.Rooms[0].RoomID {
-		t.Errorf("第 1、2 页首条重复：%s", page.Rooms[0].RoomID)
-	}
-
-	rooms, err := p.Search(ctx, "英雄联盟")
-	if err != nil {
-		t.Fatalf("搜索失败：%v", err)
-	}
-	t.Logf("搜索「英雄联盟」%d 条", len(rooms))
-	if len(rooms) > 0 {
-		r := rooms[0]
-		t.Logf("搜索首条：%s / %s / live=%v", r.Nickname, r.Title, r.Live)
-	}
-}
-
 // ---------------------------------------------------------------- 房间实时信息
 
 // betard 的真实响应（2026-11-14 取自直播间 6512，只保留卡片用到的字段）。
@@ -556,53 +498,5 @@ func TestDouyuRoomInfoRejectsBadRoomID(t *testing.T) {
 		if _, err := p.RoomInfo(context.Background(), id); err == nil {
 			t.Errorf("房间号 %q 应被拒绝", id)
 		}
-	}
-}
-
-// 房间实时信息的真实上游检查，默认跳过：
-//
-//	LIVE_INTEGRATION=1 go test ./internal/live -run TestDouyuRoomInfoLive
-func TestDouyuRoomInfoLive(t *testing.T) {
-	if os.Getenv("LIVE_INTEGRATION") == "" {
-		t.Skip("设置 LIVE_INTEGRATION=1 才打真实接口")
-	}
-	p := newDouyu()
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
-
-	// 先从目录里拿一个真实房间号，避免测试绑死在某个主播的直播计划上。
-	page, err := p.Rooms(ctx, "1", 1, 5)
-	if err != nil {
-		t.Fatalf("直播列表失败：%v", err)
-	}
-	if len(page.Rooms) == 0 {
-		t.Fatal("直播列表为空，无法取真实房间号")
-	}
-	want := page.Rooms[0]
-
-	room, err := p.RoomInfo(ctx, want.RoomID)
-	if err != nil {
-		t.Fatalf("房间信息失败：%v", err)
-	}
-	t.Logf("房间 %s：%s / %s / 分区=%s / 人气=%d / live=%v / 封面=%s / 头像=%s",
-		room.RoomID, room.Nickname, room.Title, room.Area, room.Viewers, room.Live, room.Cover, room.Avatar)
-	if room.RoomID != want.RoomID {
-		t.Errorf("房间号 = %q，期望 %q", room.RoomID, want.RoomID)
-	}
-	if room.Nickname == "" || room.Title == "" {
-		t.Errorf("昵称/标题缺失：%+v", room)
-	}
-	if room.Cover == "" || room.Avatar == "" {
-		t.Errorf("封面/头像缺失：cover=%q avatar=%q", room.Cover, room.Avatar)
-	}
-
-	// 不存在的房间：必须是业务错误，不能触发风控冷却，
-	// 否则后面的请求会白等一分钟。
-	if _, err := p.RoomInfo(ctx, "999999999"); err == nil {
-		t.Error("不存在的房间应返回错误")
-	} else if IsBlocked(err) {
-		t.Errorf("不存在的房间被误判成风控：%v", err)
-	} else {
-		t.Logf("不存在房间的错误：%v", err)
 	}
 }

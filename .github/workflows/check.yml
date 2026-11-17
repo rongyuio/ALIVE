@@ -1,13 +1,13 @@
 # 提交/PR 的全量校验：gofmt + build + vet + mygo vet + test。
 #
 # 为什么用 windows-latest 而不是 ubuntu：这个项目的运行时就是 Windows
-# （relay 走 ffmpeg + job 对象，界面是 MyGo 的 D3D 后端），在 Linux 上
-# 能过只能说明代码能编译，说明不了它能不能跑。CI 跟开发机保持同一平台，
+# （界面是 MyGo 的 D3D 后端，播放走 libmpv 的 DLL），在 Linux 上能过只能
+# 说明代码能编译，说明不了它能不能跑。CI 跟开发机保持同一平台，
 # 本地 `make check` 过了 CI 就该过。
 #
 # 为什么不用 make：GitHub 的 Windows 镜像不保证装 make，而这几步本来就
-# 是四条命令。命令和 Makefile 里的 check 目标一一对应，改 Makefile 时
-# 记得同步这里。
+# 是几条命令。命令和 Makefile 里的 check 目标一一对应（vet / test 都带
+# -tags mock），改 Makefile 时记得同步这里。
 name: check
 
 on:
@@ -43,11 +43,22 @@ jobs:
       - name: build
         run: go build ./...
 
+      # -tags mock 与 Makefile 的 vet / test 目标一致：假数据层
+      # （internal/live/mock.go）只在这个构建里存在，不带标签就跳过它的测试。
       - name: vet
-        run: go vet ./...
+        run: go vet -tags mock ./...
+
+      # 官方 action 自己下载官方构建的二进制；不要用 go install——那样拿不到
+      # 构建元数据，官方也明说不保证可用（见 .golangci.yml）。
+      # 版本跟本地保持一致，判定结果才对得上。
+      - name: lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          args: --build-tags mock
 
       - name: mygo vet
         run: go tool mygo vet .
 
       - name: test
-        run: go test ./... -count=1
+        run: go test -tags mock ./... -count=1

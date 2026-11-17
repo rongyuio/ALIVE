@@ -47,7 +47,7 @@ func TestFollowsTabSwitchesBack(t *testing.T) {
 	}
 }
 
-// 刷新中：按钮按 baseline 的 :disabled 降透明度，进度环按 done/total 画弧。
+// 刷新中：按钮按 disabled 降透明度，进度环按 done/total 画弧。
 // 环是自绘的，这条测试保证 Draw 的弧线路径在测试器里也跑得通。
 func TestFollowsRefreshBusyRenders(t *testing.T) {
 	app := NewMockApp()

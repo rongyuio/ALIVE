@@ -12,7 +12,7 @@ import (
 	"alive/internal/theme"
 )
 
-// 弹幕默认参数取自 baseline 的 DEFAULT_DANMU_SETTINGS：
+// 弹幕默认参数：
 // 字号 20px、滚动穿过屏幕 10s、显示区域为画面上方 50%、不透明 1。
 // 通道高度 = 字号 × 1.5 = 30。
 const (
@@ -21,7 +21,7 @@ const (
 	danmuChannel  float32 = 30
 	danmuAreaFrac float32 = 0.5
 	// danmuFlyMax 是画面上同时最多飞多少条；danmuLogMax 是右侧面板留多少历史。
-	// baseline 里本来就是两个数：Overlay 只处理当帧，面板吃的是 messages
+	// 本来就是两个数：Overlay 只处理当帧，面板吃的是 messages
 	//（MAX_MESSAGES = 300，渲染最后 200 条）。
 	danmuFlyMax = 40
 	danmuLogMax = 300
@@ -57,6 +57,10 @@ type danmuLine struct {
 	// Emotes 是这条弹幕携带的表情图。Text 为空且 Emotes 非空时，
 	// 整条弹幕就是一张图（B 站的纯表情弹幕）。
 	Emotes []live.Emote
+	// Color 是平台下发的原生字色（#RRGGBB），空串表示平台没给。
+	// B 站、斗鱼、虎牙都会给：B 站和虎牙是 RGB 整数（白是 0xFFFFFF），
+	// 斗鱼是 1–7 的调色板索引。抖音的聊天消息没有这个字段，永远是空。
+	Color string
 	// Price 是醒目留言的金额（元），0 表示普通弹幕。
 	Price int
 	// Background 是醒目留言的平台背景色（#RRGGBB），空串表示用强调色。
@@ -80,6 +84,21 @@ func emoteSize(e live.Emote, height float32) (float32, float32) {
 		w, h = 1, 1
 	}
 	return height * w / h, height
+}
+
+// danmuColor 是一条弹幕正文该用的颜色。
+//
+// 平台给了原生字色且「彩色弹幕」开着时用平台色（B 站大会员彩色弹幕、
+// 斗鱼调色板、虎牙自定义色）；其余情况用 fallback。
+//
+// 平台的白（#ffffff / #FFFFFF）是「没选颜色」的默认值，不能直接铺上去：
+// 飞屏还行，面板在浅色主题下会变成白字压白底。所以白一律换算成 fallback——
+// 飞屏传设置里的字色，面板传主题正文色。
+func danmuColor(d danmuLine, colorful bool, fallback ui.Color) ui.Color {
+	if !colorful || d.Color == "" || strings.EqualFold(d.Color, "#ffffff") {
+		return fallback
+	}
+	return ui.Hex(d.Color)
 }
 
 // danmuStickerScale 是纯图弹幕（房间表情、收藏集表情贴纸）相对字号的倍率。
@@ -140,7 +159,7 @@ func (a *App) tickDanmu() {
 
 // danmuLayer 是画面上的弹幕层：每条从右边缘匀速穿到左边缘外。
 //
-// baseline 由 danmu.js 负责轨道与位移，这里按同一组参数自己算：
+// 轨道与位移都在这里算：
 // 区域为画面上方 50%，通道 30px；滚动时长 10s 穿过整屏。
 func (a *App) danmuLayer(c *ui.Context) {
 	if !a.DanmuOn || len(a.Danmu) == 0 {
@@ -193,6 +212,9 @@ func (a *App) danmuLayer(c *ui.Context) {
 					tw = textWidth(c, d.Text, a.DanmuFont, 700)
 				}
 			}
+			// 正文颜色：开着「彩色弹幕」且平台给了非白色时用平台色，
+			// 否则用设置里的字色。
+			fg := danmuColor(d, a.DanmuColorful, a.DanmuColor)
 			x := stageW - p*(stageW+tw)
 			y := float32((d.Track%tracks)*int(danmuChannel)) + 16
 
@@ -211,7 +233,7 @@ func (a *App) danmuLayer(c *ui.Context) {
 			if rs.hasEmote {
 				// 表情和文字在同一行里混排：走 RichText，表情画在内联对象上。
 				// 描边和纯文本时一样保留，飘在画面上要压得住背景。
-				rs.richText(c, a.DanmuFont, a.DanmuColor).FontWeight(700).
+				rs.richText(c, a.DanmuFont, fg).FontWeight(700).
 					TextStroke(1, a.DanmuStroke).
 					SingleLine().Opacity(a.DanmuOpacity).
 					Absolute().Left(x).Top(y)
@@ -219,7 +241,7 @@ func (a *App) danmuLayer(c *ui.Context) {
 			}
 
 			ui.Text(c, d.Text).FontSize(a.DanmuFont).FontWeight(700).
-				TextColor(a.DanmuColor).
+				TextColor(fg).
 				TextStroke(1, a.DanmuStroke).
 				SingleLine().Opacity(a.DanmuOpacity).
 				Absolute().Left(x).Top(y)
