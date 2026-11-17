@@ -218,7 +218,7 @@ const hugeSC = "写点长的。第一，谢谢主播每天准点开播，这个�
 //	昵称       单字 / 带 emoji / 带空格 / 超长 / 重复出现（验证哈希色稳定）
 //	平台颜色   红 / 青 / 橙
 //	表情       单个内联 / 多个内联混排 / 平台表情表占位符 / 纯图 / 纯图 gif / 纯图缺宽高
-//	醒目留言   ¥1 / ¥30 / ¥100 / ¥500 长文 / ¥1000 超长文（无等级 + 超长昵称）
+//	醒目留言   ¥10 / ¥30 / ¥100 / ¥500 长文 / ¥1000 超长文（无等级 + 超长昵称）
 //
 // 唯一没覆盖的是「非正方形表情」——手头两个稳定的图源都是方图，
 // 硬凑宽高比会在界面上显示成被拉扁的图，反而误导。
@@ -230,6 +230,22 @@ func mockScript() []Danmu {
 	sizeless := Emote{URL: mockEmoteURL}
 
 	return []Danmu{
+		// -------------------------------------------------------- 醒目留言
+		// 颜色取斗鱼高能弹幕的三档头部色（danmucr 1/2/3），最低档 10 元；
+		// mock 进的是斗鱼房间，就按斗鱼的规则给数据。
+		{Content: "10 块也是心意", Nickname: "阿澈", Level: 3,
+			Kind: DanmuSuperChat, Price: 10, Background: "#385fac"},
+		{Content: "这波必须支持一下", Nickname: "打野的鱼", Level: 45,
+			Kind: DanmuSuperChat, Price: 30, Background: "#d45954"},
+		{Content: "主播加油！", Nickname: "橘子海", Level: 52,
+			Kind: DanmuSuperChat, Price: 100, Background: "#f9af1b"},
+		// 长文 SC：面板那一块要能撑开几行而不挤坏金额徽章
+		{Content: longSC, Nickname: "月亮邮差", Level: 46,
+			Kind: DanmuSuperChat, Price: 500, Background: "#f9af1b"},
+		// 超长文 + 无等级 + 超长昵称：三个边界同时压上来
+		{Content: hugeSC, Nickname: "这是给超长醒目留言配的超长观众昵称", Level: 0,
+			Kind: DanmuSuperChat, Price: 1000, Background: "#f9af1b"},
+
 		// ---------------------------------------------------------- 文字形态
 		{Content: "6", Nickname: "夜行的猫", Level: 14},
 		{Content: "哈哈哈哈哈", Nickname: "柠檬汽水", Level: 21},
@@ -281,20 +297,6 @@ func mockScript() []Danmu {
 		{Nickname: "不吃香菜", Level: 6, Emotes: []Emote{animated}},
 		// 纯图但平台没给尺寸
 		{Nickname: "山与海", Level: 19, Emotes: []Emote{sizeless}},
-
-		// -------------------------------------------------------- 醒目留言
-		{Content: "1", Nickname: "阿澈", Level: 3,
-			Kind: DanmuSuperChat, Price: 1, Background: "#DFE6F7"},
-		{Content: "这波必须支持一下", Nickname: "打野的鱼", Level: 45,
-			Kind: DanmuSuperChat, Price: 30, Background: "#E8B0D8"},
-		{Content: "主播加油！", Nickname: "橘子海", Level: 52,
-			Kind: DanmuSuperChat, Price: 100, Background: "#EDC08A"},
-		// 长文 SC：面板那一块要能撑开几行而不挤坏金额徽章
-		{Content: longSC, Nickname: "月亮邮差", Level: 46,
-			Kind: DanmuSuperChat, Price: 500, Background: "#7BB8FF"},
-		// 超长文 + 无等级 + 超长昵称：三个边界同时压上来
-		{Content: hugeSC, Nickname: "这是给超长醒目留言配的超长观众昵称", Level: 0,
-			Kind: DanmuSuperChat, Price: 1000, Background: "#C77BFF"},
 	}
 }
 

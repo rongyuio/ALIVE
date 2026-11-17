@@ -503,10 +503,11 @@ const (
 // 连续输入时更早的响应靠代次丢弃（baseline 用 cancelled 标记做同一件事）。
 func (a *App) syncSearch() {
 	q := strings.TrimSpace(a.SearchQuery)
-	if q == a.searchQuery && a.Platform == a.searchPlatform {
+	platform := a.viewPlatform()
+	if q == a.searchQuery && platform == a.searchPlatform {
 		return
 	}
-	a.searchQuery, a.searchPlatform = q, a.Platform
+	a.searchQuery, a.searchPlatform = q, platform
 	a.SearchHit = 0
 	seq := a.searchSeq.Add(1)
 
@@ -519,7 +520,7 @@ func (a *App) syncSearch() {
 		a.SearchLoading = false
 		return
 	}
-	provider, ok := live.ProviderFor(live.Platform(a.Platform))
+	provider, ok := live.ProviderFor(live.Platform(platform))
 	if !ok {
 		a.SearchResults, a.SearchLoading = nil, false
 		a.SearchErr = "该平台暂未接入搜索"

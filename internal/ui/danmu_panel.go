@@ -241,18 +241,19 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 	item.Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Baseline).Children(func() {
 			if d.Level > 0 {
-				a.danmuChip(c, fmt.Sprintf("Lv.%d", d.Level))
+				a.danmuChip(c, fmt.Sprintf("Lv.%d", d.Level), levelChipColor(d.Platform, d.Level), ui.Color{})
 			}
 			// 粉丝牌：名称 + 牌子等级。名称过长时截断——牌子名可以很长，
 			// 不能把昵称挤没。
 			if d.Medal.Name != "" {
-				a.danmuChip(c, fmt.Sprintf("%s %d", d.Medal.Name, d.Medal.Level))
+				bg, bgEnd := medalChipColors(d)
+				a.danmuChip(c, fmt.Sprintf("%s %d", d.Medal.Name, d.Medal.Level), bg, bgEnd)
 			}
 			// .user { nowrap; overflow: hidden; text-overflow: ellipsis }
 			// 靠一层 Grow 的盒子给昵称一个上界，长昵称才不会顶出面板。
 			ui.Box(c).Grow(1).Children(func() {
 				ui.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).
-					SingleLine().LineHeight(1.5).TextColor(hashColor(d.Nick))
+					SingleLine().LineHeight(1.5).TextColor(theme.TextPrimary)
 			})
 		})
 
@@ -286,13 +287,32 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 //
 // 名字最多占一行、宽度有上限：粉丝牌名可以很长，不能把昵称挤没；
 // 数字用等宽字形，等级从 9 跳到 10 时胶囊不会忽宽忽窄。
-func (a *App) danmuChip(c *ui.Context, text string) {
+//
+// bg 是平台徽章底色，零值表示平台没有对应配色规则，用中性胶囊；
+// bgEnd 非零且与 bg 不同时按平台的 45° 渐变画（B 站 v2 双色牌子）。
+func (a *App) danmuChip(c *ui.Context, text string, bg, bgEnd ui.Color) {
 	chip := ui.Box(c).Padding(1, 5, 1, 5).Radius(theme.RadiusFull).
-		Background(theme.FillTertiary).Shrink(0).MaxWidth(96)
+		Shrink(0).MaxWidth(96)
+	fg := theme.TextSecondary
+	var stroke float32
+	if bg.A != 0 {
+		if bgEnd.A != 0 && bgEnd != bg {
+			chip.Gradient(bg, bgEnd, 45)
+		} else {
+			chip.Background(bg)
+		}
+		fg, stroke = chipTextOn(bg)
+	} else {
+		chip.Background(theme.FillTertiary)
+	}
 	chip.Children(func() {
-		ui.Text(c, text).FontSize(theme.Text2XS).FontWeight(600).
-			SingleLine().LineHeight(1.5).TextColor(theme.TextSecondary).
+		t := ui.Text(c, text).FontSize(theme.Text2XS).FontWeight(600).
+			SingleLine().LineHeight(1.5).TextColor(fg).
 			FontFeatures("tnum")
+		if stroke > 0 {
+			// 浅底牌子：白字加一圈半透明暗描边，11px 下也能压住浅金/浅蓝底。
+			t.TextStroke(stroke, ui.RGBA(0, 0, 0, 0.45))
+		}
 	})
 }
 
@@ -323,11 +343,11 @@ func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 			badge.Children(func() {
 				ui.Text(c, fmt.Sprintf("¥%d", d.Price)).
 					FontSize(theme.Text2XS).FontWeight(700).
-					TextColor(ui.Hex("#0b0c08")).FontFeatures("tnum")
+					TextColor(scBadgeText(tint)).FontFeatures("tnum")
 			})
 			ui.Box(c).Grow(1).Children(func() {
 				ui.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).
-					SingleLine().LineHeight(1.5).TextColor(hashColor(d.Nick))
+					SingleLine().LineHeight(1.5).TextColor(theme.TextPrimary)
 			})
 		})
 
@@ -336,40 +356,17 @@ func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 	})
 }
 
-// hashColor 复刻 baseline：h = (h*31 + charCode) % 360 → hsl(h 70% 72%)。
-func hashColor(seed string) ui.Color {
-	h := 0
-	for _, r := range seed {
-		h = (h*31 + int(r)) % 360
+// scBadgeText 是金额徽章上的文字颜色。
+//
+// 三个平台都会给 SC 下发颜色：B 站和虎牙给的是浅底（B 站营销色、虎牙
+// 留言板各档的粉彩），用深字；斗鱼高能弹幕的头部色是饱和的蓝/红/黄，
+// 白字才看得清。按亮度分流，不按平台分支。
+func scBadgeText(bg ui.Color) ui.Color {
+	lum := (0.299*float32(bg.R) + 0.587*float32(bg.G) + 0.114*float32(bg.B)) / 255
+	if lum > 0.62 {
+		return ui.Hex("#0b0c08")
 	}
-	return hsl(h, 0.70, 0.72)
-}
-
-func hsl(h int, s, l float32) ui.Color {
-	c := (1 - abs32(2*l-1)) * s
-	hp := float32(h%360) / 60
-	x := c * (1 - abs32(frac(hp/2)*2-1))
-	var r, g, b float32
-	switch {
-	case hp < 1:
-		r, g, b = c, x, 0
-	case hp < 2:
-		r, g, b = x, c, 0
-	case hp < 3:
-		r, g, b = 0, c, x
-	case hp < 4:
-		r, g, b = 0, x, c
-	case hp < 5:
-		r, g, b = x, 0, c
-	default:
-		r, g, b = c, 0, x
-	}
-	m := l - c/2
-	return ui.RGB(
-		uint8((r+m)*255+0.5),
-		uint8((g+m)*255+0.5),
-		uint8((b+m)*255+0.5),
-	)
+	return ui.Hex("#ffffff")
 }
 
 func abs32(v float32) float32 {
@@ -378,5 +375,3 @@ func abs32(v float32) float32 {
 	}
 	return v
 }
-
-func frac(v float32) float32 { return v - float32(int(v)) }

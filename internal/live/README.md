@@ -17,6 +17,7 @@
 | `_stream.go` | 取流（档位、线路、签名地址、回源请求头） |
 | `_danmaku.go` | 弹幕连接 |
 | `_master.go` / `_auth.go` / `_abogus.go` | 平台特有协议（B 站 master 入口、斗鱼登录字段、抖音反爬签名） |
+| `_headline.go` | 虎牙「上头条」留言板：付费置顶文字，归一成 SC |
 | `categories*.go` | 分区表 |
 
 公共部分：`types.go`（归一化类型与接口）、`registry.go`（`ProviderFor`）、`http.go`（桌面 UA、

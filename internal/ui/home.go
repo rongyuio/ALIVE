@@ -159,6 +159,12 @@ type App struct {
 	// 账号按平台隔离——B 站的号拿不到斗鱼的清晰度，切平台就该换个人，
 	// 所以这里不存一个「全局登录态」，而是每次按当前平台去查。
 	AuthOpen bool
+	// authReturn 记录「为了登录临时离开的直播间」。
+	//
+	// 虎牙、抖音的登录要占满主区域（平台自己的真网页），播放页没有主区域
+	// 可让，所以点账号时先切回平台首页去登，登完（或用户放弃）再自动回到
+	// 这个直播间。nil 表示当前没有这趟来回。
+	authReturn *Streamer
 	// authLogged 记住各平台上一次看到的登录状态，用来判断「刚登录成功」。
 	authLogged map[string]bool
 	// pendingSwitch 是点了但还没真正切过去的平台。
@@ -425,38 +431,70 @@ func (a *App) bindPlatformAuth(p live.Platform, auth live.Authenticator) {
 	})
 }
 
-// onAuthChange 在某个平台的登录态变化时重画头像；刚登录成功还要重开流。
+// onAuthChange 在某个平台的登录态变化时重画头像，并按新身份重开这一路流。
 //
 // 回调在后台 goroutine 上（扫码轮询），必须切回主线程再碰视图状态。
-// 登录与否会改变服务端下发的清晰度档位，不重取会一直停在匿名那一档，
-// 用户会以为「登录了没用」。
+// 登录与否会改变服务端下发的清晰度档位：不重取会一直停在原来那一档，
+// 用户会以为「登录了没用」；退出后不重取则更糟——播的是一个已经没有
+// 权限的地址。
 func (a *App) onAuthChange(p live.Platform, auth live.Authenticator) {
 	if a.Win == nil {
 		return
 	}
-	key := string(p)
 	logged := auth.Auth().LoggedIn
-	a.Win.Update(func() {
-		if a.authLogged[key] == logged {
-			return
+	a.Win.Update(func() { a.applyAuthChange(p, logged) })
+}
+
+// applyAuthChange 在主线程上落地一次登录态变化。
+func (a *App) applyAuthChange(p live.Platform, logged bool) {
+	key := string(p)
+	if a.authLogged[key] == logged {
+		return
+	}
+	a.authLogged[key] = logged
+	// 为了登录临时离开的直播间：登上了就把直播间接回来。放在重取流之前——
+	// 重取流那步要求人已经回到播放页。
+	if logged && a.authReturn != nil && a.authReturn.Platform == key {
+		a.returnFromLogin()
+	}
+	// 登录态一变就要重取流，两个方向都是：登录后能拿到更高的档位；退出后
+	// 那些「仅登录可见」的档位必须立刻作废——继续播原来的地址，等于拿着
+	// 一个已经没有权限的流，界面上还写着那个档位。
+	if a.media.roomKey != "" && a.current().Platform == key {
+		a.startStream(true)
+	}
+}
+
+// viewPlatform 返回「屏幕上这一屏属于哪个平台」。
+//
+// 绝大多数时候就是顶栏选中的那个 tab，播放页例外：那一屏看的是某一个
+// 具体主播，账号、搜索这些按平台走的东西都得跟着主播，而不是跟着进房
+// 之前停留的列表。从「全部关注」点开 B 站主播、而 tab 还停在虎牙时，
+// 照 a.Platform 画就会把虎牙的账号挂在 B 站直播间里。
+func (a *App) viewPlatform() string {
+	// 为登录临时离开直播间时，这一屏就是「那个平台的登录流程」：账号入口、
+	// 登录页、顶栏高亮都得跟着它，而不是跟着脚下这页首页的 tab。
+	if a.authReturn != nil {
+		return a.authReturn.Platform
+	}
+	if a.Router.Path() == routePlayer {
+		if p := a.current().Platform; p != "" {
+			return p
 		}
-		a.authLogged[key] = logged
-		if logged && a.media.roomKey != "" && a.current().Platform == key {
-			a.startStream(true)
-		}
-	})
+	}
+	return a.Platform
 }
 
 // currentAuth 返回当前平台的登录入口；该平台不支持登录时返回 nil。
 //
 // 扫码和浏览器登录都满足 Authenticator，界面不关心会话是怎么拿到的。
 func (a *App) currentAuth() live.Authenticator {
-	return authFor(a.Platform)
+	return authFor(a.viewPlatform())
 }
 
 // currentWebLogin 返回当前平台的浏览器登录入口，没有则 false。
 func (a *App) currentWebLogin() (*live.WebLogin, bool) {
-	return live.BrowserAuthFor(live.Platform(a.Platform))
+	return live.BrowserAuthFor(live.Platform(a.viewPlatform()))
 }
 
 // Shell 是窗口的根视图：地面 + 主区（顶栏 + 内容）+ 悬浮灵动岛。
@@ -947,6 +985,10 @@ func (a *App) Navbar(c *ui.Context) {
 				Background(theme.FillQuaternary).Children(func() {
 				if a.searchAvailable() {
 					a.searchButton(c)
+				} else {
+					// 按钮不在屏幕上时把浮层一起收掉：不然从搜索浮层跳去
+					// 「全部关注」，回来时浮层会自己弹出来。
+					a.SearchOpen = false
 				}
 				a.iconButton(c, iconMonitorSmartphone, "数据同步", a.openSyncPanel)
 				a.paletteButton(c)
@@ -960,6 +1002,8 @@ func (a *App) Navbar(c *ui.Context) {
 				// 的 tab 再点。
 				if a.authAvailable() {
 					a.authButton(c)
+				} else {
+					a.closeAuthPanel()
 				}
 			})
 
@@ -1080,9 +1124,7 @@ func (a *App) activeTab() string {
 		// 播放页看的是某一个具体主播，顶栏必须跟着主播所属平台走。
 		// 读 a.Platform 会停在进播放页之前那个列表的平台：从订阅页点开
 		// 别家主播、或者从搜索里跳进来时，高亮就留在上一家。
-		if p := a.current().Platform; p != "" {
-			return p
-		}
+		return a.viewPlatform()
 	}
 	return a.Platform
 }
@@ -1176,6 +1218,9 @@ func (a *App) commitPlatformSwitch(id string) {
 	// 账号是分平台的，头像浮层里的内容会跟着换人；换 tab 就关掉，
 	// 别让上一家的二维码和昵称留在屏幕上。
 	a.AuthOpen = false
+	// 用户自己换了平台，就不再是「去登录那一趟」了。startRoomLogin 会
+	// 在这之后重新设上。
+	a.authReturn = nil
 	// 换平台了，旧平台的纹理对新平台没有任何用处：立刻清掉 L1。
 	// 但要保住新平台已经预取好的首屏封面，否则用户还是要等一遍解码。
 	// 原始字节（L2）全部留着——切回去时能直接解码，不用重新下载。

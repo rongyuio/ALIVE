@@ -658,8 +658,30 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 		a.media.pauseStarted = a.media.openedAt
 		p.Pause()
 	}
+	a.adoptBackgroundVideoOff()
 	logStage(sess.id, sess.start, "open", "mode", "native", "quality", upstream.Label,
 		"ready", p.Ready(), "declared_width", upstream.Width, "declared_height", upstream.Height)
+}
+
+// adoptBackgroundVideoOff 把人不在播放页时开出来的这一路按后台收听处理。
+//
+// 会走到这里的典型是「后台收听时登录成功、要求重取流」：beginSession 里的
+// stopPlayback 清掉了 background（那一刻确实没有引擎），新引擎于是带着
+// 打开的 vid 建出来——画面没人看，解码照跑；岛也因为 background 是 false
+// 而从「正在收听」掉回默认态。
+//
+// 判据用路由而不是 background：background 在这一刻还没被置上。
+func (a *App) adoptBackgroundVideoOff() {
+	if a.Router != nil && a.Router.Path() == routePlayer {
+		return
+	}
+	e := a.media.engine()
+	if e == nil {
+		return
+	}
+	e.SetVideoEnabled(false)
+	a.media.background = true
+	a.media.detachedAt = time.Now()
 }
 
 // stopPlayback 收掉播放器，弹幕不动。

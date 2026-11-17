@@ -204,6 +204,24 @@ curl -H "Referer: ..." -H "User-Agent: ..." "<dir>/<seg>.m4s"      # 应返回 2
 弹幕使用独立房间 context，切档保留，离开和关窗取消。旧结果不能挂载，资源随
 取消或拒绝接纳回收；`Window.Update` 是异步接口，不能在回调外读取处理结果。
 
+### SC 的归一化契约
+
+各平台的付费置顶消息统一归成 `Danmu{Kind: DanmuSuperChat}`，字段只有四个：
+金额 `Price`（元）、`Nickname`、`Content`、`Background`（平台下发的
+`#RRGGBB`，平台没给就留空，界面按强调色兜底）。界面只认这四个字段，
+不按平台分支。
+
+| 平台 | 来源 | 颜色 |
+|---|---|---|
+| B 站 | `SUPER_CHAT_MESSAGE` | `background_color` 原样进 Background |
+| 斗鱼 | `voice_trlt` 高能弹幕（付费语音/置顶） | `danmucr`：1 蓝 `#385fac`、2 红 `#d45954`、3 黄 `#f9af1b` |
+| 抖音 | 无此消息 | — |
+| 虎牙 | 「上头条」留言板：Wup `wupui.getHeadLineMessageBoard`，20 秒轮询 | 该等级的 `iLightNormalBgColor`（tRsp 的 `mMessageBoardShowStyle[level]`）：1/2 级 `#b9ddf2`、3 级 `#b8caff`、4 级 `#d4c0fd`、5 级 `#f4cca5` |
+
+抖音在 2026-11-18 检查过网页端资源：它的「置顶」是主播工具和窗口置顶，不是付费留言，不进 SC。
+虎牙的「上头条」是观众花虎牙币买的留言（`iCostPay` 分币 /100 得元），网页端同理；
+留言有倒计时（`iCountDown`，`<=0` 视为过场），所以轮询按 `lMessageId` 去重、只上屏一次。
+
 ### 弹幕 auth 的 uid 必须跟 token 一致（B 站）
 
 B 站的 `getDanmuInfo` 会按请求时的登录态签发 token：登录时把登录 uid 编进去。

@@ -1,6 +1,7 @@
 package live
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -44,6 +45,26 @@ func TestDouyuVoiceBarrage(t *testing.T) {
 	}
 	if want := time.Unix(1794916680, 0); !d.At.Equal(want) {
 		t.Errorf("时间 = %v，期望 %v（acptime）", d.At, want)
+	}
+	// 样本里没有 danmucr，按平台缺省走蓝色头部。
+	if d.Background != "#385fac" {
+		t.Errorf("背景色 = %q，期望 #385fac", d.Background)
+	}
+}
+
+// 高能弹幕的头部颜色由 danmucr 决定：1 蓝、2 红、3 黄（网页端
+// HighEnergyV2Barrage 的 is-blue / is-red / is-yellow）。
+func TestDouyuVoiceBarrageColor(t *testing.T) {
+	cases := map[int]string{0: "#385fac", 1: "#385fac", 2: "#d45954", 3: "#f9af1b"}
+	for idx, want := range cases {
+		list := "vrId@A=1@Sun@A=小明@Scontent@A=测试@SrealPrice@A=1000@Sdanmucr@A=" + strconv.Itoa(idx)
+		got := douyuVoiceBarrages(list)
+		if len(got) != 1 {
+			t.Fatalf("danmucr=%d 解析出 %d 条", idx, len(got))
+		}
+		if got[0].Background != want {
+			t.Errorf("danmucr=%d 背景色 = %q，期望 %q", idx, got[0].Background, want)
+		}
 	}
 }
 

@@ -353,7 +353,14 @@ func (s *biliDanmaku) handleCommand(body []byte) {
 			if m := d.Sender.Medal; m != nil {
 				name := strings.TrimSpace(m.Name)
 				if name != "" && m.Level > 0 {
-					medal = Medal{Name: name, Level: m.Level}
+					// 底色取 v2 配色（自带 alpha），网页端就是拿它画牌子；
+					// 老字段 medal.color 是旧版暗色，只在 v2 缺失时兜底。
+					start, end := biliMedalV2Colors(body)
+					if start == "" {
+						start = biliMedalTint(biliMedalColor(m.Color))
+						end = start
+					}
+					medal = Medal{Name: name, Level: m.Level, Color: start, ColorEnd: end}
 				}
 			}
 		}
@@ -465,6 +472,90 @@ func biliColor(d blivedmmsg.Danmaku) string {
 		return ""
 	}
 	return fmt.Sprintf("#%06x", v)
+}
+
+// biliMedalColor 把勋章颜色整数转成 #RRGGBB；0 或越界表示没给色。
+//
+// 这是老字段 info[3][4]（medal.color）的编码：和弹幕颜色同一个整数 RGB，
+// 但勋章没有「白色=默认」的语义，0 直接当没有。网页端已经不用它了，
+// 只在 v2 配色缺失时兜底，所以上面还要补 alpha。
+func biliMedalColor(v int) string {
+	if v <= 0 || v > 0xFFFFFF {
+		return ""
+	}
+	return fmt.Sprintf("#%06x", v)
+}
+
+// biliMedalTint 把 6 位色补齐成带 alpha 的 8 位色，和 v2 配色同一种写法。
+func biliMedalTint(hex string) string {
+	switch len(hex) {
+	case 7:
+		return hex + "99" // 网页端牌子的底色就是 #RRGGBB99
+	case 9:
+		return hex
+	}
+	return ""
+}
+
+// biliMedalV2Colors 从 DANMU_MSG 原始 JSON 取粉丝牌的 v2 底色。
+//
+//	info[0][15].user.medal:
+//	  v2_medal_color_start / v2_medal_color_end  #RRGGBBAA，网页端直接铺成
+//	  linear-gradient(45deg, start, end)
+//	  v2_medal_color_text                       牌子文字色（四个平台统一白字，
+//	                                            这里不取）
+//
+// 同一档位老字段给的是 #06154c 这种暗色，画出来整屏发灰——2026-11-18 在
+// 德云色直播间对照网页 DOM 才定位到：网页端读的是 v2 这两个值。
+func biliMedalV2Colors(body []byte) (start, end string) {
+	var envelope struct {
+		Info []json.RawMessage `json:"info"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || len(envelope.Info) == 0 {
+		return "", ""
+	}
+	var first []json.RawMessage
+	if json.Unmarshal(envelope.Info[0], &first) != nil || len(first) <= 15 {
+		return "", ""
+	}
+	var holder struct {
+		User struct {
+			Medal struct {
+				Start string `json:"v2_medal_color_start"`
+				End   string `json:"v2_medal_color_end"`
+			} `json:"medal"`
+		} `json:"user"`
+	}
+	if json.Unmarshal(first[15], &holder) != nil {
+		return "", ""
+	}
+	start = biliMedalTint(strings.TrimSpace(holder.User.Medal.Start))
+	end = biliMedalTint(strings.TrimSpace(holder.User.Medal.End))
+	if !isHexColor(start) {
+		start = ""
+	}
+	if !isHexColor(end) {
+		end = ""
+	}
+	if start == "" {
+		end = ""
+	}
+	return start, end
+}
+
+// isHexColor 检查 #RRGGBBAA 是否合法。ui.Hex 遇到坏值会 panic，
+// 平台字段不能直接喂进去。
+func isHexColor(s string) bool {
+	if len(s) != 9 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // biliEmotes 读取弹幕携带的表情图。

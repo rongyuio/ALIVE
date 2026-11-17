@@ -66,8 +66,12 @@ var huyaDanmuHeartbeatBytes = []byte{
 type huyaDanmaku struct {
 	provider  *huyaProvider
 	roomID    string // 归一后的房间号，只用于日志与消息 id
-	channelID int64  // 订阅用的频道 id
+	channelID int64  // 订阅用的频道 id，也是「上头条」留言板要的 lPid
 	onMessage func(Danmu)
+
+	// 上头条留言按 id 去重：轮询会反复拿到还在倒计时的同一条。
+	seenHead  map[int64]struct{}
+	headOrder []int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -94,7 +98,7 @@ func (p *huyaProvider) Danmaku(ctx context.Context, roomID string, onMessage fun
 		onMessage = func(Danmu) {}
 	}
 
-	channelID, err := p.huyaChannelID(ctx, id)
+	channelID, err := p.huyaRoomIDs(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -104,17 +108,24 @@ func (p *huyaProvider) Danmaku(ctx context.Context, roomID string, onMessage fun
 		roomID:    id,
 		channelID: channelID,
 		onMessage: onMessage,
+		seenHead:  map[int64]struct{}{},
 		done:      make(chan struct{}),
 	}
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	go s.run()
+	if channelID > 0 {
+		go s.pollHeadlines()
+	}
 	return s, nil
 }
 
-// huyaChannelID 查一次房间档案并取出频道 id。
+// huyaRoomIDs 查一次房间档案，取出订阅用的频道 id。
 //
 // 一次连接只查一次：重连时频道不会变，每帧都去查只会让风控更快盯上。
-func (p *huyaProvider) huyaChannelID(ctx context.Context, roomID string) (int64, error) {
+//
+// 这个 id 同时是「上头条」留言板的 lPid：网页端传的是 TT_PROFILE_INFO.lp，
+// 也就是频道号，不是主播 uid（yyid）——传 yyid 服务端照样回 200，只是板子永远是空的。
+func (p *huyaProvider) huyaRoomIDs(ctx context.Context, roomID string) (channelID int64, err error) {
 	release, err := p.lim.acquire(ctx)
 	if err != nil {
 		return 0, err
@@ -949,7 +960,8 @@ func (r *huyaTarsReader) readInt64Tag(tag uint8, def int64) int64 {
 	if err != nil {
 		return def
 	}
-	return int64(r.intFromHead(head, int32(def)))
+	// 走 int64FromHead：虎牙的 uid、留言 id 都超过 int32，按 int32 读会溢出成负数。
+	return r.int64FromHead(head, def)
 }
 
 func (r *huyaTarsReader) readStringTag(tag uint8, def string) string {

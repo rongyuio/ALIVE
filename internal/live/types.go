@@ -87,7 +87,16 @@ type DanmuKind string
 
 const (
 	DanmuChat DanmuKind = "chat"
-	// DanmuSuperChat 是付费置顶留言（B 站 SUPER_CHAT_MESSAGE）。
+	// DanmuSuperChat 是付费置顶留言（SC）。
+	//
+	// 各平台先归一成这一个类型，字段只有四个：金额 Price（元）、
+	// Nickname、Content、Background（平台下发的 #RRGGBB，没有就留空）。
+	// 界面只认这四个，不按平台分支；差异只在颜色从哪来：
+	//
+	//   - B 站：SUPER_CHAT_MESSAGE，background_color 直接进 Background；
+	//   - 斗鱼：voice_trlt 高能弹幕，danmucr（1 蓝 / 2 红 / 3 黄）映射成头部色；
+	//   - 虎牙：上头条留言板，按留言档位取 iLightNormalBgColor；
+	//   - 抖音：没有付费置顶文字消息（礼物、守护、粉丝团不是 SC）。
 	DanmuSuperChat DanmuKind = "superchat"
 )
 
@@ -114,6 +123,15 @@ type Emote struct {
 type Medal struct {
 	Name  string
 	Level int
+	// Color 是平台下发的牌子底色（#RRGGBB 或 #RRGGBBAA），空串表示平台没给。
+	// 目前只有 B 站的勋章信息带颜色；其余平台的配色按等级分档，在 ui 层查表。
+	//
+	// B 站给的是 v2 配色，颜色自带 alpha（#3FB4F699，0x99 = 60%），网页端
+	// 原样铺上去。老字段 medal.color 是另一套暗色，不要用。
+	Color string
+	// ColorEnd 是牌子的渐变终点。和 Color 不同时按平台的做法画 45° 渐变；
+	// 空串或与 Color 相同就是纯色。
+	ColorEnd string
 }
 
 // Danmu 是一条归一化后的弹幕。

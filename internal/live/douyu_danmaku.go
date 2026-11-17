@@ -343,6 +343,7 @@ func douyuVoiceBarrages(list string) []Danmu {
 	var out []Danmu
 	var cur *Danmu
 	var price, realPrice int
+	var color int
 	var acptime, etime int64
 
 	flush := func() {
@@ -352,6 +353,7 @@ func douyuVoiceBarrages(list string) []Danmu {
 				amount = price
 			}
 			cur.Price = amount / 100
+			cur.Background = douyuEnergyColor(color)
 			switch {
 			case acptime > 0:
 				cur.At = time.Unix(acptime, 0)
@@ -365,7 +367,7 @@ func douyuVoiceBarrages(list string) []Danmu {
 				out = append(out, *cur)
 			}
 		}
-		cur, price, realPrice, acptime, etime = nil, 0, 0, 0, 0
+		cur, price, realPrice, color, acptime, etime = nil, 0, 0, 0, 0, 0
 	}
 
 	for _, item := range strings.Split(list, "@S") {
@@ -391,6 +393,8 @@ func douyuVoiceBarrages(list string) []Danmu {
 			price = douyuAtoi(value)
 		case "realPrice":
 			realPrice = douyuAtoi(value)
+		case "danmucr":
+			color = douyuAtoi(value)
 		case "acptime":
 			acptime = int64(douyuAtoi(value))
 		case "etime":
@@ -399,6 +403,21 @@ func douyuVoiceBarrages(list string) []Danmu {
 	}
 	flush()
 	return out
+}
+
+// douyuEnergyColor 把高能弹幕的颜色索引转成平台的头部色。
+//
+// 网页端 da={1:is-blue, 2:is-red, 3:is-yellow}，卡片边框和 40px 头部就用
+// 这三个色（见 BarrageGroup 的 HighEnergyV2Barrage 样式）；缺省按蓝色。
+func douyuEnergyColor(idx int) string {
+	switch idx {
+	case 2:
+		return "#d45954"
+	case 3:
+		return "#f9af1b"
+	default:
+		return "#385fac"
+	}
 }
 
 // ---------------------------------------------------------------- STT 协议

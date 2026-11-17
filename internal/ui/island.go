@@ -77,6 +77,24 @@ const islandListenAvatar float32 = theme.IslandH - 4
 // 关注键，上下留一点呼吸。内容区 34，32 上下各留 1。
 const islandPlayerAvatar float32 = theme.IslandH - 6
 
+// islandListening 报告岛该不该画「后台收听」那一枚。
+//
+// 判据是「人不在播放页，但这一路还开着」，两种时候成立：
+//
+//   - background：引擎活着、视频轨关着，声音在走（detachMedia 置上，
+//     stopPlayback 清掉）；
+//   - loading：这一路正在重开（登录成功要重取流、后台断流重连）。这段时间
+//     background 已经被 stopPlayback 清掉、新引擎还没建出来，只看 background
+//     的话岛会掉回默认态几秒，看着像「听着听着没了」。
+//
+// 取流失败时 loading 落回 false，岛也就不会再假装在收听。
+func (a *App) islandListening() bool {
+	if a.Router != nil && a.Router.Path() == routePlayer {
+		return false
+	}
+	return a.media.background || (a.media.loading && a.media.roomKey != "")
+}
+
 // Island 是顶部居中的「灵动岛」，三种形态：
 //
 //	空闲（没有播放器）  24 小时制数字时钟
@@ -89,12 +107,7 @@ const islandPlayerAvatar float32 = theme.IslandH - 6
 func (a *App) Island(c *ui.Context) {
 	winW, _ := c.Size()
 	player := a.Router != nil && a.Router.Path() == routePlayer
-	// 后台收听：引擎还活着但人已经不在播放页了。
-	//
-	// 判据只看 background：它由 detachMedia 在有引擎时才置上，而 stopPlayback
-	// （引擎一关）会把它清掉。再叠一个 player != nil 反而会漏掉截图验收那种
-	// 「只有状态位、没有真引擎」的态。
-	listening := !player && a.media.background
+	listening := a.islandListening()
 
 	if player {
 		a.enterPlayerIsland()

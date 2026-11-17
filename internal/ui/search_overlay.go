@@ -141,7 +141,7 @@ func (a *App) searchPopover(c *ui.Context) {
 	field.Children(func() {
 		ui.Icon(c, iconSearch).FontSize(15).TextColor(theme.TextTertiary)
 		ui.TextInputBase(c, &a.SearchQuery).FontSize(theme.TextSM).Grow(1).
-			Placeholder(searchPlaceholder(a.Platform)).PlaceholderColor(theme.TextTertiary).
+			Placeholder(searchPlaceholder(a.viewPlatform())).PlaceholderColor(theme.TextTertiary).
 			AutoFocus().
 			OnTextKey(a.searchKey)
 		// baseline：加载中转圈；不在加载且有关键词时才给清空按钮
@@ -173,7 +173,7 @@ func (a *App) searchPopover(c *ui.Context) {
 	}
 
 	// ---- 底部提示：baseline 是「平台名 · 平台文案」
-	ui.Text(c, fmt.Sprintf("%s · %s", platformLabel(a.Platform), searchHint(a.Platform))).
+	ui.Text(c, fmt.Sprintf("%s · %s", platformLabel(a.viewPlatform()), searchHint(a.viewPlatform()))).
 		FontSize(theme.Text2XS).LetterSpacing(0.02).
 		TextColor(theme.TextTertiary).Padding(0, 8, 2, 8).SingleLine()
 }
@@ -210,7 +210,7 @@ func (a *App) searchResults(c *ui.Context) {
 			return
 		}
 		text := "未找到结果，试试直接输入房间号"
-		if a.Platform == "douyin" {
+		if a.viewPlatform() == "douyin" {
 			text = "未找到该直播间，请检查直播间号"
 		}
 		ui.Text(c, text).FontSize(theme.TextSM).TextColor(theme.TextSecondary).
@@ -334,9 +334,10 @@ func (a *App) searchHits() []searchHit {
 	}
 
 	var hits []searchHit
+	platform := a.viewPlatform()
 	collect := func(remote bool, list []Streamer) {
 		for i, s := range list {
-			if s.Platform != a.Platform {
+			if s.Platform != platform {
 				continue
 			}
 			if strings.Contains(s.Name, q) || strings.Contains(s.Title, q) ||
@@ -368,7 +369,7 @@ func (a *App) openSearchHit(hit searchHit) {
 // openRoomNumber 用房间号直接进播放页：baseline 的 onSubmit 在没有高亮项、
 // 而关键词是纯数字时就按号码直达，不等搜索接口。
 func (a *App) openRoomNumber(id string) {
-	a.Player = Streamer{Platform: a.Platform, RoomID: id, Name: "直播间 " + id}
+	a.Player = Streamer{Platform: a.viewPlatform(), RoomID: id, Name: "直播间 " + id}
 	a.PlayerRemote = true
 	a.PlayerIndex = -1
 	a.SearchOpen = false
