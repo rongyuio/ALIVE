@@ -49,7 +49,11 @@ type danmuLine struct {
 	Text  string
 	Nick  string
 	Level int
-	Kind  danmuKind
+	// Medal 是粉丝牌；Name 为空表示没有。
+	Medal live.Medal
+	// Platform 决定正文里的 [表情名] 查哪张表情表。
+	Platform live.Platform
+	Kind     danmuKind
 	// Emotes 是这条弹幕携带的表情图。Text 为空且 Emotes 非空时，
 	// 整条弹幕就是一张图（B 站的纯表情弹幕）。
 	Emotes []live.Emote
@@ -77,6 +81,12 @@ func emoteSize(e live.Emote, height float32) (float32, float32) {
 	}
 	return height * w / h, height
 }
+
+// danmuStickerScale 是纯图弹幕（房间表情、收藏集表情贴纸）相对字号的倍率。
+//
+// 这类弹幕整条就是一张图，网页端画得比一行字高得多（约 3 倍字号），
+// 和正文里混排的小表情不是一回事。按 1.3 倍画出来太小，远看像缩略图。
+const danmuStickerScale float32 = 2.8
 
 // danmuState 是推动器的并发标志：active 由主线程写，循环读；
 // loop 保证同时只有一个 goroutine 在跑。
@@ -171,21 +181,40 @@ func (a *App) danmuLayer(c *ui.Context) {
 			// 纯图弹幕按图宽算滚动距离，文字弹幕按文字宽：
 			// 两者都要「从右边缘完全进来到完全出去」。
 			var tw, imgW, imgH float32
+			var rs danmuSpans
 			if d.imageOnly() {
-				imgW, imgH = emoteSize(d.Emotes[0], a.DanmuFont*1.3)
+				imgW, imgH = emoteSize(d.Emotes[0], a.DanmuFont*danmuStickerScale)
 				tw = imgW
 			} else {
-				tw = textWidth(c, d.Text, a.DanmuFont, 700)
+				rs = buildDanmuSpans(d.Platform, d.Text, d.Emotes, a.DanmuFont)
+				if rs.hasEmote {
+					tw, _ = c.MeasureText(0, rs.spans...)
+				} else {
+					tw = textWidth(c, d.Text, a.DanmuFont, 700)
+				}
 			}
 			x := stageW - p*(stageW+tw)
 			y := float32((d.Track%tracks)*int(danmuChannel)) + 16
 
 			if d.imageOnly() {
-				if bmp := media.Default.Bitmap(d.Emotes[0].URL, imgW); bmp != nil {
+				if bmp, wait, anim := media.Default.EmoteFrame(d.Emotes[0].URL, imgW, c.Now()); bmp != nil {
 					ui.Image(c, bmp).Size(imgW, imgH).
 						Opacity(a.DanmuOpacity).
 						Absolute().Left(x).Top(y)
+					if anim && wait > 0 {
+						c.After(wait)
+					}
 				}
+				continue
+			}
+
+			if rs.hasEmote {
+				// 表情和文字在同一行里混排：走 RichText，表情画在内联对象上。
+				// 描边和纯文本时一样保留，飘在画面上要压得住背景。
+				rs.richText(c, a.DanmuFont, a.DanmuColor).FontWeight(700).
+					TextStroke(1, a.DanmuStroke).
+					SingleLine().Opacity(a.DanmuOpacity).
+					Absolute().Left(x).Top(y)
 				continue
 			}
 

@@ -91,6 +91,13 @@ const (
 	DanmuSuperChat DanmuKind = "superchat"
 )
 
+// InlineEmote 是正文里指向一个「无名表情」的占位符。
+//
+// 有的平台把表情作为富文本的一个片段下发（抖音 rtf_content_v2 的
+// image_value），那一段没有 [名称]，只有一张图。协议层把它写成这个
+// 字符、把图片按出现顺序放进 Danmu.Emotes，UI 渲染到该字符时依次取图。
+const InlineEmote = '￼'
+
 // Emote 是弹幕里携带的表情图。
 type Emote struct {
 	Name    string
@@ -100,18 +107,35 @@ type Emote struct {
 	Dynamic bool
 }
 
+// Medal 是粉丝牌（勋章）。
+//
+// Name 为空表示没有粉丝牌。各平台叫法不同：B 站与斗鱼的粉丝牌带名称和
+// 等级，抖音的粉丝团只有等级和徽章图，虎牙的粉丝牌解析自装饰字段。
+type Medal struct {
+	Name  string
+	Level int
+}
+
 // Danmu 是一条归一化后的弹幕。
 type Danmu struct {
 	ID       string
 	Nickname string
 	Content  string
-	Level    int
+	// Level 是用户等级（B 站用户等级、斗鱼等级、抖音荣誉等级）。
+	// 粉丝牌等级在 Medal.Level 里，两者不是同一个数——B 站曾经把勋章等级
+	// 填进这里，面板上显示的「Lv.24」其实是粉丝牌等级。
+	Level int
+	// Medal 是粉丝牌；没有时 Name 为空。
+	Medal Medal
 	// Color 是平台给出的原生颜色（#RRGGBB）；空串表示按昵称哈希取色。
 	Color string
 	Kind  DanmuKind
 	At    time.Time
 	// Emotes 是这条弹幕携带的表情图。正文里的占位符（如 [dog]）与
 	// Emote.Name 对应，整条图弹幕的正文为空、只有一条 Emote。
+	//
+	// 只为协议里自带 URL 的表情（B 站）填。斗鱼/抖音/虎牙的正文里只有
+	// 占位符，图片在 ui 层按平台表情表查。
 	Emotes []Emote
 	// Price 是醒目留言的金额（元）；0 表示普通弹幕。
 	Price int

@@ -345,17 +345,30 @@ func (s *biliDanmaku) handleCommand(body []byte) {
 		d.Parse(body)
 
 		nickname := "匿名"
-		level := 0
+		medal := Medal{}
 		if d.Sender != nil {
 			if name := strings.TrimSpace(d.Sender.Uname); name != "" {
 				nickname = name
 			}
-			if d.Sender.Medal != nil {
-				level = d.Sender.Medal.Level
+			if m := d.Sender.Medal; m != nil {
+				name := strings.TrimSpace(m.Name)
+				if name != "" && m.Level > 0 {
+					medal = Medal{Name: name, Level: m.Level}
+				}
 			}
 		}
+		// 直播间里说的「等级」是荣耀等级（消费等级），不是主站账号的 UL。
+		// UL 是社区活跃度，和直播间消费是两回事，界面上挂它会读成假的。
+		level := biliWealthLevel(body)
 		content := strings.TrimSpace(d.Content)
 		emotes := biliEmotes(body, d)
+		// 表情弹幕（dm_type=1）整条就是一张贴纸：房间表情的正文是表情
+		// 自己的名字（「哇哈哈」「赞！」，不带方括号），收藏集表情的正文
+		// 是 [占位符]。两种都不该当文字画——正文清空，交给纯图分支按
+		// 贴纸尺寸渲染。名字匹配不到 [占位符] 时留着会被原样画出来。
+		if d.Type == 1 && len(emotes) == 1 {
+			content = ""
+		}
 		// 纯图片弹幕的正文是空串，但表情本身就是要显示的内容。
 		if content == "" && len(emotes) == 0 {
 			return
@@ -369,6 +382,7 @@ func (s *biliDanmaku) handleCommand(body []byte) {
 			Nickname: nickname,
 			Content:  content,
 			Level:    level,
+			Medal:    medal,
 			Color:    biliColor(d),
 			Kind:     DanmuChat,
 			At:       at,
@@ -385,12 +399,31 @@ func (s *biliDanmaku) handleCommand(body []byte) {
 		if text == "" {
 			return
 		}
+		// SC 的粉丝牌不在 blivedm 的 SuperChat 结构里，在原始 body 的
+		// data.medal_info（medal_name / medal_level）。实测样本：
+		// {"data":{"medal_info":{"medal_name":"哎妹妹","medal_level":23}}}
+		medal := Medal{}
+		var raw struct {
+			Data struct {
+				MedalInfo struct {
+					Name  string `json:"medal_name"`
+					Level int    `json:"medal_level"`
+				} `json:"medal_info"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(body, &raw) == nil {
+			name := strings.TrimSpace(raw.Data.MedalInfo.Name)
+			if name != "" && raw.Data.MedalInfo.Level > 0 {
+				medal = Medal{Name: name, Level: raw.Data.MedalInfo.Level}
+			}
+		}
 		at := time.Now()
 		s.emit(Danmu{
 			ID:         s.nextID(at),
 			Nickname:   firstNonEmpty(strings.TrimSpace(sc.UserInfo.Uname), "匿名"),
 			Content:    text,
 			Level:      sc.UserInfo.UserLevel,
+			Medal:      medal,
 			Kind:       DanmuSuperChat,
 			At:         at,
 			Price:      sc.Price,
@@ -449,6 +482,56 @@ type biliEmoteJSON struct {
 	Dynamic int    `json:"is_dynamic"`
 }
 
+// biliWealthLevel 读荣耀等级（直播间消费等级）。
+//
+// 字段是 info[16][0]。这条是拿网页端对出来的：把网页聊天区每条的荣耀等级
+// 勋章图（wealth-medal 的 png，图里就是数字）和我们抓到的原始报文按 uid
+// 对齐，57 个重叠用户里 info[16][0] 与勋章图零冲突（一张图只对应一个值，
+// 值为 0 的正好没有勋章），而 info[4][0] 有 9 张图对应多个值。
+//
+// 之前用的 info[4][0] 是错的：它和勋章图对不上，不是荣耀等级。
+// info[4] 里的数字另有含义，不要拿它当等级显示。
+//
+// 备选是 extra.user.wealth.level——实测多数消息里没有 user 对象，只当兜底。
+func biliWealthLevel(body []byte) int {
+	var envelope struct {
+		Info []json.RawMessage `json:"info"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || len(envelope.Info) == 0 {
+		return 0
+	}
+	if len(envelope.Info) > 16 {
+		var sixteenth []json.RawMessage
+		if json.Unmarshal(envelope.Info[16], &sixteenth) == nil && len(sixteenth) > 0 {
+			var level int
+			if json.Unmarshal(sixteenth[0], &level) == nil && level > 0 {
+				return level
+			}
+		}
+	}
+	var first []json.RawMessage
+	if json.Unmarshal(envelope.Info[0], &first) != nil || len(first) <= 15 {
+		return 0
+	}
+	var holder struct {
+		Extra string `json:"extra"`
+	}
+	if json.Unmarshal(first[15], &holder) != nil || holder.Extra == "" {
+		return 0
+	}
+	var extra struct {
+		User struct {
+			Wealth *struct {
+				Level int `json:"level"`
+			} `json:"wealth"`
+		} `json:"user"`
+	}
+	if json.Unmarshal([]byte(holder.Extra), &extra) != nil || extra.User.Wealth == nil {
+		return 0
+	}
+	return extra.User.Wealth.Level
+}
+
 // biliEmotes 取一条弹幕携带的全部表情图。
 //
 // blivedm-go 只解了 info[0][13]（整条图弹幕），把 extra.emots 那个字段
@@ -478,7 +561,15 @@ func biliEmotes(body []byte, d blivedmmsg.Danmaku) []Emote {
 	}
 
 	if e := d.Emoticon; e != nil {
-		push("", e.Url, e.Width, e.Height, e.IsDynamic)
+		// 收藏集/装扮表情走的是同一个槽：emoticon_unique 是
+		// upower_[花礼Harei收藏集表情包_prpr] 这种带前缀的全名，
+		// 正文里的占位符就是去掉前缀的那一段。普通纯图表情这里是
+		// 空串或 emoji_224，留空名，交给纯图分支渲染。
+		name := strings.TrimPrefix(e.EmoticonUnique, "upower_")
+		if !(strings.HasPrefix(name, "[") && strings.HasSuffix(name, "]") && len(name) >= 3) {
+			name = ""
+		}
+		push(name, e.Url, e.Width, e.Height, e.IsDynamic)
 	}
 	for _, item := range biliInlineEmotes(body) {
 		push(item.name, item.emote.URL, item.emote.Width, item.emote.Height, item.emote.Dynamic)

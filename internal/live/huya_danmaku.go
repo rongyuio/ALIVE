@@ -89,6 +89,7 @@ func (p *huyaProvider) Danmaku(ctx context.Context, roomID string, onMessage fun
 	if err != nil {
 		return nil, err
 	}
+	p.ensureEmotes()
 	if onMessage == nil {
 		onMessage = func(Danmu) {}
 	}
@@ -386,12 +387,194 @@ func (s *huyaDanmaku) handleChat(payload []byte) {
 		ID:       s.nextID(at),
 		Nickname: nickname,
 		Content:  text,
-		// 这条链路里没有等级字段，参考实现也填 0
-		Level: 0,
+		// 消费等级（网页端弹幕最左边那颗徽章）也在装饰字段里，
+		// 和粉丝牌是两条不同的 DecorationInfo。
+		Level: huyaLevelFromPayload(payload),
+		Medal: huyaMedalFromPayload(payload),
 		Color: huyaColorHex(color),
 		Kind:  DanmuChat,
 		At:    at,
 	})
+}
+
+// huyaLevelFromPayload 从装饰字段里取消费等级（用户等级）。
+//
+// 实测 vData 结构：tag0=uid（int32/int64）、tag1=等级（int8）、tag2=0、
+// tag3=1。粉丝牌那段 vData 没有 tag1，直接是 tag3=牌子名，所以两者
+// 用「有没有 tag1 数字」区分得开。
+func huyaLevelFromPayload(payload []byte) int {
+	r := newHuyaTarsReader(payload)
+	head, err := r.find(8)
+	if err != nil || head.typ != huyaTarsList {
+		return 0
+	}
+	count := int(r.readInt32(0, 0))
+	if count <= 0 || count > 20 {
+		return 0
+	}
+	for i := 0; i < count; i++ {
+		eh, err := r.takeHead()
+		if err != nil || eh.typ != huyaTarsStructBegin {
+			return 0
+		}
+		var data []byte
+		for {
+			h, err := r.takeHead()
+			if err != nil || h.typ == huyaTarsStructEnd {
+				break
+			}
+			if h.typ == huyaTarsSimpleList && h.tag == 2 {
+				if _, err := r.takeHead(); err != nil {
+					return 0
+				}
+				n := int(r.readInt32(0, 0))
+				if n < 0 || r.pos+n > len(r.buf) {
+					return 0
+				}
+				data = r.buf[r.pos : r.pos+n]
+				r.pos += n
+				continue
+			}
+			if err := r.skipField(h.typ); err != nil {
+				return 0
+			}
+		}
+		if lv, ok := huyaParseLevelData(data); ok {
+			return lv
+		}
+	}
+	return 0
+}
+
+// huyaParseLevelData 解一段消费等级 vData。
+func huyaParseLevelData(data []byte) (int, bool) {
+	if len(data) < 4 {
+		return 0, false
+	}
+	r := newHuyaTarsReader(data)
+	h, err := r.takeHead()
+	if err != nil || h.tag != 0 {
+		return 0, false
+	}
+	switch h.typ {
+	case huyaTarsInt64:
+		if r.pos+8 > len(r.buf) {
+			return 0, false
+		}
+		r.pos += 8
+	case huyaTarsInt32:
+		if r.pos+4 > len(r.buf) {
+			return 0, false
+		}
+		r.pos += 4
+	case huyaTarsZero:
+		// uid 为 0，继续
+	default:
+		return 0, false
+	}
+	h2, err := r.takeHead()
+	if err != nil || h2.tag != 1 {
+		return 0, false
+	}
+	level := r.intFromHead(h2, 0)
+	if level <= 0 || level > 100 {
+		return 0, false
+	}
+	return int(level), true
+}
+
+// huyaMedalFromPayload 从装饰字段（tag8 vDecorationPrefix）里取粉丝牌。
+//
+// 粉丝牌不是独立字段，而是混在一串 DecorationInfo 里：每一项带一个
+// appId 和一段厂商自定义的二进制 vData。实测粉丝牌那一段是嵌套 Tars——
+// tag1=uid、tag3=牌子名称、tag4=等级；气泡、贵族之类的 vData 长得不一样，
+// 靠「名称非空、不是 URL，等级在合理范围」把它们挡掉。
+func huyaMedalFromPayload(payload []byte) Medal {
+	r := newHuyaTarsReader(payload)
+	head, err := r.find(8)
+	if err != nil || head.typ != huyaTarsList {
+		return Medal{}
+	}
+	count := int(r.readInt32(0, 0))
+	if count <= 0 || count > 20 {
+		return Medal{}
+	}
+	for i := 0; i < count; i++ {
+		eh, err := r.takeHead()
+		if err != nil || eh.typ != huyaTarsStructBegin {
+			return Medal{}
+		}
+		var data []byte
+		for {
+			h, err := r.takeHead()
+			if err != nil || h.typ == huyaTarsStructEnd {
+				break
+			}
+			if h.typ == huyaTarsSimpleList && h.tag == 2 {
+				if _, err := r.takeHead(); err != nil {
+					return Medal{}
+				}
+				n := int(r.readInt32(0, 0))
+				if n < 0 || r.pos+n > len(r.buf) {
+					return Medal{}
+				}
+				data = r.buf[r.pos : r.pos+n]
+				r.pos += n
+				continue
+			}
+			if err := r.skipField(h.typ); err != nil {
+				return Medal{}
+			}
+		}
+		if m, ok := huyaParseMedalData(data); ok {
+			return m
+		}
+	}
+	return Medal{}
+}
+
+// huyaParseMedalData 解一段粉丝牌 vData。
+func huyaParseMedalData(data []byte) (Medal, bool) {
+	if len(data) < 6 {
+		return Medal{}, false
+	}
+	r := newHuyaTarsReader(data)
+	name := r.readStringTag(3, "")
+	level := int(r.readInt32Tag(4, 0))
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "http") || level <= 0 || level > 100 {
+		return Medal{}, false
+	}
+	return Medal{Name: name, Level: level}, true
+}
+
+// ensureEmotes 后台拉一次表情包。
+//
+// 弹幕里的文字表情只有占位符，图片在 Wup 接口里；连上弹幕就顺手拉一次，
+// 拉到之前弹幕照常显示，只是 [大哭] 还是文字。
+func (p *huyaProvider) ensureEmotes() {
+	if _, ok := runtimeEmotes.Load(Huya); ok {
+		return
+	}
+	now := time.Now().Unix()
+	last := p.emoteTried.Load()
+	if now-last < 60 || !p.emoteTried.CompareAndSwap(last, now) {
+		return
+	}
+	client := p.api.http
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		list := huyaFetchExpressionEmotes(ctx, client, 0)
+		if len(list) == 0 {
+			return
+		}
+		table := make(emoteTable, len(list))
+		for _, e := range list {
+			table[e.Name] = e.URL
+		}
+		setRuntimeEmotes(Huya, table)
+	}()
 }
 
 // emit 归一化后回调。时间、id、kind 缺省值都在这里补齐。

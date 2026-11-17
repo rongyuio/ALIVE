@@ -1265,6 +1265,8 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 		Text:       d.Content,
 		Nick:       d.Nickname,
 		Level:      d.Level,
+		Medal:      d.Medal,
+		Platform:   live.Platform(a.current().Platform),
 		Kind:       kind,
 		Emotes:     d.Emotes,
 		Price:      d.Price,

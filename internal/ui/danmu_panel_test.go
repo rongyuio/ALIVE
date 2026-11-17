@@ -2,8 +2,11 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"alive/internal/live"
 )
 
 // 右侧弹幕面板按 baseline 的默认宽度 196 展开，且必须和舞台分列。
@@ -22,5 +25,49 @@ func TestDanmuPanelWidth(t *testing.T) {
 	}
 	if r.X <= 0 || r.X+r.W > 1440 {
 		t.Errorf("面板位置越界：%+v", r)
+	}
+}
+
+// 面板的 meta 行：用户等级胶囊 + 粉丝牌胶囊（名称 + 牌子等级）+ 昵称。
+// 两个等级不是同一个数，各占一个胶囊。
+func TestDanmuPanelShowsMedalAndLevel(t *testing.T) {
+	app := NewMockApp()
+	app.Player = app.Streamers[0]
+	app.Router.Push(routePlayer)
+	app.DanmuLog = []danmuLine{{
+		Text:     "测试弹幕",
+		Nick:     "小明",
+		Level:    12,
+		Medal:    live.Medal{Name: "德云色", Level: 24},
+		Platform: live.Bilibili,
+		Born:     time.Now(),
+		Dur:      time.Second,
+	}}
+	tt := ui.NewTester(app.Shell, 1440, 900)
+
+	if !tt.HasText("Lv.12") {
+		t.Fatalf("面板里没有用户等级胶囊，文本树 = %v", tt.Texts())
+	}
+	if !tt.HasText("德云色 24") {
+		t.Fatalf("面板里没有粉丝牌胶囊，文本树 = %v", tt.Texts())
+	}
+}
+
+// 正文里的 [表情名] 要换成图；换不了的时候原文必须还在。
+func TestDanmuPanelReplacesEmotePlaceholder(t *testing.T) {
+	app := NewMockApp()
+	app.Player = app.Streamers[0]
+	app.Router.Push(routePlayer)
+	app.DanmuLog = []danmuLine{
+		{Text: "哈哈[财神]", Nick: "甲", Platform: live.Douyu, Born: time.Now(), Dur: time.Second},
+		{Text: "好[不存在的表情]", Nick: "乙", Platform: live.Douyu, Born: time.Now(), Dur: time.Second},
+	}
+	tt := ui.NewTester(app.Shell, 1440, 900)
+
+	if tt.HasText("哈哈[财神]") {
+		t.Fatal("已知表情的占位符没有被换成图")
+	}
+	if !tt.HasText("好[不存在的表情]") {
+		t.Fatalf("未知占位符被吞掉了，文本树 = %v", tt.Texts())
 	}
 }

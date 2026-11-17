@@ -148,6 +148,13 @@ type pendingImage struct {
 	img      image.Image
 }
 
+// pendingAnimation 是一组解码好的动图帧。
+type pendingAnimation struct {
+	key, url string
+	frames   []image.Image
+	delays   []time.Duration
+}
+
 // Cache 是「URL + 目标宽度」→ 纹理的两层缓存。
 type Cache struct {
 	mu       sync.Mutex
@@ -188,10 +195,15 @@ type Cache struct {
 	download chan struct{}
 	decode   chan struct{}
 
+	// anims 是动图的帧序列（按 URL + 目标尺寸）。首帧同时在 textures 里，
+	// 只看纹理的调用（Bitmap/Ready）不受影响。
+	anims map[string]*animation
+
 	// 合批：pending 里攒着等上屏的图，scheduled 表示已经排了一次 flush
-	pmu       sync.Mutex
-	pending   []pendingImage
-	scheduled bool
+	pmu          sync.Mutex
+	pending      []pendingImage
+	pendingAnims []pendingAnimation
+	scheduled    bool
 
 	sweepOnce sync.Once
 }
@@ -204,6 +216,7 @@ var Default = &Cache{
 	failed:   map[string]time.Time{},
 	last:     map[string]*ui.Bitmap{},
 	wanted:   map[string]bool{},
+	anims:    map[string]*animation{},
 	scale:    1,
 	client:   &http.Client{Timeout: 20 * time.Second},
 	download: make(chan struct{}, maxDownloads),
@@ -240,6 +253,14 @@ func (c *Cache) SetWindow(w *mygo.Window) {
 // 只走内存：封面用这个，直播封面是实时画面，落盘只会缓存过期图。
 func (c *Cache) Bitmap(url string, width float32) *ui.Bitmap {
 	return c.bitmap(url, width, false)
+}
+
+// Emote 取一张表情，和 Bitmap 只差一层：字节会落到磁盘缓存。
+//
+// 表情和头像一样是稳定资源：一张图用到老，重启后重下一遍纯属浪费。
+// 弹幕一屏几十条，命中磁盘和走网络的首帧差别很明显。
+func (c *Cache) Emote(url string, width float32) *ui.Bitmap {
+	return c.bitmap(url, width, true)
 }
 
 // Avatar 取一张头像，和 Bitmap 只差一层：字节会落到磁盘缓存。
@@ -434,6 +455,12 @@ func (c *Cache) evictRawLocked() {
 
 // decodeRaw 把字节解码、缩放到目标宽度，然后排队等上屏。
 func (c *Cache) decodeRaw(key, url string, target int, data []byte) {
+	// 先看是不是动图：是的话按帧队列上屏，表情才会真的动起来。
+	if frames, delays, ok := c.decodeAnimated(target, data); ok {
+		c.persistData(url, data)
+		c.enqueueAnimation(key, url, frames, delays)
+		return
+	}
 	img, err := c.decodeBytes(target, data)
 	if err != nil {
 		// 解不出来多数是动图：GIF 源被 CDN 转成了动画 WebP。
@@ -524,10 +551,12 @@ func (c *Cache) enqueue(key, url string, img image.Image) {
 func (c *Cache) flush() {
 	c.pmu.Lock()
 	batch := c.pending
+	anims := c.pendingAnims
 	c.pending = nil
+	c.pendingAnims = nil
 	c.scheduled = false
 	c.pmu.Unlock()
-	if len(batch) == 0 {
+	if len(batch) == 0 && len(anims) == 0 {
 		return
 	}
 
@@ -538,6 +567,9 @@ func (c *Cache) flush() {
 		for _, p := range batch {
 			c.fail(p.url)
 		}
+		for _, a := range anims {
+			c.fail(a.url)
+		}
 		return
 	}
 
@@ -547,6 +579,14 @@ func (c *Cache) flush() {
 			bmp := ui.NewBitmap(p.img)
 			c.done(p.key, p.url, bmp)
 			bms = append(bms, bmp)
+		}
+		for _, a := range anims {
+			frames := make([]*ui.Bitmap, len(a.frames))
+			for i, img := range a.frames {
+				frames[i] = ui.NewBitmap(img)
+			}
+			c.doneAnimation(a.key, a.url, frames, a.delays)
+			bms = append(bms, frames...)
 		}
 		// 上屏一帧之后再统一丢 CPU 副本（虽然框架会留下 remake 引用，
 		// 但这是唯一能做的；容量按两倍估就是为它留的余量）
@@ -637,6 +677,11 @@ func (c *Cache) sweep() {
 				delete(c.raw, url)
 			}
 		}
+		for key := range c.anims {
+			if _, ok := c.textures[key]; !ok {
+				delete(c.anims, key)
+			}
+		}
 		c.mu.Unlock()
 	}
 }
@@ -655,6 +700,12 @@ func (c *Cache) ReleaseTexturesExcept(keep map[string]bool) {
 		delete(c.textures, key)
 		delete(c.last, t.url)
 	}
+	for key, a := range c.anims {
+		if keep[a.url] {
+			continue
+		}
+		delete(c.anims, key)
+	}
 	c.mu.Unlock()
 	debug.FreeOSMemory()
 }
@@ -667,6 +718,7 @@ func (c *Cache) ReleaseTextures() {
 	c.mu.Lock()
 	clear(c.textures)
 	clear(c.last)
+	clear(c.anims)
 	c.bytes = 0
 	c.mu.Unlock()
 	// 纹理是常驻内存的大头，清完顺手把堆还给系统。

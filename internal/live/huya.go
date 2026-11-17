@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +49,10 @@ type huyaProvider struct {
 	authMu     sync.RWMutex
 	authCookie string
 	login      *WebLogin
+
+	// 表情包是后台补的数据：拉一次存进 runtimeEmotes。
+	// 失败 60 秒后再试，避免房间连不上时反复打接口。
+	emoteTried atomic.Int64
 }
 
 func newHuya() *huyaProvider {

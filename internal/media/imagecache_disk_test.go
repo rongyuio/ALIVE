@@ -277,3 +277,42 @@ func TestBitmapDoesNotWriteDisk(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// 表情和头像一样落盘：第二轮加载不再走网络。
+func TestEmoteLoadsFromDisk(t *testing.T) {
+	data := pngBytes(t)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	url := srv.URL + "/emote.png"
+
+	first := testDiskCache(dir)
+	first.Emote(url, 24)
+	waitFor(t, "表情下载", func() bool {
+		first.mu.Lock()
+		defer first.mu.Unlock()
+		_, ok := first.raw[url]
+		return ok
+	})
+	waitFor(t, "表情落盘", func() bool {
+		_, err := os.Stat(diskPath(dir, url))
+		return err == nil
+	})
+
+	second := testDiskCache(dir)
+	second.Emote(url, 24)
+	waitFor(t, "表情磁盘命中", func() bool {
+		second.mu.Lock()
+		defer second.mu.Unlock()
+		_, ok := second.raw[url]
+		return ok
+	})
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("表情磁盘命中后又发了请求：总数 %d", got)
+	}
+}

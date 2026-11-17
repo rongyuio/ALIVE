@@ -443,7 +443,12 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 	}
 
 	for _, msg := range resp.Messages {
-		if msg.Method != "WebcastChatMessage" {
+		switch msg.Method {
+		case "WebcastEmojiChatMessage":
+			s.handleEmojiChat(msg.Payload)
+			continue
+		case "WebcastChatMessage":
+		default:
 			continue
 		}
 		chat, err := douyinDecodeChatMessage(msg.Payload)
@@ -452,7 +457,7 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 			continue
 		}
 		content := strings.TrimSpace(chat.Content)
-		if content == "" {
+		if content == "" && len(chat.Emotes) == 0 {
 			continue
 		}
 		nickname := strings.TrimSpace(chat.Nickname)
@@ -465,10 +470,12 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 			Nickname: nickname,
 			Content:  content,
 			Level:    int(chat.UserLevel),
+			Medal:    chat.Medal,
 			// 抖音聊天消息不带颜色，留给 UI 按昵称哈希取色。
-			Color: "",
-			Kind:  DanmuChat,
-			At:    at,
+			Color:  "",
+			Kind:   DanmuChat,
+			At:     at,
+			Emotes: chat.Emotes,
 		})
 	}
 }
@@ -865,11 +872,220 @@ func douyinDecodeResponse(data []byte) (douyinResponse, error) {
 	return out, nil
 }
 
-// douyinChatMessage 是 WebcastChatMessage 里关心的字段。
-type douyinChatMessage struct {
-	Content   string
+// handleEmojiChat 处理纯图片弹幕（WebcastEmojiChatMessage）。
+//
+// 抖音把「只发一个表情、不打字」的弹幕单独走这个类型，正文在
+// emoji_content（Text）的 pieces 里，是一张图而不是字符。不接的话这类
+// 弹幕会整条消失——它在直播间里并不少见。
+func (s *douyinDanmaku) handleEmojiChat(payload []byte) {
+	emoji, err := douyinDecodeEmojiChat(payload)
+	if err != nil || emoji.URL == "" {
+		return
+	}
+	nickname := strings.TrimSpace(emoji.Nickname)
+	if nickname == "" {
+		nickname = "匿名"
+	}
+	at := time.Now()
+	s.emit(Danmu{
+		ID:       s.nextID(at),
+		Nickname: nickname,
+		// 正文留兜底文案（形如 [开心]）：有它的时候按内联表情渲染，
+		// 没有就是「空正文 + 一张图」，UI 两条路都认。
+		Content: emoji.Fallback,
+		Level:   int(emoji.UserLevel),
+		Medal:   emoji.Medal,
+		Kind:    DanmuChat,
+		At:      at,
+		Emotes: []Emote{{
+			Name:    emoji.Fallback,
+			URL:     emoji.URL,
+			Width:   emoji.Width,
+			Height:  emoji.Height,
+			Dynamic: emoji.Dynamic,
+		}},
+	})
+}
+
+// douyinEmojiChat 是 WebcastEmojiChatMessage 里关心的字段。
+type douyinEmojiChat struct {
+	Fallback  string
+	URL       string
+	Width     int
+	Height    int
+	Dynamic   bool
 	Nickname  string
 	UserLevel int64
+	Medal     Medal
+}
+
+// douyinDecodeEmojiChat 解析 WebcastEmojiChatMessage 的 payload。
+//
+// 字段号取自抖音网页端自己的 schema（live-schema-im 里的 EmojiChatMessage）：
+//
+//	1 common / 2 user / 3 emoji_id / 4 emoji_content(Text) / 5 default_content
+//	Text        : 4 pieces（重复）
+//	TextPiece   : 25 image_value
+//	TextPieceImage : 1 image
+//	Image       : 1 url_list（重复）, 3 height, 4 width, 9 is_animated
+func douyinDecodeEmojiChat(data []byte) (douyinEmojiChat, error) {
+	fields, err := douyinPBReadFields(data)
+	if err != nil {
+		return douyinEmojiChat{}, err
+	}
+	out := douyinEmojiChat{Fallback: douyinPBString(fields, 5)}
+	out.Nickname, out.UserLevel, out.Medal = douyinUserInfo(fields)
+
+	text, err := douyinPBReadFields(douyinPBBytes(fields, 4))
+	if err != nil {
+		return out, nil
+	}
+	for _, piece := range douyinPBAll(text, 4) {
+		pieceFields, err := douyinPBReadFields(piece.Bytes)
+		if err != nil {
+			continue
+		}
+		imageValue, err := douyinPBReadFields(douyinPBBytes(pieceFields, 25))
+		if err != nil {
+			continue
+		}
+		image, err := douyinPBReadFields(douyinPBBytes(imageValue, 1))
+		if err != nil {
+			continue
+		}
+		urls := douyinPBAll(image, 1)
+		if len(urls) == 0 {
+			continue
+		}
+		out.URL = string(urls[0].Bytes)
+		out.Height = int(douyinPBVarint(image, 3))
+		out.Width = int(douyinPBVarint(image, 4))
+		out.Dynamic = douyinPBVarint(image, 9) != 0
+		return out, nil
+	}
+	return out, nil
+}
+
+// douyinRichParts 解析 RichText（rtf_content_v2）里的 pieces。
+//
+// 抖音网页端渲染聊天时优先读它，逐 piece 处理：string_value 是文字、
+// user_value 是 @ 出来的昵称、image_value 是图。我们跟同一套顺序走，
+// 图那一段写成 InlineEmote，图片按出现顺序返回。
+//
+// 字段号（live-schema-im，2026-11-17 核对）：
+//
+//	Text    : 4 pieces
+//	TextPiece: 11 string_value / 21 user_value / 25 image_value
+//	TextPieceUser : 1 user, 5 left_additional_content, 6 right_additional_content
+//	TextPieceImage: 1 image
+//	Image   : 1 url_list, 3 height, 4 width, 9 is_animated
+func douyinRichParts(data []byte) (string, []Emote) {
+	fields, err := douyinPBReadFields(data)
+	if err != nil {
+		return "", nil
+	}
+	var b strings.Builder
+	var emotes []Emote
+	for _, piece := range douyinPBAll(fields, 4) {
+		pieceFields, err := douyinPBReadFields(piece.Bytes)
+		if err != nil {
+			continue
+		}
+		b.WriteString(douyinPBString(pieceFields, 11))
+		if user := douyinPBBytes(pieceFields, 21); len(user) > 0 {
+			b.WriteString(douyinRichMention(user))
+		}
+		if image := douyinPBBytes(pieceFields, 25); len(image) > 0 {
+			if e, ok := douyinRichImage(image); ok {
+				b.WriteRune(InlineEmote)
+				emotes = append(emotes, e)
+			}
+		}
+	}
+	return b.String(), emotes
+}
+
+// douyinRichMention 还原一个 @ 片段：左右修饰 + 昵称。
+func douyinRichMention(data []byte) string {
+	fields, err := douyinPBReadFields(data)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(douyinPBString(fields, 5))
+	if user, err := douyinPBReadFields(douyinPBBytes(fields, 1)); err == nil {
+		b.WriteString(douyinPBString(user, 3))
+	}
+	b.WriteString(douyinPBString(fields, 6))
+	return b.String()
+}
+
+// douyinRichImage 从 TextPieceImage 里取一张图。
+func douyinRichImage(data []byte) (Emote, bool) {
+	fields, err := douyinPBReadFields(data)
+	if err != nil {
+		return Emote{}, false
+	}
+	image, err := douyinPBReadFields(douyinPBBytes(fields, 1))
+	if err != nil {
+		return Emote{}, false
+	}
+	urls := douyinPBAll(image, 1)
+	if len(urls) == 0 {
+		return Emote{}, false
+	}
+	return Emote{
+		URL:     string(urls[0].Bytes),
+		Width:   int(douyinPBVarint(image, 4)),
+		Height:  int(douyinPBVarint(image, 3)),
+		Dynamic: douyinPBVarint(image, 9) != 0,
+	}, true
+}
+
+// douyinUserInfo 从一条消息的顶层 user（f2）里取昵称、等级和粉丝团。
+func douyinUserInfo(fields []douyinPBField) (nickname string, level int64, medal Medal) {
+	userBytes := douyinPBBytes(fields, 2)
+	if len(userBytes) == 0 {
+		return "", 0, Medal{}
+	}
+	userFields, err := douyinPBReadFields(userBytes)
+	if err != nil {
+		return "", 0, Medal{}
+	}
+	nickname = douyinPBString(userFields, 3)
+	if pg := douyinPBBytes(userFields, 23); len(pg) > 0 {
+		if pgFields, err := douyinPBReadFields(pg); err == nil {
+			level = int64(douyinPBVarint(pgFields, 6))
+			if level == 0 {
+				level = int64(douyinPBVarint(pgFields, 3))
+			}
+		}
+	}
+	return nickname, level, douyinFansClub(userFields)
+}
+
+// douyinPBAll 返回某个字段号的全部出现（重复字段）。
+func douyinPBAll(fields []douyinPBField, num int) []douyinPBField {
+	var out []douyinPBField
+	for _, f := range fields {
+		if f.Num == num && f.Wire == douyinPBWireBytes {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// douyinChatMessage 是 WebcastChatMessage 里关心的字段。
+type douyinChatMessage struct {
+	Content string
+	// Emotes 是富文本里按位置出现的图片（rtf_content_v2 的 image_value）。
+	// Content 里对应位置是 live.InlineEmote。
+	Emotes    []Emote
+	Nickname  string
+	UserLevel int64
+	// Medal 是粉丝团勋章。抖音的粉丝团在消息里只有徽章和等级，
+	// 没有名称——界面上就叫「粉丝团」。
+	Medal Medal
 }
 
 // douyinDecodeChatMessage 解析 WebcastChatMessage 的 payload。
@@ -881,22 +1097,53 @@ func douyinDecodeChatMessage(data []byte) (douyinChatMessage, error) {
 
 	out := douyinChatMessage{Content: douyinPBString(fields, 3)}
 
-	// user = 2，昵称在 User.nickName=3，等级在 User.payGrade=23 → level=3。
-	userBytes := douyinPBBytes(fields, 2)
-	if len(userBytes) == 0 {
-		return out, nil
-	}
-	userFields, err := douyinPBReadFields(userBytes)
-	if err != nil {
-		return out, nil // 用户信息坏了不影响正文
-	}
-	out.Nickname = douyinPBString(userFields, 3)
-	if pg := douyinPBBytes(userFields, 23); len(pg) > 0 {
-		if pgFields, err := douyinPBReadFields(pg); err == nil {
-			out.UserLevel = int64(douyinPBVarint(pgFields, 3))
-		}
+	// user = 2，昵称在 User.nickName=3，等级在 User.payGrade=23。
+	// 真实样本（2026-11-17）里荣誉等级在 f6，和网页端
+	// new_user_grade_level_vN 图标一致；老样本落在 f3，两个都认。
+	out.Nickname, out.UserLevel, out.Medal = douyinUserInfo(fields)
+
+	// 带图的消息正文要靠富文本拼：content 字段里根本没有图的位置。
+	// 只在富文本里真有图时才改用它，其余照旧用 content，改动面最小。
+	if text, emotes := douyinRichParts(douyinPBBytes(fields, 41)); len(emotes) > 0 {
+		out.Content = text
+		out.Emotes = emotes
 	}
 	return out, nil
+}
+
+// douyinFansClub 从 User 的重复勋章字段（f21）里找粉丝团。
+//
+// 勋章有两种：用户荣誉等级（new_user_grade_level_vN.png）和粉丝团
+// （fansclub_level_vN.png）。两者都是 f21，靠图片名或描述区分。
+// 等级在勋章明细 f8.f3；没有粉丝团时返回零值。
+func douyinFansClub(userFields []douyinPBField) Medal {
+	for _, f := range userFields {
+		if f.Num != 21 || f.Wire != douyinPBWireBytes {
+			continue
+		}
+		medalFields, err := douyinPBReadFields(f.Bytes)
+		if err != nil {
+			continue
+		}
+		icon := douyinPBString(medalFields, 1)
+		detail := douyinPBBytes(medalFields, 8)
+		if !strings.Contains(icon, "fansclub") {
+			continue
+		}
+		if len(detail) == 0 {
+			continue
+		}
+		detailFields, err := douyinPBReadFields(detail)
+		if err != nil {
+			continue
+		}
+		level := int(douyinPBVarint(detailFields, 3))
+		if level <= 0 {
+			continue
+		}
+		return Medal{Name: "粉丝团", Level: level}
+	}
+	return Medal{}
 }
 
 // 编译期确认抖音实现了弹幕接口。

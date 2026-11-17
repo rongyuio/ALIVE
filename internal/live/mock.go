@@ -217,7 +217,7 @@ const hugeSC = "写点长的。第一，谢谢主播每天准点开播，这个�
 //	级别       0（无徽章）/ 1 / 7 / 33 / 60
 //	昵称       单字 / 带 emoji / 带空格 / 超长 / 重复出现（验证哈希色稳定）
 //	平台颜色   红 / 青 / 橙
-//	表情       单个内联 / 多个内联混排 / 纯图 / 纯图 gif / 纯图缺宽高
+//	表情       单个内联 / 多个内联混排 / 平台表情表占位符 / 纯图 / 纯图 gif / 纯图缺宽高
 //	醒目留言   ¥1 / ¥30 / ¥100 / ¥500 长文 / ¥1000 超长文（无等级 + 超长昵称）
 //
 // 唯一没覆盖的是「非正方形表情」——手头两个稳定的图源都是方图，
@@ -243,10 +243,13 @@ func mockScript() []Danmu {
 			Nickname: "会飞的猪", Level: 33},
 		{Content: longChatText, Nickname: "月亮邮差", Level: 46},
 
-		// ------------------------------------------------ 平台原生颜色 / 等级
-		{Content: "彩色弹幕 · 红", Nickname: "雾都孤儿", Level: 33, Color: "#FF2E2E"},
-		{Content: "彩色弹幕 · 青", Nickname: "小满", Level: 1, Color: "#00CCFF"},
-		{Content: "彩色弹幕 · 橙", Nickname: "阿澈", Level: 60, Color: "#FF6600"},
+		// ------------------------------------------------ 平台原生颜色 / 等级 / 粉丝牌
+		{Content: "彩色弹幕 · 红", Nickname: "雾都孤儿", Level: 33, Color: "#FF2E2E",
+			Medal: Medal{Name: "德云色", Level: 24}},
+		{Content: "彩色弹幕 · 青", Nickname: "小满", Level: 1, Color: "#00CCFF",
+			Medal: Medal{Name: "金咕咕", Level: 21}},
+		{Content: "彩色弹幕 · 橙", Nickname: "阿澈", Level: 60, Color: "#FF6600",
+			Medal: Medal{Name: "粉丝团", Level: 8}},
 
 		// 没有等级：Lv 徽章整块不出现，昵称要顶到最左边
 		{Content: "第一次来，请问这是谁的直播间", Nickname: "新观众"},
@@ -267,6 +270,11 @@ func mockScript() []Danmu {
 				{Name: "[dog]", URL: square.URL, Width: square.Width, Height: square.Height},
 				{Name: "[cat]", URL: square.URL, Width: square.Width, Height: square.Height},
 			}},
+		// 平台表情表：正文里只有占位符，图按平台表查（斗鱼 265 条，
+		// [开车]、[调戏] 在第二个页签里——只抄第一个页签时这两条会变文字）。
+		// 其它平台没有这两张表，选中它们时按原文渲染，属于预期。
+		{Content: "开车[开车]", Nickname: "半糖去冰", Level: 8},
+		{Content: "[调戏][调戏]", Nickname: "橘子海", Level: 16},
 		// 纯图：正文为空，整条就是一张图
 		{Nickname: "打野的鱼", Level: 45, Emotes: []Emote{square}},
 		// 纯图 gif

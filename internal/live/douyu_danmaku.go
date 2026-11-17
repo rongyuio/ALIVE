@@ -49,6 +49,10 @@ type douyuDanmaku struct {
 	mu   sync.Mutex
 	conn net.Conn
 	seq  int64
+	// seenVR 是已上屏的高能弹幕 id（vrId）。
+	// 服务端除了逐条推，还会在有新条目时重发整个 list，不去重会重复刷屏。
+	seenVR  map[string]struct{}
+	vrOrder []string
 }
 
 // Danmaku 开始监听一个斗鱼房间的弹幕。
@@ -70,7 +74,10 @@ func (p *douyuProvider) Danmaku(ctx context.Context, roomID string, onMessage fu
 		onMessage = func(Danmu) {}
 	}
 
-	s := &douyuDanmaku{roomID: roomID, onMessage: onMessage, done: make(chan struct{})}
+	s := &douyuDanmaku{
+		roomID: roomID, onMessage: onMessage, done: make(chan struct{}),
+		seenVR: map[string]struct{}{},
+	}
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	go s.run()
 	return s, nil
@@ -231,14 +238,30 @@ func (s *douyuDanmaku) handlePacket(conn net.Conn, packet []byte) {
 			return
 		}
 		at := time.Now()
+		// 粉丝牌：bl 是牌等级、bnn 是牌名；没有牌时 bl 为 0、bnn 为空。
+		medal := Medal{}
+		if lv := douyuAtoi(fields["bl"]); lv > 0 {
+			medal = Medal{Name: strings.TrimSpace(fields["bnn"]), Level: lv}
+		}
 		s.emit(Danmu{
 			Nickname: douyuFirst(fields["nn"], "未知用户"),
 			Content:  content,
 			Level:    douyuAtoi(fields["level"]),
+			Medal:    medal,
 			Color:    douyuColor(fields["col"]),
 			Kind:     DanmuChat,
 			At:       at,
 		})
+
+	case "voice_trlt":
+		// 高能弹幕：付费语音弹幕。房间里每来一条就推一帧，list 里通常
+		// 只有这一条；有新条目时会把整个列表重发一遍，所以要按 vrId 去重。
+		for _, d := range douyuVoiceBarrages(fields["list"]) {
+			if !s.firstSight(d.ID) {
+				continue
+			}
+			s.emit(d)
+		}
 
 	case "pingreq":
 		// 服务端主动要心跳，必须回，否则会被认为掉线
@@ -266,6 +289,116 @@ func (s *douyuDanmaku) nextID(at time.Time) string {
 	seq := s.seq
 	s.mu.Unlock()
 	return fmt.Sprintf("douyu:%s:%d:%d", s.roomID, at.UnixMilli(), seq)
+}
+
+// firstSight 报告这个高能弹幕 id 是不是第一次见到，并把它记下来。
+//
+// 只保留最近 maxSeenVoice 条：斗鱼会把整个 list 重发，「最近见过」就够，
+// 留全量没有意义，长会话里还会一直涨。
+func (s *douyuDanmaku) firstSight(id string) bool {
+	if id == "" {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.seenVR[id]; ok {
+		return false
+	}
+	s.seenVR[id] = struct{}{}
+	s.vrOrder = append(s.vrOrder, id)
+	if len(s.vrOrder) > maxSeenVoice {
+		delete(s.seenVR, s.vrOrder[0])
+		s.vrOrder = s.vrOrder[1:]
+	}
+	return true
+}
+
+// maxSeenVoice 是去重表保留的条数。
+const maxSeenVoice = 256
+
+// douyuUnescape 还原 STT 的值转义（@S 是 /，@A 是 @）。
+func douyuUnescape(value string) string {
+	value = strings.ReplaceAll(value, "@S", "/")
+	return strings.ReplaceAll(value, "@A", "@")
+}
+
+// douyuVoiceBarrages 解析 voice_trlt 的 list 字段。
+//
+// list 本身是一个「被转义过两层的 STT 串」，暗号和外层一样：
+//
+//	外层     vrId@AA=2122…@ASun@AA=…
+//	解一层   vrId@A=2122…@S un@A=…
+//	再解一层 vrId@=2122…/un@=…
+//
+// douyuParseSTT 已经解掉了外层，所以这里只在 @S 上切项、按 @A= 取值，
+// 值再解两次——URL 里的 / 比正文多一层转义（`https:@AS@ASapic…`），
+// 少解一次拿到的就是半截地址。
+//
+// 金额是「分 × 10」的整数：面板接口 minVoicePrice=1000 对应 10 元，
+// 所以要除以 100 才是元。realPrice 是实付，price 是档位，优先用实付。
+func douyuVoiceBarrages(list string) []Danmu {
+	if list == "" {
+		return nil
+	}
+	var out []Danmu
+	var cur *Danmu
+	var price, realPrice int
+	var acptime, etime int64
+
+	flush := func() {
+		if cur != nil {
+			amount := realPrice
+			if amount <= 0 {
+				amount = price
+			}
+			cur.Price = amount / 100
+			switch {
+			case acptime > 0:
+				cur.At = time.Unix(acptime, 0)
+			case etime > 0:
+				cur.At = time.Unix(etime, 0)
+			}
+			if cur.Nickname == "" {
+				cur.Nickname = "未知用户"
+			}
+			if cur.Content != "" {
+				out = append(out, *cur)
+			}
+		}
+		cur, price, realPrice, acptime, etime = nil, 0, 0, 0, 0
+	}
+
+	for _, item := range strings.Split(list, "@S") {
+		key, value, ok := strings.Cut(item, "@A=")
+		if !ok {
+			continue
+		}
+		value = douyuUnescape(douyuUnescape(value))
+		if key == "vrId" {
+			flush()
+			cur = &Danmu{Kind: DanmuSuperChat, ID: "douyu:vr:" + value}
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		switch key {
+		case "un":
+			cur.Nickname = value
+		case "content":
+			cur.Content = value
+		case "price":
+			price = douyuAtoi(value)
+		case "realPrice":
+			realPrice = douyuAtoi(value)
+		case "acptime":
+			acptime = int64(douyuAtoi(value))
+		case "etime":
+			etime = int64(douyuAtoi(value))
+		}
+	}
+	flush()
+	return out
 }
 
 // ---------------------------------------------------------------- STT 协议

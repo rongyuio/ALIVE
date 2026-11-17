@@ -26,7 +26,7 @@ mygo.json          name / identifier / version / out，应用元信息唯一来�
 resources/         随包资源；icon.png 为应用图标，正方形。Windows 只取到 256，源图 ≥256 即可
                    （全部缩小，不糊）；出 macOS/Linux 包要求 ≥1024，它们会渲染到 1024 和 512
 go.mod             MyGo CLI 作为 tool：go tool mygo
-.agents/skills/    MyGo 官方 skill（维护约定、原生模块、自动化），动 MyGo 相关代码前先读
+.agents/skills/    MyGo 官方 skill（维护约定、原生模块），动 MyGo 相关代码前先读
 internal/ui/       界面：Shell、顶栏、分区栏、卡片、订阅页、播放页、搜索浮层、配色面板、灵动岛
 internal/theme/    设计令牌与配色表
 internal/media/    图片下载、解码与缓存
@@ -69,7 +69,8 @@ third_party/mpv/   libmpv 运行库与头文件。运行时 LoadLibrary 加载�
 MyGo 相关东西之前，按这个顺序取信息：
 
 1. `.agents/skills/` 里对应的 skill：`mygo-maintenance`（生命周期、元素身份、线程、验证）、
-   `mygo-native-modules`（原生模块）、`mygo-automation`（驱动真实窗口）。
+   `mygo-native-modules`（原生模块）。驱动真实窗口的自动化没有仓库内 skill，指南用
+   `mygo-automation skills` 取（见「驱动真实窗口做验收」）。
 2. `third_party/mygo/docs/` 里对应的那一篇。控件索引是 `docs/ui/README.md`，
    **用到哪个控件读哪个的那一篇**：`list.md`、`scroll.md`、`popover.md`、`motion.md`、
    `performance.md`、`accessibility.md`……不要凭印象调方法。

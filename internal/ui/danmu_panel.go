@@ -241,14 +241,12 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 	item.Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Baseline).Children(func() {
 			if d.Level > 0 {
-				lv := ui.Box(c).Padding(1, 5, 1, 5).Radius(theme.RadiusFull).
-					Background(theme.FillTertiary).Shrink(0)
-				lv.Children(func() {
-					ui.Text(c, fmt.Sprintf("Lv.%d", d.Level)).
-						FontSize(theme.Text2XS).FontWeight(600).
-						TextColor(theme.TextSecondary).LineHeight(1.5).
-						FontFeatures("tnum")
-				})
+				a.danmuChip(c, fmt.Sprintf("Lv.%d", d.Level))
+			}
+			// 粉丝牌：名称 + 牌子等级。名称过长时截断——牌子名可以很长，
+			// 不能把昵称挤没。
+			if d.Medal.Name != "" {
+				a.danmuChip(c, fmt.Sprintf("%s %d", d.Medal.Name, d.Medal.Level))
 			}
 			// .user { nowrap; overflow: hidden; text-overflow: ellipsis }
 			// 靠一层 Grow 的盒子给昵称一个上界，长昵称才不会顶出面板。
@@ -260,9 +258,12 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 
 		// 纯图弹幕：整条就是一张表情，正文是空串。
 		if d.imageOnly() {
-			w, h := emoteSize(d.Emotes[0], 26)
-			if bmp := media.Default.Bitmap(d.Emotes[0].URL, w); bmp != nil {
+			w, h := emoteSize(d.Emotes[0], theme.TextSM*danmuStickerScale)
+			if bmp, wait, anim := media.Default.EmoteFrame(d.Emotes[0].URL, w, c.Now()); bmp != nil {
 				ui.Image(c, bmp).Size(w, h)
+				if anim && wait > 0 {
+					c.After(wait)
+				}
 			} else {
 				// 图还在路上：留一块同尺寸的空位，别让这一行塌掉再回弹
 				ui.Box(c).Size(w, h)
@@ -270,8 +271,28 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 			return
 		}
 
+		// 正文里的 [表情名] 换成图。没有可渲染的表情时还是普通文本，
+		// 不为了一个 U+FFFC 走富文本。
+		if rs := buildDanmuSpans(d.Platform, d.Text, d.Emotes, theme.TextSM); rs.hasEmote {
+			rs.richText(c, theme.TextSM, theme.TextPrimary).LineHeight(1.5)
+			return
+		}
 		ui.Text(c, d.Text).FontSize(theme.TextSM).LineHeight(1.5).
 			TextColor(theme.TextPrimary)
+	})
+}
+
+// danmuChip 是 meta 行里的小胶囊（用户等级、粉丝牌）。
+//
+// 名字最多占一行、宽度有上限：粉丝牌名可以很长，不能把昵称挤没；
+// 数字用等宽字形，等级从 9 跳到 10 时胶囊不会忽宽忽窄。
+func (a *App) danmuChip(c *ui.Context, text string) {
+	chip := ui.Box(c).Padding(1, 5, 1, 5).Radius(theme.RadiusFull).
+		Background(theme.FillTertiary).Shrink(0).MaxWidth(96)
+	chip.Children(func() {
+		ui.Text(c, text).FontSize(theme.Text2XS).FontWeight(600).
+			SingleLine().LineHeight(1.5).TextColor(theme.TextSecondary).
+			FontFeatures("tnum")
 	})
 }
 
