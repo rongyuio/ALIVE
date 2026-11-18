@@ -204,7 +204,39 @@ func TestFollowsFilterSwitchSetsDirection(t *testing.T) {
 	}
 }
 
-// 订阅条上每个 chip 的格子同样要对得上：chip 里塞了三样东西，
+// 关注页一级分区的两枚 tab：滑块位置同样要从量出来的格子来。
+func TestFollowsSectionBoxMatchesLayout(t *testing.T) {
+	app := NewMockApp()
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	box := app.followsSectionBox
+	for i, name := range followsSectionNames {
+		r, ok := tt.Find(name)
+		if !ok {
+			t.Fatalf("一级分区 %q 没渲染出来", name)
+		}
+		if d := math.Abs(float64(r.W - box.w[i])); d > 0.5 {
+			t.Errorf("%q 宽度：量出 %.2f，实际 %.2f", name, box.w[i], r.W)
+		}
+	}
+}
+
+// clickSubChip 点一枚 chip 的分区名那一侧。
+//
+// 不能按标签的中心点：chip 右半边是平台胶囊（它自己是可点元素），
+// 中心很可能落在胶囊上，那样点的是「切平台」而不是「选中分区」。
+func clickSubChip(t *testing.T, tt *ui.Tester, name string) {
+	t.Helper()
+	r, ok := tt.Find("订阅分区:" + name)
+	if !ok {
+		t.Fatalf("%q 没渲染出来", name)
+	}
+	tt.ClickAt(r.X+20, r.Y+r.H/2)
+}
+
+// 订阅分区那一行的 chip 格子同样要对得上：chip 里塞了三样东西，
 // 宽度算式漏一项就会整体错开。
 func TestSubscribeChipBoxMatchesLayout(t *testing.T) {
 	app := NewMockApp()
@@ -212,26 +244,28 @@ func TestSubscribeChipBoxMatchesLayout(t *testing.T) {
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "英雄联盟", CategoryID: "1"},
 		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "无畏契约", CategoryID: "2"},
 	}
-	app.switchTab("subscribe")
+	app.switchTab("follows")
+	app.FollowsSection = followsSectionSubs
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
 
+	chips := app.subChips()
 	box := app.subsBox
 	origin := float32(math.NaN())
-	for i, sub := range app.Subs {
-		r, ok := tt.Find("订阅:" + sub.Platform + " " + sub.Name)
+	for i, chip := range chips {
+		r, ok := tt.Find("订阅分区:" + chip.Name)
 		if !ok {
-			t.Fatalf("%q 的 chip 没渲染出来", sub.Name)
+			t.Fatalf("%q 的 chip 没渲染出来", chip.Name)
 		}
 		if d := math.Abs(float64(r.W - box.w[i])); d > 1 {
-			t.Errorf("%q 宽度：量出 %.2f，实际 %.2f", sub.Name, box.w[i], r.W)
+			t.Errorf("%q 宽度：量出 %.2f，实际 %.2f", chip.Name, box.w[i], r.W)
 		}
 		d := r.X - box.x[i]
 		if math.IsNaN(float64(origin)) {
 			origin = d
 		}
 		if math.Abs(float64(d-origin)) > 1 {
-			t.Errorf("%q 位置差 %.2f，第一个是 %.2f：格子没和布局对齐", sub.Name, d, origin)
+			t.Errorf("%q 位置差 %.2f，第一个是 %.2f：格子没和布局对齐", chip.Name, d, origin)
 		}
 	}
 }
@@ -243,38 +277,41 @@ func TestSubscribeSwitchSetsDirection(t *testing.T) {
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "英雄联盟", CategoryID: "1"},
 		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "无畏契约", CategoryID: "2"},
 	}
-	app.switchTab("subscribe")
+	app.switchTab("follows")
+	app.FollowsSection = followsSectionSubs
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
 
-	seq := app.subFeedSeq
-	if err := tt.Click("订阅:B站 无畏契约"); err != nil {
-		t.Fatal(err)
-	}
+	seq := app.followsSeq
+	clickSubChip(t, tt, "无畏契约")
 	if app.SubIndex != 1 {
 		t.Fatalf("SubIndex=%d，期望 1", app.SubIndex)
 	}
 	if app.navDir != navRight {
 		t.Errorf("方向是 %v，期望 navRight", app.navDir)
 	}
-	if app.subFeedSeq != seq+1 {
-		t.Errorf("代次没动：%d → %d", seq, app.subFeedSeq)
+	if app.followsSeq != seq+1 {
+		t.Errorf("代次没动：%d → %d", seq, app.followsSeq)
 	}
 }
 
-// 三个内容区各有自己的代次：在订阅页换了 chip，回到首页不该再播一次进场。
+// 内容区各有自己的代次：在关注页换订阅 chip，首页不该再播一次进场。
 func TestSequencesAreIndependent(t *testing.T) {
 	app := NewMockApp()
-	if app.navSeq != app.followsSeq || app.navSeq != app.subFeedSeq {
+	if app.navSeq != app.followsSeq {
 		t.Skip("初值不同，这条断言没有意义")
 	}
 	app.Subs = []Subscription{
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "A", CategoryID: "1"},
 		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "B", CategoryID: "2"},
 	}
+	app.switchTab("follows")
+	app.FollowsSection = followsSectionSubs
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
 	home := app.navSeq
-	app.switchTab("subscribe")
-	app.subFeedSeq++
+	clickSubChip(t, tt, "B")
 	if app.navSeq != home {
 		t.Errorf("换订阅项的代次串到了首页：%d → %d", home, app.navSeq)
 	}
@@ -362,13 +399,14 @@ func TestSubscribeSliderCoversChip(t *testing.T) {
 		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "鸣潮", CategoryID: "1"},
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "鸣潮", CategoryID: "2"},
 	}
-	app.switchTab("subscribe")
+	app.switchTab("follows")
+	app.FollowsSection = followsSectionSubs
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
 
-	sliderCovers(t, tt, "订阅:B站 鸣潮")
+	sliderCovers(t, tt, "订阅分区:鸣潮")
 }
 
 // 关注页筛选条：同一套要求。

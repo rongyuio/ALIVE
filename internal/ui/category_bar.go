@@ -158,9 +158,10 @@ func (a *App) toggleSubscribe() {
 			kept = append(kept, s)
 		}
 		a.Subs = kept
-		if a.SubIndex >= len(a.Subs) {
-			a.SubIndex = max(0, len(a.Subs)-1)
+		if a.subActive[subChipKey(category)] == a.Platform {
+			delete(a.subActive, subChipKey(category))
 		}
+		a.clampSubIndex()
 		a.toastTone("已取消订阅该分区", toastSuccess)
 		a.markDirty()
 		return
@@ -172,6 +173,9 @@ func (a *App) toggleSubscribe() {
 		Name:       category,
 		CategoryID: a.currentCategoryID(),
 	})
+	// 刚订阅的这家就是这人想看的：把这枚 chip 的活动平台指过去，
+	// 否则它会默认落在顶栏顺序的第一家，看起来像「订了没反应」。
+	a.subActive[subChipKey(category)] = a.Platform
 	a.toastTone("已订阅该分区", toastSuccess)
 	a.markDirty()
 }

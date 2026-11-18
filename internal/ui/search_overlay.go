@@ -46,30 +46,22 @@ type searchHit struct {
 // searchAvailable 报告当前顶栏搜索键是否该出现。
 //
 // 这颗搜索只搜「当前平台的在播房间」——它按 a.Platform 走接口。而
-// 「全部关注」和「订阅」两个页面聚合的是好几家的主播，在这两个页面
-// 上没有「当前平台」可言，点了只能搜出上一家平台的结果，所以不摆。
+// 「关注」页聚合的是好几家的主播（关注主播 + 订阅分区），在那上面
+// 没有「当前平台」可言，点了只能搜出上一家平台的结果，所以不摆。
 //
 // 注意：这不等于这两个页面不该有搜索。「在这份列表里找某个主播」
 // 照样成立，它们各自带一个页内搜索框（followsBar / subscribeSearch），
 // 过滤的是屏幕上这份列表，不发接口。两者的区别是范围，不是有无。
 func (a *App) searchAvailable() bool {
-	switch a.activeTab() {
-	case "follows", "subscribe":
-		return false
-	}
-	return true
+	return a.activeTab() != "follows"
 }
 
 // authAvailable 报告当前顶栏该不该出现账号入口。
 //
-// 和 searchAvailable 同一个口径：账号是按平台的，而这两个页面跨好几家。
+// 和 searchAvailable 同一个口径：账号是按平台的，而关注页跨好几家。
 // 留在上面就会画出「上一家」的头像，而页面本身不属于那一家。
 func (a *App) authAvailable() bool {
-	switch a.activeTab() {
-	case "follows", "subscribe":
-		return false
-	}
-	return true
+	return a.activeTab() != "follows"
 }
 
 // searchButton 是顶栏右侧那颗搜索图标按钮，同时是浮层的锚点。

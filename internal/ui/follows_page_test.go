@@ -149,7 +149,7 @@ func TestFollowsListFiltersByPlatform(t *testing.T) {
 	}
 }
 
-// 订阅页、全部关注页没有平台上下文，顶栏不该出现搜索入口。
+// 关注页没有平台上下文，顶栏不该出现搜索入口（它有自己的页内搜索）。
 func TestSearchAvailableOnlyOnPlatformPages(t *testing.T) {
 	app := NewMockApp()
 	cases := []struct {
@@ -158,8 +158,7 @@ func TestSearchAvailableOnlyOnPlatformPages(t *testing.T) {
 		want  bool
 	}{
 		{"首页", routeHome, true},
-		{"全部关注", routeFollows, false},
-		{"订阅", routeSubscribe, false},
+		{"关注:关注主播", routeFollows, false},
 	}
 	for _, tc := range cases {
 		app.Router = ui.NewRouter(tc.route)
@@ -240,5 +239,101 @@ func TestRemoveFollowIsNotAToggle(t *testing.T) {
 	}
 	if len(app.Follows) != 0 {
 		t.Fatalf("取关后仍剩 %+v", app.Follows)
+	}
+}
+
+// 订阅分区并进关注页：顶栏只剩那颗星星，页内一级分区是
+// 「关注主播 / 订阅分区」，二级各用自己那一行。
+func TestFollowsPageMergesSubscribeSection(t *testing.T) {
+	app := NewMockApp()
+	app.Subs = []Subscription{
+		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "鸣潮", CategoryID: "1"},
+	}
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	// 顶栏不再有独立的「订阅」tab
+	if _, ok := tt.Find("订阅"); ok {
+		t.Fatal("顶栏还留着订阅 tab")
+	}
+	for _, name := range []string{"关注主播", "订阅分区"} {
+		if _, ok := tt.Find(name); !ok {
+			t.Fatalf("关注页没有一级分区 %q", name)
+		}
+	}
+	if _, ok := tt.Find("搜索已关注的主播"); !ok {
+		t.Fatal("默认一级分区应该是关注主播")
+	}
+	if _, ok := tt.Find("订阅分区:鸣潮"); ok {
+		t.Fatal("关注主播下不该出现订阅 chip")
+	}
+
+	if err := tt.Click("订阅分区"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.Router.Path() != routeFollows {
+		t.Fatalf("切订阅分区不该换路由，路由是 %q", app.Router.Path())
+	}
+	if _, ok := tt.Find("订阅分区:鸣潮"); !ok {
+		t.Fatal("订阅分区没有列出已订阅的分区")
+	}
+	if _, ok := tt.Find("搜索已关注的主播"); ok {
+		t.Error("订阅分区不该出现主播搜索")
+	}
+	if _, ok := tt.Find("关注筛选:全部"); ok {
+		t.Error("订阅分区不该出现平台筛选胶囊")
+	}
+
+	if err := tt.Click("关注主播"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("搜索已关注的主播"); !ok {
+		t.Fatal("切回关注主播后页内搜索没回来")
+	}
+}
+
+// 一级分区换的是同一块内容区：代次 +1，方向按两枚 tab 的序号差算。
+func TestFollowsSectionSwitchSetsDirection(t *testing.T) {
+	app := NewMockApp()
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	seq := app.followsSeq
+	if err := tt.Click("订阅分区"); err != nil {
+		t.Fatal(err)
+	}
+	if app.navDir != navRight {
+		t.Errorf("往右点，方向是 %v，期望 navRight", app.navDir)
+	}
+	if app.followsSeq != seq+1 {
+		t.Errorf("代次没动：%d → %d", seq, app.followsSeq)
+	}
+
+	if err := tt.Click("关注主播"); err != nil {
+		t.Fatal(err)
+	}
+	if app.navDir != navLeft {
+		t.Errorf("往左点，方向是 %v，期望 navLeft", app.navDir)
+	}
+}
+
+// 还没有订阅时，订阅分区那一级只留一句入口说明，内容区是空态。
+func TestFollowsSubsSectionEmptyState(t *testing.T) {
+	app := NewMockApp()
+	app.Subs = nil
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	if err := tt.Click("订阅分区"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("还没有订阅分区") {
+		t.Error("订阅分区为空时没有入口说明")
 	}
 }

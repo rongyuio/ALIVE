@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image"
 	"testing"
 	"time"
 
@@ -222,5 +223,165 @@ func TestPlayerTabFallsBackToPlatform(t *testing.T) {
 
 	if got := app.activeTab(); got != "huya" {
 		t.Fatalf("顶栏高亮的是 %q，期望 %q", got, "huya")
+	}
+}
+
+// 悬停在音量条上滚轮调音量：上滚变大、下滚变小，1% 取整，夹在 0–100。
+//
+// 滚轮走的是 HandleInput，只有指针在音量条上时才收得到——所以「悬停才生效」
+// 是结构上的，不是额外判断出来的。这条测试同时盯住「指针在画面别处滚不动音量」，
+// 免得以后把 handler 挂到整条控制条或 stage 上。
+func TestWheelOverVolumeChangesVolume(t *testing.T) {
+	app := NewMockApp()
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	if err := tt.Click("旭旭宝宝"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Advance(1500 * time.Millisecond)
+
+	app.Volume = 0.5
+	tt.Frame()
+	r, ok := tt.Find("音量")
+	if !ok {
+		t.Fatal("控制条里没有音量条")
+	}
+	x, y := r.X+r.W/2, r.Y+r.H/2
+
+	// 指针在画面上、不在音量条上：滚轮不碰音量
+	tt.Move(700, 450)
+	tt.Wheel(700, 450, 0, -99)
+	tt.Frame()
+	if app.Volume != 0.5 {
+		t.Fatalf("画面上的滚轮改了音量：%v", app.Volume)
+	}
+
+	tt.Move(x, y)
+	tt.Wheel(x, y, 0, -99) // 一格上滚
+	tt.Frame()
+	if got := app.Volume; got != 0.55 {
+		t.Fatalf("上滚一格后音量为 %v，期望 0.55", got)
+	}
+
+	tt.Wheel(x, y, 0, 99) // 一格下滚
+	tt.Frame()
+	if got := app.Volume; got != 0.5 {
+		t.Fatalf("下滚一格后音量为 %v，期望 0.5", got)
+	}
+
+	// 上限夹到 1：连续上滚不会溢出
+	for range 20 {
+		tt.Wheel(x, y, 0, -99)
+	}
+	tt.Frame()
+	if got := app.Volume; got != 1 {
+		t.Fatalf("连续上滚后音量为 %v，期望夹到 1", got)
+	}
+
+	// 下限夹到 0：连续下滚不会掉到负数
+	for range 40 {
+		tt.Wheel(x, y, 0, 99)
+	}
+	tt.Frame()
+	if got := app.Volume; got != 0 {
+		t.Fatalf("连续下滚后音量为 %v，期望夹到 0", got)
+	}
+}
+
+// 触控板一次只推几 DIP：不足 1% 的余量要攒着，不能每次取整都丢掉。
+// 没有余量的话这串小位移会把音量锁死在原值上——测试在改前取整版本里会红。
+func TestWheelVolumeAccumulatesPreciseScroll(t *testing.T) {
+	app := NewMockApp()
+	app.Router.Push(routePlayer)
+	app.Volume = 0.5
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Advance(1500 * time.Millisecond)
+
+	r, ok := tt.Find("音量")
+	if !ok {
+		t.Fatal("控制条里没有音量条")
+	}
+	x, y := r.X+r.W/2, r.Y+r.H/2
+	tt.Move(x, y)
+	// 每格 5 DIP = 0.25%：单次都到不了一档，四次攒成 1%
+	for range 4 {
+		tt.Scroll(x, y, 0, -5)
+	}
+	tt.Frame()
+	if got := app.Volume; got != 0.51 {
+		t.Fatalf("四次 5 DIP 上滚后音量为 %v，期望 0.51", got)
+	}
+}
+
+// 播放页外壳的圆角描边必须连着。
+//
+// 外壳是「圆角 16 + 1px 描边」的大容器，以前用 ClipInset(0,0,0,0,16) 切内容。
+// ClipInset 是 CSS 的 clip-path: inset()，它连边框一起裁，而且裁剪的圆角
+// 正好落在描边中线上：直边处像素中心落在裁剪内、描边完整，弧线上覆盖度被
+// 乘了两次，只剩四分之一，肉眼就是「四个角的线条没了」。
+// Clip() 才是 overflow:hidden：裁 padding box（圆角自动减掉边框宽），
+// 描边在裁剪之后补画一遍，弧线完整。
+//
+// 断言方式：沿左上角弧线逐行取最亮的像素，每行都得亮过阈值。直边不受影响，
+// 所以只查弧线覆盖的那一段——那里整段暗下去才是这个 bug。
+func TestPlayerShellCornerBorderIsContinuous(t *testing.T) {
+	const radius = 16
+	// theme.Border #24272e 的 RGB 和是 121，窗口底 #0a0b0d 是 34，画面纯黑是 0。
+	// 弧线是斜的，1px 宽在像素上覆盖不满，45° 处峰值掉到 89；而被裁坏的
+	// 弧线整段只剩 27。取 60 分得开。
+	const lit = 60
+	sum := func(img *image.RGBA, x, y int) int {
+		p := img.RGBAAt(x, y)
+		return int(p.R) + int(p.G) + int(p.B)
+	}
+
+	for _, scale := range []float32{1, 2} {
+		app := NewMockApp()
+		tt := ui.NewTester(app.Shell, 1440, 900)
+		tt.SetScale(scale)
+		if err := tt.Click("旭旭宝宝"); err != nil {
+			t.Fatal(err)
+		}
+		// 播放页从右侧滑进来，动画走完再截图
+		tt.Advance(1500 * time.Millisecond)
+		img := tt.Image()
+
+		// 顶边：第一行横贯大半幅画面的描边
+		top, left := -1, -1
+		for y := 0; y < img.Bounds().Dy() && top < 0; y++ {
+			n := 0
+			for x := 0; x < img.Bounds().Dx(); x++ {
+				if sum(img, x, y) >= 100 && sum(img, x, y) <= 135 {
+					n++
+				}
+			}
+			if n > img.Bounds().Dx()/2 {
+				top = y
+			}
+		}
+		if top < 0 {
+			t.Fatalf("scale %v：找不到外壳的顶边", scale)
+		}
+		// 左边：顶边往下走满一个圆角之后，第一条竖着的描边
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			if sum(img, x, top+int(radius*scale)+2) >= 100 {
+				left = x
+				break
+			}
+		}
+		if left < 0 {
+			t.Fatalf("scale %v：找不到外壳的左边", scale)
+		}
+
+		// 逐行扫弧线：top 这一行是顶边本身，往下 radius 行都该有亮像素
+		for y := top + 1; y < top+int(radius*scale); y++ {
+			peak := 0
+			for x := left; x < left+int(radius*scale) && x < img.Bounds().Dx(); x++ {
+				peak = max(peak, sum(img, x, y))
+			}
+			if peak < lit {
+				t.Fatalf("scale %v：外壳左上角第 %d 行（角顶下 %d px）最亮只有 %d，圆角弧线断了",
+					scale, y, y-top, peak)
+			}
+		}
 	}
 }

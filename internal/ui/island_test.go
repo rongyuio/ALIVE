@@ -127,13 +127,13 @@ func TestListeningIslandReturnsToPlayer(t *testing.T) {
 	if err := tt.Click("旭旭宝宝"); err != nil {
 		t.Fatal(err)
 	}
-	// 切到订阅页：这是「离开但不退出」的一条路（顶栏 tab）
-	if err := tt.Click("订阅"); err != nil {
+	// 切到关注页：这是「离开但不退出」的一条路（顶栏 tab）
+	if err := tt.Click("关注"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 	if app.Router.Path() == routePlayer {
-		t.Fatal("点了订阅页还停在播放页")
+		t.Fatal("点了关注页还停在播放页")
 	}
 	// 没有真播放器时后台收听不成立（media.player 为 nil），
 	// 所以这里验的是「岛按后台收听态渲染」的那条分支本身。
@@ -154,6 +154,268 @@ func TestListeningIslandReturnsToPlayer(t *testing.T) {
 	tt.Frame()
 	if got := app.Router.Path(); got != routePlayer {
 		t.Fatalf("点胶囊之后路由是 %s，期望 %s", got, routePlayer)
+	}
+}
+
+// islandAvatar 是岛里那颗头像的名字。
+//
+// 它必须是头像自己那一格，不能是外面铺满内容区的热区：热区的宽度恒等于
+// 内容区，量它看不出头像到底在哪、多大。旧实现把 34 的圆当热区、头像没有
+// 名字，所以这些用例在旧代码上会以「找不到主播头像」失败——那正是要钉的
+// 东西：头像必须是一个独立元素，位置和直径由岛宽插值出来。
+const islandAvatarLabel = "主播头像"
+
+// 离开播放页时，头像必须是被岛宽拖着走过去的，不能先跳到中间。
+//
+// 以前后台收听另画一颗居中头像：切到关注页的第一帧，头像就在正中了，岛
+// 还在 180 宽的位置慢慢缩——看起来是「闪现」而不是「收起」。
+//
+// 判据是**连续性**：逐帧位移不许出现一次几十像素的跳变（弹簧回弹最多十几
+// 像素），并且收尾必须正好居中、直径正好填满内容区。
+func TestListeningAvatarCollapsesWithIsland(t *testing.T) {
+	app := NewMockApp()
+	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+	app.Router.Push(routePlayer)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	app.media.background = true
+	app.Router.Push(routeHome)
+	tt.Frame()
+
+	// 一帧 16ms、行程约 70px，弹簧峰值一帧十几像素；硬跳是几十像素。
+	const maxStep = 16
+
+	var prevOffset, prevW float32
+	var moving int
+	first := true
+	for i := 0; i < 120; i++ {
+		tt.Advance(16 * time.Millisecond)
+		isl, ok := tt.Find("灵动岛")
+		if !ok {
+			t.Fatalf("第 %d 帧岛不见了", i)
+		}
+		av, ok := tt.Find(islandAvatarLabel)
+		if !ok {
+			t.Fatalf("第 %d 帧找不到头像：它必须是被岛宽插值出来的独立元素", i)
+		}
+		// 头像不许跑出岛外：那是布局基准算错了，不是动画。
+		if av.X < isl.X-0.5 || av.X+av.W > isl.X+isl.W+0.5 {
+			t.Fatalf("第 %d 帧头像 %v..%v 跑出了岛 %v..%v",
+				i, av.X, av.X+av.W, isl.X, isl.X+isl.W)
+		}
+		offset := av.X - isl.X
+		if !first {
+			if d := offset - prevOffset; d > maxStep || d < -maxStep {
+				t.Fatalf("第 %d 帧头像横移了 %v 像素（%v → %v）：一帧里跳过去的",
+					i, d, prevOffset, offset)
+			}
+		}
+		first = false
+		if prevW > 0 && isl.W < prevW-0.01 {
+			moving++
+		}
+		prevOffset, prevW = offset, isl.W
+	}
+	if moving == 0 {
+		t.Fatal("岛宽一帧都没变：收缩动画根本没跑，这条测试没有分辨力")
+	}
+	isl, _ := tt.Find("灵动岛")
+	av, _ := tt.Find(islandAvatarLabel)
+	if d := av.W - islandListenAvatar; d < -0.01 || d > 0.01 {
+		t.Fatalf("收尾头像直径 %v，期望填满内容区的 %v", av.W, islandListenAvatar)
+	}
+	if d := (av.X + av.W/2) - (isl.X + isl.W/2); d < -0.6 || d > 0.6 {
+		t.Fatalf("收尾头像中心偏离岛中心 %v", d)
+	}
+}
+
+// 切走的第一帧，头像必须还在展开态那个左位上——那正是以前「闪现」的那一帧。
+//
+// 判据用「第一帧的左边距」对「展开态的左边距」：两者必须一致。旧实现第一帧
+// 就把头像摆到正中（或者根本没有这个元素），这条会失败。
+func TestListeningFirstFrameStartsFromLeftAvatar(t *testing.T) {
+	app := NewMockApp()
+	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+	app.Router.Push(routePlayer)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	beforeIsl, _ := tt.Find("灵动岛")
+	before, ok := tt.Find(islandAvatarLabel)
+	if !ok {
+		t.Fatal("播放页没有可命名的头像")
+	}
+	wantOffset := before.X - beforeIsl.X
+
+	app.media.background = true
+	app.Router.Push(routeHome)
+	tt.Frame()
+
+	isl, _ := tt.Find("灵动岛")
+	av, ok := tt.Find(islandAvatarLabel)
+	if !ok {
+		t.Fatal("后台收听态找不到头像：头像被换成了另一棵树")
+	}
+	if isl.W < islandPlayerMinW {
+		t.Fatalf("第一帧岛宽已经是 %v，没有可观察的收缩过程", isl.W)
+	}
+	if got := av.X - isl.X; got != wantOffset {
+		t.Fatalf("切走第一帧头像左边距 %v，展开态是 %v：头像先跳了，再等岛缩",
+			got, wantOffset)
+	}
+}
+
+// 收缩收尾不许来回跳。
+//
+// 这里钉的是两件具体的事，都是量出来才发现的：
+//
+//   - 岛的左边缘必须取整。它按 (winW-w)/2 算，弹簧每帧只走零点几像素，
+//     亚像素坐标一跨过半像素边界，整颗岛就平移一个物理像素，下一帧再跨
+//     回来——头像跟着一来一回，就是肉眼看到的「抖一下」。头像自己取整
+//     没有用，它在岛里是整数，岛在窗口里不是。
+//   - 收缩用 Smooth 不用 Snappy。Snappy 收到 38 会过冲到 37.1，宽度一旦
+//     小于 38 内容区就窄于头像，被 body 的圆角切掉一条边。
+//
+// 判据是「左边缘单调」+「宽度单调」，而不是像素变化量：整岛平移一整像素
+// 时像素差本来就大（那是正确的位移），有分辨力的是它有没有回退。
+func TestListeningShrinkDoesNotJitter(t *testing.T) {
+	app := NewMockApp()
+	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+	app.Router.Push(routePlayer)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	app.media.background = true
+	app.Router.Push(routeHome)
+	tt.Frame()
+
+	var prevX, prevW float32
+	var shrank, moved int
+	for i := 0; i < 90; i++ {
+		isl, ok := tt.Find("灵动岛")
+		if !ok {
+			t.Fatalf("第 %d 帧岛不见了", i)
+		}
+		// 左边缘取整：岛的位置必须是整数 DIP，否则亚像素会在半像素边界上来回。
+		if isl.X != float32(math.Round(float64(isl.X))) {
+			t.Fatalf("第 %d 帧岛左边距 %v 不是整数：亚像素会在取整边界上抖", i, isl.X)
+		}
+		if prevW > 0 {
+			if isl.W > prevW+0.001 {
+				t.Fatalf("第 %d 帧岛宽从 %v 回弹到 %v", i, prevW, isl.W)
+			}
+			if isl.W < prevW-0.001 {
+				shrank++
+			}
+			if isl.X < prevX-0.001 {
+				t.Fatalf("第 %d 帧岛左边缘从 %v 退回 %v", i, prevX, isl.X)
+			}
+			if isl.X > prevX+0.001 {
+				moved++
+			}
+		}
+		prevX, prevW = isl.X, isl.W
+		tt.Advance(16 * time.Millisecond)
+	}
+	if shrank == 0 || moved == 0 {
+		t.Fatalf("岛没有收缩（%d 帧变窄、%d 帧移动）：这条测试没有分辨力", shrank, moved)
+	}
+	if prevW != islandPlayerCollapsedW {
+		t.Fatalf("收尾岛宽 %v，期望 %v", prevW, islandPlayerCollapsedW)
+	}
+}
+
+// 收起态不画在线绿点。
+//
+// 收起后头像 34 撑满内容区，绿点画在头像外沿（size-d+1）就整个出了内容区，
+// 被 body 的圆角裁掉大半，剩一小截弧挂在圆的右下角——那不是「绿点被收进
+// 去」，那是一颗没擦干净的脏点。
+//
+// 判据用像素：绿点是 #22c55e，扫整条岛。展开态必须找得到，收起态必须一颗
+// 都没有——中间不许出现「半颗」，那正是残弧的形状。
+func TestListeningHidesLiveDot(t *testing.T) {
+	count := func(tt *ui.Tester) int {
+		img := tt.Image()
+		n := 0
+		for y := 0; y < 60; y++ {
+			for x := 600; x < 840; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				if absInt(int(r>>8)-34) < 26 && absInt(int(g>>8)-197) < 26 &&
+					absInt(int(b>>8)-94) < 26 {
+					n++
+				}
+			}
+		}
+		return n
+	}
+
+	app := NewMockApp()
+	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+	app.Router.Push(routePlayer)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	if n := count(tt); n == 0 {
+		t.Fatal("展开态没有画出在线绿点：判据扫错了颜色，这条测试没有分辨力")
+	}
+
+	app.media.background = true
+	app.Router.Push(routeHome)
+	tt.Frame()
+	for i := 0; i < 90; i++ {
+		tt.Advance(16 * time.Millisecond)
+		isl, _ := tt.Find("灵动岛")
+		n := count(tt)
+		switch {
+		case isl.W < islandPlayerCollapsedW+4 && n != 0:
+			t.Fatalf("第 %d 帧岛宽 %v，还剩 %d 个绿点像素：收起态不该有绿点", i, isl.W, n)
+		case isl.W > islandPlayerAvatar+2*islandPlayerPadX+islandLiveDotRoom+4 && n == 0:
+			t.Fatalf("第 %d 帧岛宽 %v，绿点已经没了：判据关得太早", i, isl.W)
+		}
+	}
+	if b, _ := tt.Find("灵动岛"); b.W != islandPlayerCollapsedW {
+		t.Fatalf("收尾岛宽 %v，期望 %v", b.W, islandPlayerCollapsedW)
+	}
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// 首页的时钟岛画流光，后台收听画呼吸环。
+//
+// 这条钉的是一个回归：岛上的环一度按收起进度分配，而首页 openW 等于收起
+// 宽度（岛上没有主播信息可量），islandMorph 恒为 1，于是时钟岛被画成了
+// 呼吸环——流光整个消失。
+//
+// 用纯函数测而不是像素：两个环同一个主题色（都取 theme.AccentInk）、都在
+// 动、都压在同一条环带上，截图和像素统计分不出谁是谁。这一点是量过的：
+// 环带亮度比在首页是 21–22、在后台收听是 4.6–11.6，区间重叠；峰值位置在
+// 两边都不移动，也分不开。
+func TestIslandRings(t *testing.T) {
+	cases := []struct {
+		name             string
+		player, listen   bool
+		m                float32
+		wantRing, wantBr float32
+	}{
+		{"首页只有流光", false, false, 1, 1, 0},
+		{"首页 m 取任何值都不影响", false, false, 0, 1, 0},
+		{"播放页展开：纯流光", true, false, 0, 1, 0},
+		{"播放页收起途中：交叉淡化", true, false, 0.4, 0.6, 0.4},
+		{"播放页收定：纯呼吸环", true, false, 1, 0, 1},
+		{"后台收听：纯呼吸环", false, true, 1, 0, 1},
+		{"后台收听不看 m", false, true, 0, 0, 1},
+	}
+	for _, tc := range cases {
+		ring, breath := islandRings(tc.player, tc.listen, tc.m)
+		if ring != tc.wantRing || breath != tc.wantBr {
+			t.Errorf("%s：ring=%v breath=%v，期望 %v / %v",
+				tc.name, ring, breath, tc.wantRing, tc.wantBr)
+		}
 	}
 }
 

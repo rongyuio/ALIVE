@@ -58,13 +58,13 @@ type App struct {
 	// Remote 为空时列表就是空态，不会回落到 fake 池。
 	Remote []Streamer
 
-	// Router 记着三个页面（首页 / 订阅 / 播放）的历史与转场
+	// Router 记着三个页面（首页 / 关注 / 播放）的历史与转场
 	Router *ui.Router
 
 	// 订阅分区
 	Subs     []Subscription
 	SubIndex int
-	// 订阅页的列表：平台和分区可以跟首页不同，所以状态独立一份
+	// 订阅分区的列表：平台和分区可以跟首页不同，所以状态独立一份
 	SubRooms       []Streamer
 	SubLoading     bool
 	SubLoadingMore bool
@@ -106,6 +106,9 @@ type App struct {
 	// volumeDragging 记住音量条是否正被按住：按下后指针可以拖出热区，
 	// 不能每帧靠 Pressed 判断（它要求指针仍在元素内）
 	volumeDragging bool
+	// volumeWheelAccum 是滚轮调音量还没落成 1% 档位的那点余量。
+	// 触控板一次只推几 DIP，没有它这些小位移会被取整全吃掉。
+	volumeWheelAccum float32
 
 	// 弹幕层：开关、正在飞的弹幕、推动器状态
 	DanmuOn bool
@@ -178,10 +181,11 @@ type App struct {
 	// （平台、一级、二级、三级分区），序号 +1，方向按选项索引差算。
 	// 内容层以序号为 key，旧的一屏按当次方向退出，新的从同一侧进来。
 	navDir navDir
-	// navSeq / followsSeq / subFeedSeq 分别是首页、关注页、订阅页内容的代次。
+	// navSeq / followsSeq 分别是首页、关注页内容的代次。
+	// 关注页的两级分区（关注主播 / 订阅分区）共用 followsSeq：
+	// 换的是同一块内容区。
 	navSeq     int
 	followsSeq int
-	subFeedSeq int
 	// navBox / followsBox / subsBox 是三条选项轨道量出来的格子。
 	//
 	// 滑块的位置和宽度都从这里来，所以它必须和真实布局重合；留着它，
@@ -211,12 +215,20 @@ type App struct {
 	// 免得用户看到白屏或者半渲染的中间态。
 	loginReady bool
 
-	// 「全部关注」页是一等页面（顶栏 tab 组第一格），和首页 / 订阅页同级。
-	// 这三个字段是它自己的筛选状态，切走再回来还留着。
+	// 「关注」页是一等页面（顶栏 tab 组第一格），和首页同级。
+	// 这些字段是它自己的筛选状态，切走再回来还留着。
 	FollowsQuery  string
 	FollowsSearch ui.Handle
 	// 关注页里的平台筛选：空串 = 全部，否则是平台 id
 	FollowsPlatform string
+	// FollowsSection 是关注页的一级分区：0 关注主播、1 订阅分区。
+	// 两级分区共用一份内容代次（followsSeq），方向按点击项的序号差算。
+	FollowsSection int
+	// subActive 记住每枚订阅 chip 当前显示哪个平台的房间，键是 subChipKey。
+	// 不落盘：重启回到「顶栏顺序的第一家」。
+	subActive map[string]string
+	// followsSectionBox 是一级分区那一行量出来的格子（滑块要停在上面）
+	followsSectionBox rowBox
 
 	// 顶栏搜索浮层：输入、远端结果与请求状态
 	SearchOpen     bool
@@ -348,6 +360,7 @@ func newApp() *App {
 		SubCatIndex:   -1,
 
 		GroupsByPlatform:     map[string][]CategoryGroup{},
+		subActive:            map[string]string{},
 		liveLoaded:           map[string]bool{},
 		feedCache:            map[string]feedEntry{},
 		subCategories:        map[string][]string{},
@@ -453,7 +466,7 @@ func (a *App) applyAuthChange(p live.Platform, logged bool) {
 //
 // 绝大多数时候就是顶栏选中的那个 tab，播放页例外：那一屏看的是某一个
 // 具体主播，账号、搜索这些按平台走的东西都得跟着主播，而不是跟着进房
-// 之前停留的列表。从「全部关注」点开 B 站主播、而 tab 还停在虎牙时，
+// 之前停留的列表。从「关注」页点开 B 站主播、而 tab 还停在虎牙时，
 // 照 a.Platform 画就会把虎牙的账号挂在 B 站直播间里。
 func (a *App) viewPlatform() string {
 	// 为登录临时离开直播间时，这一屏就是「那个平台的登录流程」：账号入口、
@@ -532,8 +545,6 @@ func (a *App) Shell(c *ui.Context) {
 				switch {
 				case r.Match(routeFollows):
 					a.FollowsPage(c)
-				case r.Match(routeSubscribe):
-					a.SubscribePage(c)
 				case r.Match(routePlayer):
 					a.PlayerPage(c)
 				default:
@@ -709,7 +720,7 @@ func (a *App) feed() []Streamer {
 	return a.filterStreamers(a.Platform, a.currentCategory(), a.currentSub())
 }
 
-// feedFor 返回订阅页某个订阅分区下的直播间。
+// feedFor 返回订阅分区某个订阅项下的直播间。
 func (a *App) feedFor(sub Subscription) []Streamer {
 	if sub.PlatformID == "bilibili" && len(a.Remote) > 0 {
 		return a.Remote
@@ -963,15 +974,15 @@ func (a *App) Navbar(c *ui.Context) {
 
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			// 工具组：搜索、同步、配色三颗按钮在同一个胶囊里；
-			// 值得搜索的只有某个平台的直播列表：订阅页、全部关注页都没有平台上下文，
-			// 全部关注页自带页内搜索，那里不摆搜索按钮。
+			// 值得搜索的只有某个平台的直播列表：关注页没有平台上下文，
+			// 它自带页内搜索，那里不摆搜索按钮。
 			ui.Row(c).Gap(4).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
 				Background(theme.FillQuaternary).Children(func() {
 				if a.searchAvailable() {
 					a.searchButton(c)
 				} else {
 					// 按钮不在屏幕上时把浮层一起收掉：不然从搜索浮层跳去
-					// 「全部关注」，回来时浮层会自己弹出来。
+					// 「关注」，回来时浮层会自己弹出来。
 					a.SearchOpen = false
 				}
 				a.iconButton(c, iconMonitorSmartphone, "数据同步", a.openSyncPanel)
@@ -979,8 +990,8 @@ func (a *App) Navbar(c *ui.Context) {
 				// 登录头像和上面三颗在同一个胶囊里：顶栏右侧本来就是一组
 				// 工具，单独拎出去会多出一层视觉噪音。
 				//
-				// 只在某一家平台的页面里画：账号是**按平台**的，而「全部关注」
-				// 和「订阅」这两个页面聚合的是好几家的主播。在那种页面上摆
+				// 只在某一家平台的页面里画：账号是**按平台**的，而「关注」页
+				// 聚合的是好几家的主播。在那种页面上摆
 				// 一家的头像，等于暗示这里的操作以那家身份进行——用户点开
 				// 还会看到另一家的二维码，前后对不上。登录入口回到对应平台
 				// 的 tab 再点。
@@ -1088,7 +1099,7 @@ func (a *App) narrow(c *ui.Context) bool {
 
 // activeTab 返回顶栏该高亮的 tab。
 //
-// 「订阅」和「全部关注」不是平台，但和平台同级：在对应页面时高亮它们，
+// 「关注」不是平台，但和平台同级：在关注页时高亮那颗星星，
 // 其余按当前平台。
 func (a *App) activeTab() string {
 	// 挂起的切换先占住高亮：点了就要有回应，内容等就绪再换。
@@ -1098,11 +1109,9 @@ func (a *App) activeTab() string {
 	switch a.Router.Path() {
 	case routeFollows:
 		return "follows"
-	case routeSubscribe:
-		return "subscribe"
 	case routePlayer:
 		// 播放页看的是某一个具体主播，顶栏必须跟着主播所属平台走。
-		// 读 a.Platform 会停在进播放页之前那个列表的平台：从订阅页点开
+		// 读 a.Platform 会停在进播放页之前那个列表的平台：从关注页点开
 		// 别家主播、或者从搜索里跳进来时，高亮就留在上一家。
 		return a.viewPlatform()
 	}
@@ -1113,28 +1122,23 @@ func (a *App) activeTab() string {
 func tabName(id string) string {
 	switch id {
 	case "follows":
-		return "全部关注"
-	case "subscribe":
-		return "订阅"
+		return "关注"
 	}
 	return platformLabel(id)
 }
 
 // switchTab 处理 tab 点击。
 func (a *App) switchTab(id string) {
-	switch id {
-	case "follows":
+	if id == "follows" {
 		a.pendingSwitch = ""
+		if a.Router.Path() == routeFollows {
+			return
+		}
 		a.Router.Push(routeFollows)
-		return
-	case "subscribe":
-		a.pendingSwitch = ""
-		a.resetCards()
-		a.Router.Push(routeSubscribe)
 		return
 	}
 	if id == a.Platform {
-		// 平台没换，但页面可能在别处：从关注 / 订阅 / 播放页点回当前平台的
+		// 平台没换，但页面可能在别处：从关注 / 播放页点回当前平台的
 		// tab，要回首页。平台本身没换，所以内容不播换向。
 		if a.Router.Path() == routeHome {
 			return
@@ -1214,7 +1218,7 @@ func (a *App) commitPlatformSwitch(id string) {
 	a.onPlatformChanged()
 }
 
-// platformTabs 是顶栏左侧的 tablist：关注 + 订阅 + 四个平台。
+// platformTabs 是顶栏左侧的 tablist：关注 + 四个平台。
 //
 // 选中态靠一条**绝对定位的 accent 滑块**在 tab 之间滑过去（220ms），
 // 而不是给选中的 tab 换底色——切换时是「光块移动」，不是「色块跳变」。
@@ -1222,12 +1226,13 @@ func (a *App) commitPlatformSwitch(id string) {
 // 所以滑块位置直接按序号乘宽度算，不用量 DOM。
 func (a *App) platformTabs(c *ui.Context) {
 	// 顺序读 a.PlatformOrder：tab 顺序可拖拽重排并持久化。
-	// 前两格固定：「全部关注」和「订阅」——它们不是平台，但和平台同级。
+	// 第一格固定：关注（那颗星星）——它不是平台，但和平台同级；
+	// 订阅分区已经并进关注页，不再单独占一格。
 	type tabItem struct{ id, label string }
 	tabs := make([]tabItem, 0, len(a.tabIDs()))
 	for _, id := range a.tabIDs() {
 		label := ""
-		if id != "follows" && id != "subscribe" {
+		if id != "follows" {
 			label = platformLabel(id)
 		}
 		tabs = append(tabs, tabItem{id, label})
@@ -1284,7 +1289,7 @@ func (a *App) platformTabs(c *ui.Context) {
 					}
 					// 平台 tab 可拖拽重排（关注与订阅不参与）。
 					// 拖起来的那枚 dim 到 0.35，经过的目标描一圈 accent 65% 的内阴影。
-					if t.id != "subscribe" && t.id != "follows" {
+					if t.id != "follows" {
 						tab.Drag(t.id)
 						if _, over := ui.DragOver[string](tab); over {
 							tab.InsetShadow(0, 0, 0, 1, theme.Accent.Mix(ui.Transparent, 0.35))
@@ -1312,9 +1317,6 @@ func (a *App) platformTabs(c *ui.Context) {
 								ico = iconStarFilled
 							}
 							ui.Icon(c, ico).FontSize(14).TextColor(col)
-							return
-						case "subscribe":
-							ui.Icon(c, iconBookmark).FontSize(14).TextColor(col)
 							return
 						}
 						txt := ui.Text(c, t.label).FontSize(theme.TextSM).TextColor(col)

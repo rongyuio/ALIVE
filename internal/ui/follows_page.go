@@ -12,37 +12,143 @@ import (
 	"alive/internal/theme"
 )
 
-// FollowsPage 是「全部关注」页。
+// FollowsPage 是「关注」页。
+//
+// 顶栏只剩一颗星星（关注）之后，关注主播和订阅分区就在这里合并成同一页的
+// 两个一级分区：上面一行切「关注主播 / 订阅分区」，下面一行是各自的分级。
+// 关注主播下面是平台（全部 / B站 / 斗鱼……），订阅分区下面是已订阅的分区。
+// 版式和首页分区栏一致——同一块面板、同一套滑块、同一套换向语法。
 //
 // 它原来是灵动岛的展开面板（浮层）。浮层压在页面上、点外面就消失，
-// 放到顶栏做成一个 tab 之后它就是普通页面：和首页、订阅页同一层级、
-// 同一套正文 padding，切过去看、切回来内容还在。
+// 放到顶栏做成一个 tab 之后它就是普通页面：和首页同一层级、同一套正文
+// padding，切过去看、切回来内容还在。
 func (a *App) FollowsPage(c *ui.Context) {
 	pad := a.bodyPadX(c)
-	list := a.followsList()
-
-	ui.Column(c).Grow(1).Padding(0, pad, 0, pad).Gap(14).Children(func() {
-		a.followsBar(c)
-		// 换筛选就是换了一份列表，和首页换分区同一个语法：旧的一屏按方向
-		// 退出，新的从同一侧进来。筛选条留在原地，它是这一屏的边框。
-		feed := ui.Column(c).Key(navKey("follows", a.followsSeq)).Grow(1).
-			Transition(feedTransition(c, a.navDir))
-		feed.Children(func() { a.followsGrid(c, list) })
+	ui.Column(c).Grow(1).Padding(0, pad, 0, pad).Gap(12).Children(func() {
+		a.followsPanel(c)
+		// 换分区就是换了一份列表，和首页换分区同一个语法：旧的一屏按方向
+		// 退出，新的从同一侧进来。分区面板留在原地，它是这一屏的边框。
+		//
+		// key 里带上当前一级分区：两级分区共用一份代次，序号在各层
+		// 各自从 0 起，只按代次换 key 的话，从「关注主播」的平台 0 切到
+		// 「订阅分区」的分区 0 会被当成同一块内容，不播进出。
+		feed := ui.Column(c).Key(navKey(followsFeedKind(a.FollowsSection), a.followsSeq)).
+			Grow(1).Transition(feedTransition(c, a.navDir))
+		feed.Children(func() {
+			if a.FollowsSection == followsSectionSubs {
+				a.subscribeFeed(c)
+				return
+			}
+			a.followsGrid(c, a.followsList())
+		})
 	})
 }
 
-// followsBar 是页头那一整条：平台胶囊 → 搜索框 → 刷新。
+// 关注页的两个一级分区。
+const (
+	followsSectionStreamers = iota
+	followsSectionSubs
+)
+
+// followsFeedKind 是内容层的身份前缀：两级分区各算各的内容。
+func followsFeedKind(section int) string {
+	if section == followsSectionSubs {
+		return "follows-subs"
+	}
+	return "follows"
+}
+
+// followsSectionNames 是一级分区的两个选项，顺序和常量的取值一致。
+var followsSectionNames = []string{"关注主播", "订阅分区"}
+
+// followsPanel 是关注页顶部的分区面板：一级分区 + 当前分区的二级分级。
 //
-// 和订阅页的 subscribeBar 同一条语言：一层 BgSecondary 的圆角面板装住里面的
-// 胶囊，受光边用 inset 0 1px 0 —— 这样顶部是个整体，不是一堆散 pill 浮在
-// 页面上。高度 = 34 的胶囊 + 上下 8/10 的内边距 = 52，和首页分区栏对齐，
-// 几个 tab 之间切的时候正文起点不会跳。
+// 外壳和首页的 categoryBar 同一块材质（RadiusXL + 1px 描边 + 受光边、
+// 三行之间 gap 10），这样从平台页切到关注页正文起点不跳。
+func (a *App) followsPanel(c *ui.Context) {
+	panel := ui.Column(c).Gap(10).Padding(12, 14, 14, 14).
+		Radius(theme.RadiusXL).Border(1, theme.Border).
+		Background(theme.BgSecondary)
+	panel.Shadow(0, 1, 0, 0, theme.TopLight)
+
+	panel.Children(func() {
+		a.followsSectionRow(c)
+		if a.FollowsSection == followsSectionSubs {
+			a.subscribeRow(c)
+			return
+		}
+		a.followsPlatformRow(c)
+	})
+}
+
+// followsSectionRow 是一级分区行：左边两枚 tab，右边是当前分区自己的工具。
 //
-// 没有标题，也没有常驻的计数文字：页面名已经在顶栏 tab 上，正文里再写一遍
-// 是重复；「N 位主播 · N 正在直播」放进每枚胶囊的悬停提示里，常态这一行
-// 只留筛选和搜索，指针停住才出数字。
-func (a *App) followsBar(c *ui.Context) {
-	// 这一排和分区栏同构：一排并列的选项、一个选中项、一枚滑块。
+// 搜索和刷新只属于「关注主播」：订阅分区那一屏是某个分区自己的房间列表，
+// 关注刷新不会改它，摆着只会让人以为按了会变。
+func (a *App) followsSectionRow(c *ui.Context) {
+	box := measureRow(c, followsSectionNames, groupFont, labelWeight, groupTabPadH, groupGap, 0)
+	a.followsSectionBox = box
+
+	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Gap(groupGap).Children(func() {
+			slider(c, "follows-section-slide", box, a.FollowsSection,
+				groupTabH, theme.RadiusMD, theme.AccentSoft)
+			for i, name := range followsSectionNames {
+				a.followsSectionTab(c, i, name, box.w[i])
+			}
+		})
+
+		ui.Box(c).Grow(1)
+
+		if a.FollowsSection == followsSectionStreamers {
+			a.followsActions(c)
+		}
+	})
+}
+
+// followsSectionTab 是一级分区的一枚 tab。选中态的底色由滑块画。
+func (a *App) followsSectionTab(c *ui.Context, i int, name string, w float32) {
+	selected := i == a.FollowsSection
+	tab := ui.Box(c).Height(groupTabH).
+		Padding(0, groupTabPadH, 0, groupTabPadH).
+		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).
+		Label(name)
+	if !selected && tab.Hovered() {
+		tab.Background(theme.FillQuaternary)
+	}
+	if tab.Clicked() {
+		a.selectFollowsSection(i)
+	}
+	tab.Children(func() {
+		txt := ui.Text(c, name).FontSize(groupFont)
+		switch {
+		case selected:
+			txt.FontWeight(600).
+				TextColor(txt.AnimateColor("follows-section-ink", theme.AccentInk, theme.Slide()))
+		case tab.Hovered():
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("follows-section-ink", theme.TextPrimary, theme.Slide()))
+		default:
+			txt.FontWeight(500).
+				TextColor(txt.AnimateColor("follows-section-ink", theme.TextSecondary, theme.Slide()))
+		}
+	})
+}
+
+// selectFollowsSection 切一级分区：内容层换代，方向按两枚 tab 的序号差算。
+func (a *App) selectFollowsSection(i int) {
+	if i == a.FollowsSection {
+		return
+	}
+	a.navFlip(&a.followsSeq, a.FollowsSection, i)
+	a.FollowsSection = i
+}
+
+// followsPlatformRow 是「关注主播」的二级分级：平台胶囊（全部 / B站 / 斗鱼……）。
+//
+// 只列「确实有关注主播」的平台，顺序跟顶栏 tab 一致；数字放进悬停提示里，
+// 常态这一行只留筛选。
+func (a *App) followsPlatformRow(c *ui.Context) {
 	followsIDs := append([]string{""}, a.followsPlatforms()...)
 	followsNames := make([]string, len(followsIDs))
 	for i, id := range followsIDs {
@@ -60,77 +166,93 @@ func (a *App) followsBar(c *ui.Context) {
 		}
 	}
 
-	bar := ui.Row(c).Gap(10).Padding(8, 12, 10, 12).
-		Radius(theme.RadiusMD).Background(theme.BgSecondary)
-	// inset 0 1px 0 rgba(255,255,255,.04)：和卡片、订阅条同一套受光边
-	bar.InsetShadow(0, 1, 0, 0, theme.TopLight)
-
-	bar.Children(func() {
-		// 平台胶囊：只列「确实有关注主播」的平台，顺序跟顶栏 tab 一致
+	ui.ScrollHorizontal(c).Scrollbars(false).Padding(2).Children(func() {
 		ui.Row(c).Gap(6).Children(func() {
 			slider(c, "follows-slide", box, followsActive, 34, theme.RadiusFull, theme.Accent)
 			for i, id := range followsIDs {
 				a.followsPlatformChip(c, i, id, followsNames[i], box.w[i])
 			}
 		})
-
-		ui.Box(c).Grow(1)
-
-		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			// 搜索框：34 高、图标在左，真输入框。动效跟分区搜索同一套：常态 176，聚焦或有输入时 240ms 展开到 220。
-			// 搜索框在 focus-within 时边框变 accent-ink，190ms。
-			search := ui.Row(c).Height(34).Padding(0, 8, 0, 11).Gap(7).
-				Radius(theme.RadiusFull).Background(theme.FillQuaternary).
-				Center().Cursor(ui.CursorText)
-			border := theme.Border
-			if search.FocusWithin() {
-				border = theme.AccentInk
-			}
-			width := catSearchW
-			if search.FocusWithin() || a.FollowsQuery != "" {
-				width = catSearchWide
-			}
-			search.Width(search.AnimateTo("follows-search-w", width,
-				theme.EaseOut(240*time.Millisecond)))
-			search.Border(1, search.AnimateColor("follows-search-border", border,
-				theme.EaseOut(190*time.Millisecond)))
-			search.Children(func() {
-				ui.Icon(c, iconSearch).FontSize(14).TextColor(theme.TextTertiary)
-				ui.TextInputBase(c, &a.FollowsQuery).FontSize(theme.TextXS).Grow(1).
-					Bind(&a.FollowsSearch).
-					Placeholder("搜索主播").PlaceholderColor(theme.TextTertiary).
-					Label("搜索已关注的主播").
-					OnTextKey(func(k ui.TextKey) bool {
-						// 和顶栏搜索、分区搜索一致：一次 Esc 清空（页面本身不收起，
-						// 只把搜索退掉）
-						if k.Key != ui.KeyEscape {
-							return false
-						}
-						a.FollowsQuery = ""
-						a.FollowsSearch.CancelFocus(c)
-						return true
-					})
-				if a.FollowsQuery != "" {
-					clear := ui.Box(c).Size(18, 18).Radius(9).Center().
-						Cursor(ui.CursorPointer).Label("清空关注搜索")
-					if clear.Hovered() {
-						clear.Background(theme.FillTertiary)
-					}
-					if clear.Clicked() {
-						a.FollowsQuery = ""
-					}
-					clear.Children(func() {
-						ui.Icon(c, iconX).FontSize(12).TextColor(theme.TextTertiary)
-					})
-				}
-			})
-
-			// 刷新：28×28 的一枚圆按钮，busy 时带进度环。
-			// 外面不再套胶囊——bar 本身就是容器，叠第二层底会在同色上留一道边。
-			a.followsAction(c, iconSync, a.followRefreshLabel(),
-				a.followsBusy, a.followRingProgress(), a.refreshFollowsManual)
-		})
 	})
+}
+
+// followsActions 是「关注主播」上的页内搜索与刷新。
+func (a *App) followsActions(c *ui.Context) {
+	ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+		// 搜索框：34 高、图标在左，真输入框。动效跟分区搜索同一套：常态 176，聚焦或有输入时 240ms 展开到 220。
+		// 搜索框在 focus-within 时边框变 accent-ink，190ms。
+		search := ui.Row(c).Height(34).Padding(0, 8, 0, 11).Gap(7).
+			Radius(theme.RadiusFull).Background(theme.FillQuaternary).
+			Center().Cursor(ui.CursorText)
+		border := theme.Border
+		if search.FocusWithin() {
+			border = theme.AccentInk
+		}
+		width := catSearchW
+		if search.FocusWithin() || a.FollowsQuery != "" {
+			width = catSearchWide
+		}
+		search.Width(search.AnimateTo("follows-search-w", width,
+			theme.EaseOut(240*time.Millisecond)))
+		search.Border(1, search.AnimateColor("follows-search-border", border,
+			theme.EaseOut(190*time.Millisecond)))
+		search.Children(func() {
+			ui.Icon(c, iconSearch).FontSize(14).TextColor(theme.TextTertiary)
+			ui.TextInputBase(c, &a.FollowsQuery).FontSize(theme.TextXS).Grow(1).
+				Bind(&a.FollowsSearch).
+				Placeholder("搜索主播").PlaceholderColor(theme.TextTertiary).
+				Label("搜索已关注的主播").
+				OnTextKey(func(k ui.TextKey) bool {
+					// 和顶栏搜索、分区搜索一致：一次 Esc 清空（页面本身不收起，
+					// 只把搜索退掉）
+					if k.Key != ui.KeyEscape {
+						return false
+					}
+					a.FollowsQuery = ""
+					a.FollowsSearch.CancelFocus(c)
+					return true
+				})
+			if a.FollowsQuery != "" {
+				clear := ui.Box(c).Size(18, 18).Radius(9).Center().
+					Cursor(ui.CursorPointer).Label("清空关注搜索")
+				if clear.Hovered() {
+					clear.Background(theme.FillTertiary)
+				}
+				if clear.Clicked() {
+					a.FollowsQuery = ""
+				}
+				clear.Children(func() {
+					ui.Icon(c, iconX).FontSize(12).TextColor(theme.TextTertiary)
+				})
+			}
+		})
+
+		// 刷新：28×28 的一枚圆按钮，busy 时带进度环。
+		// 外面不再套胶囊——面板本身就是容器，叠第二层底会在同色上留一道边。
+		a.followsAction(c, iconSync, a.followRefreshLabel(),
+			a.followsBusy, a.followRingProgress(), a.refreshFollowsManual)
+	})
+}
+
+// subscribeFeed 是「订阅分区」的内容层：当前选中订阅项的房间列表。
+func (a *App) subscribeFeed(c *ui.Context) {
+	chips := a.subChips()
+	if len(chips) == 0 {
+		a.subscribeEmpty(c)
+		return
+	}
+	if a.SubIndex < 0 || a.SubIndex >= len(chips) {
+		a.SubIndex = 0
+	}
+	if a.LiveMode {
+		a.ensureSubFeed()
+		if a.SubErr != "" {
+			a.errorBar(c)
+		}
+		a.grid(c, a.SubRooms, &a.SubList, a.loadMoreSubRooms)
+		return
+	}
+	a.grid(c, a.feedFor(a.activeSub(chips[a.SubIndex])), &a.SubList, nil)
 }
 
 // followsGrid 是主播行列表。

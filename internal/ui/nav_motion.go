@@ -48,8 +48,8 @@ func (a *App) navTowards(from, to int) {
 
 // navFlip 让一块内容换代：方向按索引差算，代次加在 seq 指的那一个上。
 //
-// 三个内容区各有自己的代次——首页、关注页、订阅页。只切其中一个，
-// 别的区块的 key 不能跟着变：共用一份的话，从订阅页切完 chip 回到首页，
+// 三个内容区各有自己的代次——首页、关注页、订阅分区。只切其中一个，
+// 别的区块的 key 不能跟着变：共用一份的话，在关注页切完平台回到首页，
 // 首页会凭空播一次进场，而它根本没有换内容。
 func (a *App) navFlip(seq *int, from, to int) {
 	a.navTowards(from, to)
@@ -168,13 +168,15 @@ func slideFor(box rowBox) ui.Animation {
 	return theme.Slide()
 }
 
-// tabIDs 是顶栏 tab 的顺序：关注、订阅，然后是可重排的平台。
+// tabIDs 是顶栏 tab 的顺序：关注，然后是可重排的平台。
+//
+// 订阅分区不再是顶栏 tab —— 它并进了关注页，是那颗星星下的一级分区。
 //
 // 顺序只有这一处定义：platformTabs 按它排，switchTab 按它算方向。
 // 分成两份写过一次就会走样——重排之后高亮和滑向会对不上。
 func (a *App) tabIDs() []string {
-	ids := make([]string, 0, 2+len(a.PlatformOrder))
-	ids = append(ids, "follows", "subscribe")
+	ids := make([]string, 0, 1+len(a.PlatformOrder))
+	ids = append(ids, "follows")
 	return append(ids, a.PlatformOrder...)
 }
 

@@ -71,9 +71,13 @@ func (a *App) PlayerPage(c *ui.Context) {
 			Border(1, theme.Border).Background(theme.BgSecondary)
 		if full {
 			// .shellFull { border: none; border-radius: 0 }
-			shell.Border(0, ui.Transparent).ClipInset(0, 0, 0, 0, 0)
+			shell.Border(0, ui.Transparent)
 		} else {
-			shell.Radius(theme.RadiusXL).ClipInset(0, 0, 0, 0, theme.RadiusXL)
+			// Clip 而不是 ClipInset：ClipInset 是 clip-path: inset()，会把 1px
+			// 描边一起裁掉，而它的圆角正好落在描边中线上——弧线上覆盖度被
+			// 乘两次，四个角的线条就没了。Clip 是 overflow: hidden，裁的是
+			// padding box（圆角自动减掉边框宽），描边在裁剪后补画一遍。
+			shell.Radius(theme.RadiusXL).Clip()
 		}
 
 		shell.Children(func() {
@@ -277,6 +281,7 @@ func (a *App) leavePlayer() {
 	a.DanmuFilterOpen = false
 	a.ShortcutsOpen = false
 	a.volumeDragging = false
+	a.volumeWheelAccum = 0
 	a.panelDragW, a.panelDragX = 0, 0
 }
 
@@ -654,12 +659,25 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
 			Cursor(ui.CursorPointer).Label("音量")
+		// 悬停在音量条上滚轮调音量。挂在这条热区上而不是控制条或画面：
+		// MyGo 的滚轮按指针位置找接收者，只有指针真在这 18px 高的一条上
+		// 才收得到，所以「悬停才生效」是结构保证的。
+		hot.HandleInput(func(ev ui.InputEvent) bool {
+			if ev.Kind != ui.InputScroll || ev.DY == 0 {
+				return false
+			}
+			a.wheelVolume(ev.DY)
+			return true
+		})
 		// PointerPosition 的 x 是相对热区的，除以热区宽度就是音量比例
 		x, _, _ := hot.PointerPosition()
 		_, _, held := hot.Dragged()
 		pressed := hot.Pressed()
 		if pressed {
 			a.volumeDragging = true
+			// 拖动是按位置取绝对值，攒下的滚轮余量再留着就会在松手后
+			// 突然多跳 1%，这里清掉
+			a.volumeWheelAccum = 0
 		}
 		if a.volumeDragging {
 			if !pressed && !held {
@@ -869,4 +887,25 @@ func (a *App) playerIconBtn(c *ui.Context, ico *ui.SVG, size float32, active boo
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(size).TextColor(col)
 	})
+}
+
+// 滚轮调音量的灵敏度：一格滚轮（Windows 默认 3 行 × 33 DIP ≈ 100 DIP）5%，
+// 触控板的精确滚动按同一比例折算成更细的步进。
+const volumeWheelPerDIP = 0.0005
+
+// wheelVolume 把滚轮位移折算成音量，余量攒着下一次用。
+//
+// 上滚（DY 为负）变大、下滚变小；1% 取整和拖动那条路径一致，
+// 这样百分比数字不会在滑行的每一帧乱跳。取整会丢掉不足 1% 的部分，
+// 而触控板一次只推几 DIP，直接丢就永远不动——所以余量记在
+// volumeWheelAccum 上，攒够一档才落到 Volume。
+func (a *App) wheelVolume(dy float32) {
+	target := min(1, max(0, a.Volume+a.volumeWheelAccum-dy*volumeWheelPerDIP))
+	next := float32(math.Round(float64(target)*100)) / 100
+	a.volumeWheelAccum = target - next
+	if next == a.Volume {
+		return
+	}
+	a.Volume = next
+	a.markDirty()
 }

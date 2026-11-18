@@ -574,13 +574,17 @@ func (a *App) ensureSubFeed() {
 	if !a.LiveMode || len(a.Subs) == 0 {
 		return
 	}
-	if a.SubIndex < 0 || a.SubIndex >= len(a.Subs) {
+	chips := a.subChips()
+	if a.SubIndex < 0 || a.SubIndex >= len(chips) {
 		return
 	}
-	sub := a.Subs[a.SubIndex]
+	// 一枚 chip 可能挂着好几家平台，房间列表只显示当前选中的那一家的
+	sub := a.activeSub(chips[a.SubIndex])
 	if sub.CategoryID == "" {
 		// 旧版本存下来的订阅没有分区 id：先按名字回填
-		a.resolveSubID(a.SubIndex)
+		if i := a.subIndex(sub); i >= 0 {
+			a.resolveSubID(i)
+		}
 		return
 	}
 	key := subFeedKey(sub)
@@ -664,10 +668,11 @@ func (a *App) loadMoreSubRooms() {
 	if !a.LiveMode || a.SubLoading || a.SubLoadingMore || !a.SubHasMore {
 		return
 	}
-	if a.SubIndex < 0 || a.SubIndex >= len(a.Subs) {
+	chips := a.subChips()
+	if a.SubIndex < 0 || a.SubIndex >= len(chips) {
 		return
 	}
-	sub := a.Subs[a.SubIndex]
+	sub := a.activeSub(chips[a.SubIndex])
 	if sub.CategoryID == "" {
 		return
 	}

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -63,13 +64,26 @@ const (
 // 岛只有 38 高，于是整体偏上 3px，和右侧头像对不齐。
 const islandTop = (theme.NavbarHeight - theme.IslandH) / 2
 
-// islandListenAvatar 是后台收听态里那颗头像的直径。
+// islandLiveDotRoom 是「放得下在线绿点」所需的额外宽度。
 //
-// 必须取 34（= 岛高 - 4），不是 36。island 的 1px 描边占的是内容盒，
-// body 再往里缩 1px，两头都要算：38 - 2×1 - 2×1 = 34。取 36 会在上下左右
-// 各溢出 1px，被 body 切掉——圆的四条边各有一段直线，收缩收尾那一帧裁切量
-// 骤变，看起来就是「缩成圆以后头像跳了一下」。
-const islandListenAvatar float32 = theme.IslandH - 4
+// 绿点压在头像右下角、画在头像圆的外沿（见 islandAvatar 的 size-d+1），
+// 直径 10 加 2px 描边。头像 32 时它只探出圆一点点，内容区左右各 1px 的
+// 余量就够；头像 34（收起态）时内容区正好等于头像，绿点整个出界。
+//
+// 8 是量出来的：岛宽 ≥ 32 + 2×4 + 8 = 48 时绿点完整可见，再窄就只剩
+// 一截弧。取整到 8 而不是逐像素卡边界——边界上会一帧有一帧无。
+const islandLiveDotRoom float32 = 8
+
+// islandContentH 是岛的内容区高度：岛高减掉外层 1px 描边，再减掉 body 的
+// 1px 内缩，上下各一份。38 - 2×1 - 2×1 = 34。
+const islandContentH float32 = theme.IslandH - 2 - 2*islandBodyInset
+
+// islandListenAvatar 是后台收听态里那颗头像的直径，正好填满内容区。
+//
+// 必须取 34，不是 36。取 36 会在上下左右各溢出 1px，被 body 切掉——圆的
+// 四条边各有一段直线，收缩收尾那一帧裁切量骤变，看起来就是「缩成圆以后
+// 头像跳了一下」。
+const islandListenAvatar float32 = islandContentH
 
 // islandPlayerAvatar 是播放页展开态里那颗头像的直径。
 //
@@ -116,11 +130,19 @@ func (a *App) Island(c *ui.Context) {
 		a.infoRoom = ""
 	}
 
+	// openW 是「展开成整条」的目标宽度。后台收听态也要算它：收起进度是从
+	// 这个宽度和当前宽度之间归一化出来的，没有它，收起来就只能另画一颗
+	// 居中的头像——头像先闪到中间、岛再慢慢缩。
+	//
+	// 首页不量：那时岛上没有主播信息，量出来也没人用。
+	openW := islandPlayerCollapsedW
+	if player || listening {
+		openW = islandPlayerContentW(c, a.current(), winW)
+	}
+
 	targetW := float32(theme.IslandW)
-	openW := float32(0)
 	switch {
 	case player:
-		openW = islandPlayerContentW(c, a.current(), winW)
 		// 展开态常驻：不再有 InfoOpen 这一档收起
 		targetW = openW
 	case listening:
@@ -136,18 +158,30 @@ func (a *App) Island(c *ui.Context) {
 		// 这颗岛带 1px 描边，光环正压在这条描边上
 		Border(1, theme.Border)
 
-	w := island.AnimateTo("island-w", targetW, ui.Snappy)
-	// 圆形是这颗岛的最小形态，弹簧的回弹不该把它压到自己的直径以下。
+	// 收缩用 Smooth、展开用 Snappy。
 	//
-	// 从展开收缩到 38 时，Snappy 会过冲到 37.1 再弹回来（约 0.9 秒）。
-	// 宽度一小于 38，内容区就窄于 34，那颗正好填满内容区的头像会被 body
-	// 的圆角裁掉一条边——头像边缘在回弹期间一帧宽一帧窄，看起来是头像
-	// 自己在抖，而不是岛在弹。钳住下限，收缩收尾就是干干净净地停在 38。
-	// 展开方向不受影响：那里的过冲是超出目标，头像居中，裁不到。
-	if targetW <= islandPlayerCollapsedW && w < islandPlayerCollapsedW {
-		w = islandPlayerCollapsedW
+	// 圆是硬边界：Snappy 收到 38 时会过冲到 37.1 再弹回来，宽度一旦小于
+	// 38，内容区就窄于 34，那颗正好填满内容区的头像被 body 的圆角切掉一条
+	// 边——于是收尾约 0.9 秒里，头像边缘一帧宽一帧窄，看着是头像自己在抖。
+	// 以前用 clamp 把宽度钉在 38 挡住它，但弹簧内部值还在 37.1↔38.2 之间
+	// 来回穿，每穿一次就是一次整岛重绘：第 54 帧那 437 个像素的变化就是
+	// 它。不回弹就没有这段往返，收尾是干净的。
+	//
+	// 展开方向保留 Snappy：那里过冲是超出目标（岛比目标宽一点再回来），
+	// 头像居中，裁不到任何东西，回弹正是「灵动」的来源。
+	curve := ui.Snappy
+	if targetW <= islandPlayerCollapsedW {
+		curve = ui.Smooth
 	}
-	island.Width(w).Left((winW - w) / 2)
+	w := island.AnimateTo("island-w", targetW, curve)
+	// 岛自己的左边缘也取整。
+	//
+	// 这一条是收尾抖动的真正来源。岛宽是亚像素的（38.93、38.78……），
+	// Left 按 (winW-w)/2 每帧只挪零点几像素。头像挂在岛里面，于是它的
+	// 绝对位置跟着抖：一帧跨过物理像素边界，整颗圆就平移一格，下一帧再
+	// 回来。头像自己取整没有用——它在岛里是整数，岛在窗口里不是。
+	// 取整之后岛每次只挪一整像素，头像跟着走也是整像素。
+	island.Width(w).Left(roundDIP((winW - w) / 2))
 
 	// ---------- 投影：深色与浅色两套。
 	// 浅色主题用低透明度蓝黑，套深色的纯黑阴影会在白底上压出一圈脏灰。
@@ -164,12 +198,16 @@ func (a *App) Island(c *ui.Context) {
 	}
 
 	island.Children(func() {
-		// 后台收听不用那圈 conic 流光：流光表达的是「这是活的界面」，
-		// 而这里要表达的是「这一路还在放」。换成主题色的呼吸环。
-		if listening {
-			a.islandBreath(c)
-		} else {
-			a.islandRing(c, theme.RadiusFull)
+		// 两种环，按状态分（见 islandRings）：
+		//
+		//	首页 / 播放页    conic 流光——表达「这是活的界面」
+		//	后台收听         主题色呼吸环——表达「这一路还在放」
+		ring, breath := islandRings(player, listening, islandMorph(w, openW))
+		if ring > 0 {
+			a.islandRing(c, theme.RadiusFull, ring)
+		}
+		if breath > 0 {
+			a.islandBreath(c, breath)
 		}
 
 		// ---------- 本体：环内侧缩进 1px，和环做成兄弟节点
@@ -181,10 +219,8 @@ func (a *App) Island(c *ui.Context) {
 
 		body.Children(func() {
 			switch {
-			case player:
-				a.playerIsland(c, w, openW)
-			case listening:
-				a.listeningIsland(c)
+			case player || listening:
+				a.playerIsland(c, w, openW, listening)
 			default:
 				a.islandPill(c)
 			}
@@ -203,7 +239,7 @@ func (a *App) Island(c *ui.Context) {
 // 必须是「描边环」而不是实心块：body 在它之后画，实心块会被整个盖住，
 // 屏幕上什么都看不见。这里用和 islandRing 同一套 mask 挖空中间，只留
 // 外圈那一线——差别只在颜色是静态的主题色，位置和透明度随呼吸走。
-func (a *App) islandBreath(c *ui.Context) {
+func (a *App) islandBreath(c *ui.Context, alpha float32) {
 	black := ui.RGB(0, 0, 0)
 	solid := ui.LinearGradient{From: black, To: black}
 
@@ -217,13 +253,16 @@ func (a *App) islandBreath(c *ui.Context) {
 	)
 	if c.Preferences().ReduceMotion {
 		// reduced motion 下不脉冲，只留一圈静态的主题色描边
-		ring.Opacity(0.55)
+		ring.Opacity(0.55 * alpha)
 		return
 	}
 	p := ring.Loop("island-breath", 2*time.Second, ui.Linear)
-	scale, alpha := breathPulse(p)
-	ring.Scale(scale, scale)
-	ring.Opacity(alpha)
+	scale, pulse := breathPulse(p)
+	// 脉冲的放大也要乘上收起进度：breathPulse 的 1.06 是按 38 的圆算的，
+	// 岛还有一百多宽时 6% 就是三四像素的缝——环和 body 分开，看起来是
+	// 双圈。收缩途中它几乎不放大，收定之后才恢复整段呼吸。
+	ring.Scale(1+(scale-1)*alpha, 1+(scale-1)*alpha)
+	ring.Opacity(pulse * alpha)
 }
 
 // islandBreathPad 是呼吸环的粗细，也就是 mask 挖空之后留下的那一圈。
@@ -256,32 +295,60 @@ func (a *App) enterPlayerIsland() {
 	a.InfoOpen = true
 }
 
-// listeningIsland 是后台收听态的岛：一颗圆形头像，点一下回到那个直播间。
+// islandRings 决定画哪几圈环，以及各自的不透明度。
 //
-// 尺寸照抄顶栏右上角的账号按钮（auth_panel.go）：容器 38，里头那颗头像
-// 直径 = 容器 - 12 = 26。两处并排在一条水平线上，里面的大小也得一样，
-// 否则一个是「实心圆点」一个是「满铺圆」，看着就是两套东西。
+//	首页        ring=1，breath=0   只有流光
+//	播放页      ring=1-m，breath=m  展开时纯流光，收缩时交叉淡化
+//	后台收听    ring=0，breath=1   纯呼吸环
 //
-// 外面套一层整圆的透明热区：MyGo 的点击只发给命中链最上那一个元素，
-// 头像只有 26，边缘那几像素点不动。
-func (a *App) listeningIsland(c *ui.Context) {
-	s := a.current()
-	hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Cursor(ui.CursorPointer).Label("回到直播间")
-	if hit.Hovered() {
-		hit.Background(ui.RGBA(255, 255, 255, 0.06))
+// 抽成纯函数是因为它没法用像素验证：两个环同一个主题色、都在动、都在同一条
+// 环带上，截图和像素统计分不出谁是谁。上一版就是在这里出错——首页 openW
+// 等于收起宽度（岛上没有主播信息可量），islandMorph 恒为 1，跟着收起进度
+// 走就把时钟岛画成了呼吸环，流光整个消失。
+//
+// 所以首页那一支必须显式写出来，不能靠 m 的取值碰巧对。
+func islandRings(player, listening bool, m float32) (ring, breath float32) {
+	switch {
+	case player:
+		return 1 - m, m
+	case listening:
+		return 0, 1
+	default:
+		// 首页：时钟岛。m 在这里没有意义（openW == 收起宽度），不参与。
+		return 1, 0
 	}
-	if hit.Clicked() {
-		// 回播放页只走路由：attachMedia 在 PlayerPage 里把视频轨打开。
-		a.Router.Push(routePlayer)
+}
+
+// islandMorph 把当前宽度换成「收成圆」的进度：0 是完整展开，1 是正圆。
+//
+// 宽度本身就是弹簧给的动画值，所以头像是被这条曲线拖着走的，不是自己再
+// 起一段动画——两段动画永远对不齐，那正是以前头像先闪到中间的原因。
+func islandMorph(w, openW float32) float32 {
+	span := openW - islandPlayerCollapsedW
+	if span <= 0 {
+		return 1
 	}
-	hit.Children(func() {
-		ui.Row(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ui.Box(c).Size(islandListenAvatar, islandListenAvatar).Shrink(0).Children(func() {
-				a.islandAvatar(c, s, islandListenAvatar, false)
-			})
-		})
-	})
+	return 1 - clamp01((w-islandPlayerCollapsedW)/span)
+}
+
+// roundDIP 把长度取整到整数 DIP。
+//
+// MyGo 最终按物理像素画，亚像素值在跨过半像素边界时会整体挪一格。岛收缩
+// 时每帧只走零点几像素，连续跨边界就变成肉眼可见的抖动；取整之后每一步
+// 都是一整像素，位移干净。
+func roundDIP(v float32) float32 {
+	return float32(math.Round(float64(v)))
+}
+
+// clamp01 把值钳进 0–1。
+func clamp01(v float32) float32 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // islandPlayerContentW 量出播放页展开态真正需要的宽度。
@@ -329,102 +396,151 @@ func islandPlayerMeta(s Streamer) string {
 	return fmt.Sprintf("%s · %s · ID:%s", platformLabel(s.Platform), s.Name, s.RoomID)
 }
 
-// playerIsland 是播放页里岛的内容。
+// playerIsland 是岛里那一条主播信息，播放页和后台收听共用同一棵内容树。
 //
-// 收起态和展开态是两套图层叠在一起，按当前宽度交叉淡化：收起时宽 38，
-// 只剩一枚圆形头像，宽到 300 以上才轮得到标题和关注。用宽度换算透明度、
-// 而不是再起一条动画，两层才跟伸缩严丝合缝。
+// 只有一棵树是这次改动的重点：以前后台收听另画一颗居中的圆头像，切过去的
+// 那一帧头像就跳到正中，再等岛慢慢缩——看起来是「闪现」而不是「收起」。
+// 现在头像的位置和直径都跟着岛宽走（islandMorph），宽度缩到 38 时它正好
+// 停在内容区正中、直径正好填满内容区，和那颗圆胶囊是同一帧同一个像素。
 //
 // w 是这一帧的动画宽度，openW 是展开目标宽度（跟着窗口钳过）。
-func (a *App) playerIsland(c *ui.Context, w, openW float32) {
+// listening 为真时整块内容区是「回到直播间」的点击热区。
+func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 	s := a.current()
 
-	op := float32(0)
-	if openW > islandPlayerCollapsedW {
-		op = (w - islandPlayerCollapsedW) / (openW - islandPlayerCollapsedW)
-		if op < 0 {
-			op = 0
-		}
-		if op > 1 {
-			op = 1
-		}
-	}
+	// m：0 完整展开，1 收成正圆。只有头像用这条曲线；文字和关注键不参与，
+	// 它们的位置在整个收缩过程中一像素都不动，是被岛边裁掉的。
+	m := islandMorph(w, openW)
 
-	// 展开层：头像 + 标题 / 平台·昵称·ID + 关注
+	avatarD := islandPlayerAvatar + (islandListenAvatar-islandPlayerAvatar)*m
+	// 头像锚在**内容框左边**，不是锚在当前宽度的中心。
 	//
-	// 展开态常驻，op 只会从 0 走到 1（进直播间那一下的伸缩），所以这里
-	// 按宽度淡入即可，不再有和收起层的交叉淡化——那一层已经没有去处了。
+	// 这个区别就是「真收缩」和「假收缩」的分界。锚中心的话，岛宽到 90 时
+	// 头像会被推到内容框正中，正好压住文字的左端——那是遮挡，不是收缩。
+	// 锚左边的话头像只在自己的位置上小幅度移动（展开 4 → 收起 0，因为
+	// 34 的头像正好填满 34 的内容框），文字在它右边原样待着，两者的位置
+	// 关系在整个过程中不变；变的是窗口——岛窄下去，右边的东西被裁掉。
 	//
-	// 左右内边距取同一个数：原来是 (右 12 / 左 6)，实测右内边距 14、左 8，
-	// 头像和关注键的留白差了 6px，整条信息看着是往左偏的。收到 4 之后两边
-	// 都贴着岛的边缘，和头像上下各 1px 的留白是同一档。
-	expanded := ui.Row(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Padding(0, islandPlayerPadX).Gap(islandPlayerGap).AlignItems(ui.Center)
-	expanded.Opacity(op)
-	if op < 0.5 {
-		expanded.PassThrough()
+	// 位置和直径都取整到整数 DIP。这不是为了好看，是必须的：弹簧每帧只走
+	// 零点几像素，亚像素坐标一跨过 .5 的取整边界，整颗圆就平移一个物理
+	// 像素——收尾段连续跨好几次，屏幕上就是「头像一下一下地跳」。取整之后
+	// 直径只有 32/33/34 三档、位置只有 4/3/2/1/0 五个值，每一次变化都是
+	// 一整像素的干净位移，没有半像素的抖动。
+	avatarX := roundDIP(islandPlayerPadX * (1 - m))
+	avatarD = roundDIP(avatarD)
+	avatarY := roundDIP((islandContentH - avatarD) / 2)
+
+	// 文字与关注键：位置**完全固定**在展开态那一份排版上，不重排、不淡出、
+	// 也不跟着头像走。岛窄下去时它们原样待着，超出窗口的部分被 body 的
+	// 圆角裁掉——这就是收起该有的样子。
+	//
+	// 以前两套图层交叉淡化，或者用 Row 的 Grow 按剩余宽度重新分配：前者是
+	// 文字先跑掉，后者岛每窄一像素就重排一次，最后挤成几像素宽的残条。
+	// 两种都不是收缩，是换了一屏东西。
+	//
+	// 位置写死之后还有个必须守住的点：文字的左端必须永远在头像右沿之外，
+	// 否则头像滑过去时会从字上碾过去。展开态 4 + 32 + 10 = 46，而头像在
+	// 收起时最右也只到 0 + 34 = 34，中间始终留着那 12px。
+	textX := islandPlayerPadX + islandPlayerAvatar + islandPlayerGap
+	textW := openW - 2*islandBodyInset - 2*islandPlayerPadX -
+		islandPlayerAvatar - 2*islandPlayerGap - islandPlayerTextSlack - islandPlayerFollowW
+	if textW < 0 {
+		textW = 0
 	}
-	expanded.Children(func() {
-		// 这里比后台收听那颗小一圈：整条展开态的头像上下要留白，顶满内容区
-		// 会让圆形上下两端压着描边，看着像被裁掉一块。
-		trigger := ui.Box(c).Size(islandPlayerAvatar, islandPlayerAvatar).
-			Shrink(0).Label("主播信息")
-		trigger.Children(func() {
-			a.islandAvatar(c, s, islandPlayerAvatar, true)
-		})
+	followX := openW - islandBodyInset - islandPlayerPadX - islandPlayerFollowW
 
-		ui.Column(c).Gap(2).Grow(1).Children(func() {
-			ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
-				SingleLine().TextColor(theme.TextPrimary).LineHeight(1.3)
-			ui.Text(c, islandPlayerMeta(s)).
-				FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
-				TextColor(theme.TextTertiary)
-		})
-
-		// 关注：纯图标，不带文字。头像右下角那个绿点已经说明在播，这里
-		// 只留一颗星，岛才不至于拖得太长。
-		followed := a.isFollowed(s)
-		label := "关注"
-		if followed {
-			label = "取消关注"
-		}
-		btn := ui.Box(c).Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
-			Center().Cursor(ui.CursorPointer).Shrink(0).Label(label)
-		if followed {
-			btn.Background(theme.StatusOnline.Alpha(0.16)).
-				Border(1, theme.StatusOnline.Alpha(0.34))
-		} else {
-			btn.Background(theme.FillTertiary).Border(1, theme.Border)
-			if btn.Hovered() {
-				btn.Background(theme.FillSecondary).BorderColor(theme.BorderStrong)
-			}
-		}
-		if btn.Clicked() {
-			a.toggleFollow(s)
-		}
-		col := theme.TextPrimary
-		if followed {
-			col = theme.StatusOnline
-		}
-		btn.Children(func() {
-			ico := iconStar
-			if followed {
-				ico = iconStarFilled
-			}
-			ui.Icon(c, ico).FontSize(15).TextColor(col)
-		})
-
-		// 登录入口在顶栏头像上，岛屿里只放关注。
+	// 文字列：垂直居中，两行固定，SingleLine 保证它不会自己换行。
+	text := ui.Column(c).Absolute().Top(0).Bottom(0).Left(textX).Width(textW).
+		Justify(ui.Center).Gap(2)
+	text.Children(func() {
+		ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
+			SingleLine().TextColor(theme.TextPrimary).LineHeight(1.3)
+		ui.Text(c, islandPlayerMeta(s)).
+			FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
+			TextColor(theme.TextTertiary)
 	})
+
+	// 关注：纯图标，不带文字。头像右下角那个绿点已经说明在播，这里
+	// 只留一颗星，岛才不至于拖得太长。
+	followed := a.isFollowed(s)
+	label := "关注"
+	if followed {
+		label = "取消关注"
+	}
+	btn := ui.Box(c).Absolute().Left(followX).Top((islandContentH-islandPlayerFollowW)/2).
+		Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
+		Center().Cursor(ui.CursorPointer).Label(label)
+	if followed {
+		btn.Background(theme.StatusOnline.Alpha(0.16)).
+			Border(1, theme.StatusOnline.Alpha(0.34))
+	} else {
+		btn.Background(theme.FillTertiary).Border(1, theme.Border)
+		if btn.Hovered() {
+			btn.Background(theme.FillSecondary).BorderColor(theme.BorderStrong)
+		}
+	}
+	if btn.Clicked() {
+		a.toggleFollow(s)
+	}
+	col := theme.TextPrimary
+	if followed {
+		col = theme.StatusOnline
+	}
+	btn.Children(func() {
+		ico := iconStar
+		if followed {
+			ico = iconStarFilled
+		}
+		ui.Icon(c, ico).FontSize(15).TextColor(col)
+	})
+
+	// 头像：位置和直径都是插值出来的，所以它是「被岛宽拖着走」的。
+	//
+	// 在线绿点只在展开态画。收起后头像 34 撑满内容区，绿点画在头像外沿
+	// （size-d+1）就整个出了内容区，被 body 的圆角裁掉大半，剩一小截弧
+	// 挂在圆的右下角——那不是「绿点被收进去」，那是一颗没擦干净的脏点。
+	// 判据用宽度而不是进度：绿点是可见与否的二值状态，给它一段淡出反而
+	// 会在半透明时露出那截残弧。岛宽到「放得下绿点」才画。
+	showLive := w >= islandPlayerAvatar+2*islandPlayerPadX+islandLiveDotRoom
+
+	// 头像自己带名字：它的位置和直径就是这条动画的主体，测试和无障碍树
+	// 都要能单独量到它（外面那层热区铺满内容区，宽度不说明任何事）。
+	avatar := ui.Box(c).Absolute().Left(avatarX).Top(avatarY).
+		Size(avatarD, avatarD).Shrink(0).Label("主播头像")
+	avatar.Children(func() {
+		a.islandAvatar(c, s, avatarD, showLive)
+	})
+
+	// 后台收听：整块内容区都是回播放页的热区，压在头像和文字之上。
+	if listening {
+		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+			Cursor(ui.CursorPointer).Label("回到直播间")
+		if hit.Hovered() {
+			hit.Background(ui.RGBA(255, 255, 255, 0.06))
+		}
+		if hit.Clicked() {
+			// 回播放页只走路由：attachMedia 在 PlayerPage 里把视频轨打开。
+			a.Router.Push(routePlayer)
+		}
+	}
 }
 
-// islandAvatar 画一枚圆形头像。showLive 控制是否在右下角画在线绿点和呼吸环：
-// 展开态有足够空间，保留这个指示；收起态就是一整颗圆头像，再压绿点会被裁掉。
+// islandAvatar 画一枚圆形头像。showLive 控制是否在右下角画在线绿点和呼吸环。
+//
+// 绿点不参与收缩动画：它要么整颗在内容区里，要么整颗不画。画出来一半、
+// 剩一截弧挂在圆边上，比没有更难解释。调用方按岛宽决定 showLive。
+//
 // 绿点用 Left/Top 而不是 Right/Bottom：MyGo 里 Right 的基准在缩小后的
 // 祖先上会偏出去，Left/Top 从 padding box 左上角算起，size-d+1 就是
 // 右下角那一格。
 func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive bool) {
-	if bmp := media.Default.Avatar(s.AvatarURL, size); bmp != nil {
+	// 纹理按**固定档位**取，不按这一帧的 size 取。
+	//
+	// Avatar(url, width) 会按 width 算缓存 key（targetPixels 取整到 8 的倍数）。
+	// 收缩时 size 从 32 连续变到 34，跨过档位的那一帧就换了一张纹理：
+	// 尺寸只差 0.04px，屏幕上却是整块重绘——那就是收尾看到的那一下。
+	// 用展开态的 32 取图，缩放交给 Image 的 Size，纹理全程只有一张。
+	if bmp := media.Default.Avatar(s.AvatarURL, islandPlayerAvatar); bmp != nil {
 		ui.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
 	} else {
 		ui.Box(c).Size(size, size).Radius(size / 2).
@@ -436,19 +552,25 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive boo
 	if !showLive || !s.Live {
 		return
 	}
-	d := float32(10)
-	if size < 32 {
+	// 直径跟着头像走：以前是按 32 一刀切（10 / 8），头像现在连续缩放，
+	// 那一刀会变成一次可见的跳档。0.3 倍加钳位，展开态正好 10、收起态 8。
+	d := size * 0.3
+	if d > 10 {
+		d = 10
+	}
+	if d < 8 {
 		d = 8
 	}
 	// 呼吸环：和全部关注页那颗在线点同一套 live-pulse——2px 绿环从
 	// scale 0.75 扩到 1.85、透明度 0.9 → 0，2 秒一循环，70% 之后停在扩满的
 	// 无形状态。环先画，压在点下面。
 	//
-	// Key 要带上 size：收起和展开两层头像同时存在（交叉淡化），同一个 Key
-	// 会让两个环共用一段动画状态，谁后建谁把相位抢走。
+	// Key 固定：岛上现在只有一颗头像（收起和展开共用同一棵内容树），
+	// 不再有两层同时存在。带 size 的旧写法在这里反而有害——size 每帧都
+	// 在变，Key 每帧都是新的，脉冲相位每帧重来一次，收缩途中绿点会抖。
 	ringSize := d + 4
 	ringLeft := size - d - 1
-	ringKey := fmt.Sprintf("island-live-%d", int(size))
+	const ringKey = "island-live"
 	ring := ui.Box(c.Key(ringKey)).Absolute().
 		Left(ringLeft).Top(ringLeft).Size(ringSize, ringSize).
 		Radius(theme.RadiusFull).Border(2, theme.StatusOnline)
@@ -612,12 +734,11 @@ func clockColon(c *ui.Context) {
 //
 // 所以环的颜色必须跟着配色走（--accent-ink），不能写死青柠；
 // 旋转用 Loop 持续请求帧，动的是光，不是盒子。
-func (a *App) islandRing(c *ui.Context, r float32) {
+func (a *App) islandRing(c *ui.Context, r, alpha float32) {
 	black := ui.RGB(0, 0, 0)
 	solid := ui.LinearGradient{From: black, To: black}
 
 	period := 4500 * time.Millisecond
-	alpha := float32(1)
 
 	dim := theme.AccentInk.Mix(ui.Transparent, 0.70) // 30% 的强调色
 	hot := theme.AccentInk

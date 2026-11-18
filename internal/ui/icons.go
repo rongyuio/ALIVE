@@ -84,6 +84,7 @@ var (
 
 	iconBookmark = iconSVG(`<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>`)
 	iconPlus     = iconSVG(`<path d="M5 12h14"/><path d="M12 5v14"/>`)
+	iconMinus    = iconSVG(`<path d="M5 12h14"/>`)
 	// 面板把手的收起 / 展开键是 14px / 2.8 描边，比常规 2px 粗一档。
 	// 面板展开时用 ChevronRight（指向面板里），收起时用 ChevronLeft。
 	iconChevronRightBold = ui.MustParseSVG([]byte(
