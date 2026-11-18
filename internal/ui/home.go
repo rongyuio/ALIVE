@@ -292,11 +292,6 @@ type App struct {
 	chromePtrOver bool // 指针是否还停在画面上
 	chromeFull    bool // 上一帧是否处于全屏：进出全屏要先把 chrome 亮出来
 
-	// 启动层：冷启动到首屏数据就绪之间盖一层
-	Splash       bool
-	splashFading bool
-	splashAt     time.Time
-
 	// 顶栏平台顺序（拖拽排序与持久化共用）
 	PlatformOrder []string
 
@@ -322,6 +317,8 @@ type App struct {
 	// 列表加载态：数据层接上之前由 main.go 的拉取结果驱动
 	Loading bool
 	ErrText string
+	// 冷启动的读屏播报只发一次：每帧 Announce 会把读屏变成复读机
+	bootAnnounced bool
 }
 
 // CategoryGroup 是一级分区及其下的二级分区。
@@ -388,9 +385,6 @@ func NewApp() *App {
 	// 目前只有 B 站接入了真实数据，默认落在这里。
 	a.Platform = "bilibili"
 	a.restore()
-	// 冷启动盖一层启动画面，首屏数据到了再淡出
-	a.Splash = true
-	a.splashAt = time.Now()
 	a.bindAuth()
 	return a
 }
@@ -590,10 +584,6 @@ func (a *App) Shell(c *ui.Context) {
 		if a.ShortcutsOpen {
 			a.shortcutsOverlay(c)
 		}
-		// 冷启动的启动层盖住一切，包括浮层
-		if a.Splash {
-			a.splash(c)
-		}
 	})
 	// 全局键盘放在整棵视图构建完之后：PopoverBase 的 Esc 是在构建浮层时
 	// 消费的，这里如果先跑，一次 Esc 会同时关掉浮层和它外面的东西。
@@ -607,6 +597,14 @@ func (a *App) Shell(c *ui.Context) {
 func (a *App) Home(c *ui.Context) {
 	if a.LiveMode {
 		a.ensureLiveData()
+	}
+	// 首屏还空着的时候，读屏用户看到的是一块没有内容的网格——它不会自己
+	// 念「正在加载」。启动层以前也没管这件事，现在这块由播报补上。
+	//
+	// 只播一次：这个分支每帧都会走到，不设闸门就是复读机。
+	if !a.bootAnnounced && a.ListLoading && len(a.Rooms) == 0 {
+		a.bootAnnounced = true
+		c.Announce("正在载入直播间")
 	}
 	// 浏览器登录：主体区域整个换成登录页。页面原样铺开，登录框由平台
 	// 自己弹出——不裁剪、不代点，页面改版也不影响这里。

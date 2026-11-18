@@ -16,6 +16,11 @@ SHELL := sh
 GO    := go
 MYGO  := $(GO) tool mygo
 
+# Windows 上 make 会把不含元字符的 recipe 直接交给 CreateProcess，绕过 sh；
+# `mkdir -p` / `rm -rf` / `cp` 这种 POSIX 命令于是找不到（报 CreateProcess 失败）。
+# 需要它们的 recipe 显式经过 $(SHELL)，不要只靠 PATH 里有没有这些工具。
+SH := $(SHELL) -c
+
 # mygo.json 里 out=build，打包产物落在这里
 BUILD_DIR := build
 
@@ -23,22 +28,39 @@ BUILD_DIR := build
 # CGO_ENABLED，也不需要 gcc。但 go run / go test 的二进制落在临时目录，不在
 # 仓库里，所以要把库的绝对路径显式告诉它。make build / make dev 不需要——
 # mygo 自己会把 resources 复制到二进制旁边。
-MPVLIB := $(shell cygpath -w "$(CURDIR)/third_party/mpv/bin/libmpv-2.dll")
+#
+# 优先用 cygpath 转成 Windows 路径；没有 cygpath（比如直接跑 mingw 的 make）
+# 就退回 make 给的 D:/... 形式，Windows 的文件 API 一样认。
+MPVLIB := $(shell cygpath -w "$(CURDIR)/third_party/mpv/bin/libmpv-2.dll" 2>/dev/null || echo "$(CURDIR)/third_party/mpv/bin/libmpv-2.dll")
 RUNENV  = ALIVE_MPV_LIB="$(MPVLIB)"
 
-# 递归展开：只有用到 fmt-check 时才会真的跑 gofmt
-FMT_UNFORMATTED = $(shell gofmt -l . 2>/dev/null)
+# gofmt -l . 会走进 third_party（上游源码）和 .tmp（本地探针）；这些不该让
+# fmt-check 无辜变红，也不该被 make fmt 顺手改写。Windows 上 gofmt 输出用
+# 反斜杠，所以两种分隔符都认。
+FMT_IGNORED = ^([.][/\\])?(third_party|\.tmp|\.git|build|\.mygo)[/\\]
+
+# 测试用独立的用户目录。NewMockApp 会 restore %APPDATA%\alive\state.json，
+# 开发机上存着的 volume=0 就能把「静音」标签变成「取消静音」，让 make check
+# 依赖本机数据。指到 .mygo/test-home（.gitignore 挡着），每次起跑前清空。
+#
+# LOCALAPPDATA 也指过去，应用日志和缓存才不落在本机；但 Go 的构建缓存默认就在
+# LOCALAPPDATA 下，跟着指过去会让每次 make test 都全量重编译，所以显式把
+# GOCACHE 钉回 go env 的值。
+TEST_HOME := $(CURDIR)/.mygo/test-home
+TESTENV   = APPDATA="$(TEST_HOME)/Roaming" LOCALAPPDATA="$(TEST_HOME)/Local" GOCACHE="$(shell $(GO) env GOCACHE)" $(RUNENV)
 
 .DEFAULT_GOAL := build
-.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline e2e tidy tools clean
+.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline e2e tidy tools clean check-mpv
 
 help:
-	@echo "build         package into $(BUILD_DIR)/<os>-<arch>/"
+	@echo "build         package into $(BUILD_DIR)/<os>-<arch>/ (portable + installer)"
 	@echo "run           run from source"
 	@echo "dev           dev mode, rebuild on save"
-	@echo "check         gofmt + build + vet + mygo vet + lint + test"
-	@echo "fmt           gofmt -w ."
-	@echo "test          go test ./..."
+	@echo "check         fmt-check + vet + lint + test"
+	@echo "fmt           go fmt ./..."
+	@echo "fmt-check     fail if any project Go file needs gofmt"
+	@echo "vet           go build + go vet + mygo vet"
+	@echo "test          go test with mock data, in an isolated APPDATA"
 	@echo "lint          golangci-lint run"
 	@echo "mock          run with mock data layer (online + danmaku)"
 	@echo "mock-offline  run with mock data layer (offline state)"
@@ -47,28 +69,35 @@ help:
 	@echo "tidy          go mod tidy"
 	@echo "clean         remove $(BUILD_DIR)/, .mygo/ and built binaries"
 
+# 缺库时提前说清楚，不要等到播放或测试里才看到 dlopen / 找不到文件的错。
+check-mpv:
+	@test -f "$(MPVLIB)" || { echo "missing $(MPVLIB); see third_party/mpv/README.md" >&2; exit 1; }
+
 build:
 	$(MYGO) build
 
-run:
+run: check-mpv
 	$(RUNENV) $(GO) run .
 
 dev:
 	$(MYGO) dev
 
 fmt:
-	gofmt -w .
+	$(GO) fmt ./...
 
 fmt-check:
-	@test -z "$(FMT_UNFORMATTED)" || { echo "needs gofmt:"; echo "$(FMT_UNFORMATTED)"; exit 1; }
+	@bad="$$(gofmt -l . 2>/dev/null | grep -vE '$(FMT_IGNORED)' | sort -u)"; \
+	if [ -n "$$bad" ]; then echo "needs gofmt:"; echo "$$bad"; exit 1; fi
 
 vet:
 	$(GO) build ./...
 	$(GO) vet -tags mock ./...
 	$(MYGO) vet .
 
-test:
-	$(RUNENV) $(GO) test -tags mock ./... -count=1
+test: check-mpv
+	@$(SH) 'rm -rf "$(TEST_HOME)"'
+	@$(SH) 'mkdir -p "$(TEST_HOME)/Roaming/alive" "$(TEST_HOME)/Local/alive"'
+	$(TESTENV) $(GO) test -tags mock ./... -count=1
 
 # 和 vet / test 一样带 -tags mock：假数据层和它的测试也要检查。
 # 二进制要用官方 release，`go install` 装的版本官方不保证可用（见 .golangci.yml）。
@@ -80,18 +109,18 @@ check: fmt-check vet lint test
 
 # mock 走 -tags mock：整个假数据层（internal/live/mock.go）只在这个构建里存在，
 # 正式二进制里既没有它也没有指向它的分支。ALIVE_MOCK 选在播态还是未开播态。
-mock:
+mock: check-mpv
 	$(RUNENV) ALIVE_MOCK=danmu $(GO) run -tags mock .
 
-mock-offline:
+mock-offline: check-mpv
 	$(RUNENV) ALIVE_MOCK=offline $(GO) run -tags mock .
 
 # automation 插件只在 e2e 构建里存在（见 automation_e2e.go）。产物要能直接跑，
 # 所以运行库跟着一起放过去。
-e2e:
-	@mkdir -p $(BUILD_DIR)/e2e
+e2e: check-mpv
+	@$(SH) 'mkdir -p "$(BUILD_DIR)/e2e"'
 	$(GO) build -tags e2e -o $(BUILD_DIR)/e2e/alive-e2e.exe .
-	cp third_party/mpv/bin/libmpv-2.dll $(BUILD_DIR)/e2e/
+	@$(SH) 'cp third_party/mpv/bin/libmpv-2.dll "$(BUILD_DIR)/e2e/"'
 
 tools:
 	$(GO) install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation
@@ -100,5 +129,5 @@ tidy:
 	$(GO) mod tidy
 
 clean:
-	rm -rf $(BUILD_DIR) .mygo
-	rm -f ALIVE ALIVE.exe alive-e2e mygo_windows_*.syso
+	@$(SH) 'rm -rf "$(BUILD_DIR)" .mygo'
+	@$(SH) 'rm -f ALIVE ALIVE.exe alive-e2e mygo_windows_*.syso'

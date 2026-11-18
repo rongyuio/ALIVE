@@ -101,12 +101,21 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 			scale := art.AnimateTo("cover", target, theme.EaseOut(320*time.Millisecond))
 			art.Scale(scale, scale)
 			art.Children(func() {
-				// 真封面优先；还没下载完就先用渐变占位撑住版式，加载完成后
-				// 图片缓存会触发一次 Update，下一帧自动换成真图。
+				// 真封面优先；还没下载完就先用静止的占位撑住版式，加载完成后
+				// 图片缓存会触发一次 Update，下一帧从这里换成真图。
+				//
+				// 换的那一下就是冷启动唯一的动效：从 1.5% 的缩放进场，
+				// 弹簧收住，不闪、不滑。Enter 只在父级上一帧已经在时播，
+				// 滚动带进来的卡片不会重播——那会变成一屏乱闪。
 				if bmp := media.Default.Bitmap(s.CoverURL, w); bmp != nil {
-					ui.Image(c, bmp).Fill().Fit(ui.Cover)
+					ui.Box(c).Fill().Transition(ui.ElementTransition{
+						Animation: &ui.Smooth,
+						Enter:     &ui.Motion{Scale: 0.985},
+					}).Children(func() {
+						ui.Image(c, bmp).Fill().Fit(ui.Cover)
+					})
 				} else {
-					coverArt(c, s, w, coverH)
+					coverArt(c, w, coverH)
 				}
 			})
 
@@ -190,25 +199,27 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 	return card
 }
 
-// coverArt 是封面图还没到时的占位：两段同色相渐变 + 一处柔光，
-// 让版式和明暗关系先立住，不至于是一块死色。
-
-func coverArt(c *ui.Context, s Streamer, w, h float32) {
-	// 封面没到之前是一块安静的底色加一个旋转的圆环。
-	//
-	// 之前每张卡片按 Hue 生成彩色渐变，一屏十几张一起亮起来像打翻的调色盘，
-	// 而且和真实封面切换时视觉跳变很大。统一底色 + 一个转动的环，
-	// 加载中的卡片是"安静地在转"，而不是"一片彩色的噪点"。
+// coverArt 是封面还没到时的占位：一块安静的深色场，不转、不闪、不循环。
+//
+// 这里原来是转动的圆环。一屏十几张卡一起转，等于每一帧都在提醒「你还在等」，
+// 而且每张卡各挂一个 Loop、一直在请求帧。占位要做的只是把版式撑住——
+// 信息条上已经写着主播名和标题，用户第一眼就知道这是谁，缺的只是画面。
+// 动的那一下留给封面到达，不留给等待本身。
+func coverArt(c *ui.Context, w, h float32) {
 	art := ui.Box(c).Width(w).Height(h).Background(theme.BgTertiary)
+	// 和卡片一样的顶部受光边：占位也要有厚度，不能是一块死色。
+	art.InsetShadow(0, 1, 0, 0, theme.TopLight)
 	art.Children(func() {
-		art.Center().Children(func() {
-			// 尺寸跟封面大小挂钩，最窄的卡片上也看得清
-			size := min(w*0.12, 22)
-			if size < 14 {
-				size = 14
-			}
-			spinnerTint(c, size, theme.TextTertiary)
-		})
+		// 中心一层极淡的柔光，给这块空场一个重心。
+		ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+			RadialGradient(ui.RadialGradient{
+				Center: ui.Point{X: 0.5, Y: 0.5},
+				Radius: h * 0.55,
+				Stops: []ui.GradientStop{
+					{Color: theme.TextPrimary.Alpha(0.035), At: 0},
+					{Color: ui.Transparent, At: 1},
+				},
+			})
 	})
 }
 

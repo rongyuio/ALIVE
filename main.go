@@ -42,7 +42,9 @@ func main() {
 			MinHeight: 600,
 			// 无边框：顶栏完全由 view 画，拖拽靠 Navbar 的 DragWindow。
 			Frameless: true,
-			// 首帧背景色与 --bg-primary 对齐，避免启动白闪。
+			// 首帧背景色与 --bg-primary 对齐，避免启动白闪。窗口一出现画的就是
+			// 应用本体（顶栏 + 网格），没有单独的启动层，所以这层底色和第一帧
+			// 之间没有接缝。
 			BackgroundColor: "#0a0b0d",
 			StateKey:        "main",
 			Content:         ui.View(app.Shell),

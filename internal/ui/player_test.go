@@ -338,6 +338,9 @@ func TestPlayerShellCornerBorderIsContinuous(t *testing.T) {
 
 	for _, scale := range []float32{1, 2} {
 		app := NewMockApp()
+		// 下面按 signal 夜色的描边取值扫描，主题不能跟着本机 state.json 走。
+		app.PaletteID = "signal"
+		app.ThemeMode = themeModeDark
 		tt := ui.NewTester(app.Shell, 1440, 900)
 		tt.SetScale(scale)
 		if err := tt.Click("旭旭宝宝"); err != nil {
@@ -427,6 +430,9 @@ func TestPlayerIconsShareInkBand(t *testing.T) {
 	app.Player = app.Streamers[0]
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
+	// 音量决定静音键的 Label（0 时是「取消静音」），而这条量的是图标墨迹：
+	// 钉住音量，测试才不会跟着本机 state.json 变。
+	app.Volume = 0.6
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	img := tt.Image()
 
