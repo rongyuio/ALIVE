@@ -122,13 +122,17 @@ type App struct {
 
 	// 弹幕设置（落盘键 dtv_danmu_preferences_v1）
 	DanmuSettingsOpen bool
-	DanmuFont         float32
-	DanmuDur          time.Duration
-	DanmuArea         float32
-	DanmuOpacity      float32
-	DanmuColorful     bool
-	DanmuColor        ui.Color
-	DanmuStroke       ui.Color
+	// 颜色 / 描边的取色浮层各自一个开关。取色器比设置面板大，指针得挪到
+	// 面板外面去用，所以设置面板的 hover 关门逻辑要把这两个算进去。
+	DanmuColorOpen  bool
+	DanmuStrokeOpen bool
+	DanmuFont       float32
+	DanmuDur        time.Duration
+	DanmuArea       float32
+	DanmuOpacity    float32
+	DanmuColorful   bool
+	DanmuColor      ui.Color
+	DanmuStroke     ui.Color
 
 	// 弹幕屏蔽词（控制条漏斗面板）：命中的弹幕不上屏、也不进右侧历史。
 	// 面板只有点击才开，所以不需要 hoverClose。
@@ -144,8 +148,13 @@ type App struct {
 	panelSeen    int
 	panelPending int
 	panelStick   bool
-	panelDragW   float32
-	panelDragX   float32
+	// panelViewH / panelViewFull 记着上一帧列表的视口。开关全屏或拖窗口边缘
+	// 时视口高度会变：MaxY 跟着跳，而 Y 还停在旧的底上，跟随判据会当场
+	// 失效。变了的这一帧要把 Y 重新钉到末尾。
+	panelViewH    float32
+	panelViewFull bool
+	panelDragW    float32
+	panelDragX    float32
 
 	// 配色：当前配色 ID、配色面板是否展开，以及夜/日/跟随系统的选择。
 	// ThemeMode 取 "system"（默认）/ "dark" / "light"：它决定用哪一侧的配色，

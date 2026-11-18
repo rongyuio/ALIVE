@@ -44,6 +44,8 @@ type persisted struct {
 	Line          string          `json:"line,omitempty"`
 	Volume        *float32        `json:"volume,omitempty"`
 	DanmuOn       *bool           `json:"danmuOn,omitempty"`
+	DanmuPanelW   *float32        `json:"danmuPanelW,omitempty"`
+	DanmuPanelOn  *bool           `json:"danmuPanelOn,omitempty"`
 	Danmu         *danmuPrefs     `json:"danmu,omitempty"`
 	DanmuFilters  *[]string       `json:"danmuFilters,omitempty"`
 }
@@ -120,6 +122,8 @@ func (a *App) saveState() {
 	follows := append([]FollowRecord(nil), a.Follows...)
 	subs := append([]Subscription(nil), a.Subs...)
 	volume := a.Volume
+	panelW := a.panelWidth()
+	panelOn := a.DanmuPanelOn
 	danmuOn := a.DanmuOn
 	// 屏蔽词也要落盘：用户加了一堆词，重启就该还在
 	filters := append([]string(nil), a.DanmuFilters...)
@@ -143,6 +147,8 @@ func (a *App) saveState() {
 		Line:          a.Line,
 		Volume:        &volume,
 		DanmuOn:       &danmuOn,
+		DanmuPanelW:   &panelW,
+		DanmuPanelOn:  &panelOn,
 		Danmu:         &danmu,
 		DanmuFilters:  &filters,
 	}
@@ -204,6 +210,14 @@ func (a *App) restore() {
 	}
 	if p.DanmuOn != nil {
 		a.DanmuOn = *p.DanmuOn
+	}
+	if p.DanmuPanelOn != nil {
+		a.DanmuPanelOn = *p.DanmuPanelOn
+	}
+	if p.DanmuPanelW != nil && *p.DanmuPanelW > 0 {
+		// 拖拽宽度是本地布局，不进弹幕偏好；手改过的文件可能越界，读回来就钳一次。
+		a.DanmuPanelW = *p.DanmuPanelW
+		a.DanmuPanelW = a.panelWidth()
 	}
 	if p.DanmuFilters != nil {
 		a.DanmuFilters = *p.DanmuFilters

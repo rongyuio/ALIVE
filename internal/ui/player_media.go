@@ -94,7 +94,7 @@ type playerMedia struct {
 	// 这一态下 roomKey 和 player 都留着——它要的就是「还是那一路、还在出声」，
 	// 和 closeMedia 的「全关掉」是两件事。
 	background bool
-	// detachedAt 是进入后台收听、也就是视频轨被关掉的时刻，日志和恢复预算用。
+	// detachedAt 是进入后台收听的时刻，日志用。
 	detachedAt time.Time
 	// tickPending 表示后台收听的定时心跳已经排上，避免每帧重复排。
 	tickPending bool
@@ -244,16 +244,14 @@ func (a *App) closeMedia() {
 	a.media.roomKey = ""
 }
 
-// detachMedia 进入后台收听：画面关掉，声音留着。
+// detachMedia 进入后台收听：视频轨关掉，声音留着。
 //
-// 和 closeMedia 的区别是「关到哪一层」：这里只把视频轨关掉，mpv 实例、
-// 地址续期、断流重连、房间记号全部保留。mpv 的音频输出和视频解码本来就是
-// 两条独立的线，vid=no 之后声音照常走、time-pos 照常前进，而软件渲染不再
-// 产帧——省掉的正是后台最贵的那一块（1080p60 每帧 8MB 的 BGRA 转换）。
+// 和 closeMedia 的区别是「关到哪一层」：这里只关视频轨，mpv 实例、地址续期、
+// 断流重连、房间记号全部保留。关掉的是解码，不是画质——后台 CPU 2%–3% 单核。
 //
 // 没有引擎时不做事：还在取流的路上就离开播放页，那一路会被 closeMedia 收掉，
-// 不该在这里留一个「假装在听」的态。判据是引擎而不是播放器指针——没有可关的
-// 视频轨，就没有声音可留。
+// 不该在这里留一个「假装在听」的态。判据是引擎而不是播放器指针——没有引擎，
+// 就没有声音可留。
 func (a *App) detachMedia() {
 	m := &a.media
 	if m.background {
@@ -273,16 +271,19 @@ func (a *App) detachMedia() {
 	logStage(m.id, m.start, "detach", "quality", m.upstream.Label)
 }
 
-// attachMedia 从后台收听回到播放页：把视频轨重新打开。
+// attachMedia 从后台收听回到播放页：整路重新起播，而不是重新打开视频轨。
 //
-// 恢复要等 mpv 从下一个关键帧开始解码（斗鱼实测中位数 1.7 秒，见
-// doc/reference/measurements.md）。这段画面停在离开时那一帧，所以回来之后
-// 首帧预算要重新起算，否则 20 秒的预算里只剩一半。
+// 视频轨在后台是关的，直接 vid=auto 要等 mpv 走回下一个关键帧——实测 1.5–7 秒
+// （640×360 的一条流等了 7.2 秒），快慢全看流的 GOP。重新取流 + 开新播放器
+// 反而更快（0.4–1 秒），而且顺带把可能过期的地址换掉。
+//
+// 代价是声音断一下：旧引擎在 beginSession 里关掉，新引擎起播后再出声。
+// loading 层由 beginSession 置上，用户看到的就是一次正常起播。
 //
 // 判据必须带上路由：转场期间 Router 会把上一页（播放页）再构建一次，而那时
 // 已经在别的页面上了。只看 background 的话，PlayerPage 的 attach 和 Shell 的
-// detach 会每帧互相翻一次——实测一秒能刷十几条 attach/detach 日志，视频轨
-// 跟着来回切。
+// detach 会每帧互相翻一次——实测一秒能刷十几条 attach/detach 日志，播放器
+// 跟着来回重建。
 func (a *App) attachMedia() {
 	m := &a.media
 	if !m.background {
@@ -293,19 +294,15 @@ func (a *App) attachMedia() {
 	}
 	m.background = false
 	m.detachedAt = time.Time{}
-	// 首帧预算从这一刻重新算：后台那段时间画面本来就不该有，不能算进预算。
-	if !m.firstFrame && !m.openedAt.IsZero() {
-		m.openedAt = time.Now()
-		m.pauseStarted = time.Time{}
-		m.pausedFor = 0
-	}
-	if e := m.engine(); e != nil {
-		e.SetVideoEnabled(true)
-	}
 	logStage(m.id, m.start, "attach", "quality", m.upstream.Label)
+	// 保留弹幕：回来还是同一间房，聊天不该断。
+	a.startStream(true)
 }
 
-// videoTrack 是后台收听要的那一小块引擎能力：开关视频轨。
+// videoTrack 是后台收听要的那一小块引擎能力：开关画面呈现。
+//
+// 名字是历史遗留（以前真是开关 mpv 的 vid），现在的实现是「解码不停、只停
+// 上屏与重绘」，见 playback.Engine.SetVideoEnabled。
 //
 // 只声明用得到的一个方法，而不是整个 *playback.Engine：测试里没有 libmpv，
 // 造不出真引擎，但这一段状态机该被验到。
@@ -820,8 +817,8 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 	a.media.refreshAt = refreshAtFor(v)
 	a.media.refreshing = false
 	a.media.swapFailures = 0
-	// 后台收听时换上去的是一路新引擎，视频轨默认是开的：不补这一下，换完
-	// 地址画面会自己回来，后台收听就名存实亡了。
+	// 后台收听时换上去的是一路新引擎：新引擎的呈现闸门默认是开的，不补
+	// 这一下，换完地址它会在后台一直唤醒窗口，后台收听就名存实亡了。
 	if a.media.background {
 		e.SetVideoEnabled(false)
 	}

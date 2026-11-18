@@ -646,20 +646,32 @@ func TestDetachKeepsSound(t *testing.T) {
 	}
 }
 
-// 回到播放页：视频轨重新打开，后台标记清掉。
-func TestAttachRestoresVideo(t *testing.T) {
+// 回到播放页：整路重新起播，后台标记清掉。
+//
+// 不走 vid=auto：视频轨关掉之后要等 mpv 走回下一个关键帧，实测 1.5–7 秒，
+// 快慢全看流的 GOP；重新取流 + 开新播放器只要 0.4–1 秒。
+func TestAttachRestartsStream(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
+	useProvider(t, &stubStreamer{full: live.Stream{Live: true}, selected: live.Variant{Label: "原画"}})
 
 	a.detachMedia()
+	before := a.media.seq
 	a.attachMedia()
 
 	if a.media.background {
 		t.Fatal("回到播放页之后还挂着后台收听标记")
 	}
-	if on, ok := spy.last(); !ok || !on {
-		t.Fatalf("视频轨最后状态是 %v（有没有设过 %v），应当打开", on, ok)
+	if a.media.seq == before {
+		t.Fatal("回来没有重新起播：还在用后台那一路")
+	}
+	if !a.media.loading {
+		t.Fatal("重新起播没有进入 loading：用户看不到加载动画")
+	}
+	// 后台那一路的视频轨是关着的，回来也不该再把它当恢复手段。
+	if on, ok := spy.last(); !ok || on {
+		t.Fatalf("回来又把旧引擎的视频轨打开了：%v（设过 %v）", on, ok)
 	}
 }
 

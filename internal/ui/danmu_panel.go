@@ -168,6 +168,18 @@ func (a *App) danmuPanelList(c *ui.Context) {
 	// 面板读的是 DanmuLog（收到就留的历史），不是 Danmu（画面上正在飞的那批）——
 	// messages 和 Overlay 本来就是两份数据，后者飞完就没了。
 	a.panelStick = a.PanelScroll.Y >= a.PanelScroll.MaxY-32
+
+	// 视口高度变了（开关窗口全屏、进出系统全屏、拖窗口边缘）：Y 和 MaxY
+	// 还是上一帧的一对，面板一变矮 MaxY 就变大，Y 立刻离底一截，上面的
+	// 跟随判据下一帧就失效——列表从此定住，新弹幕只累计不滚。
+	// 变了的这一帧，只要原来跟底，就把 Y 重新钉到末尾，让布局钳到新底。
+	if _, h := c.Size(); h != a.panelViewH || a.playerFullscreen() != a.panelViewFull {
+		a.panelViewH, a.panelViewFull = h, a.playerFullscreen()
+		if a.panelStick {
+			a.PanelScroll.Y = math.MaxFloat32
+		}
+	}
+
 	if n := len(a.DanmuLog) - a.panelSeen; n != 0 {
 		if n > 0 {
 			if a.panelStick {

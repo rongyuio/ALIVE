@@ -71,3 +71,41 @@ func TestDanmuPanelReplacesEmotePlaceholder(t *testing.T) {
 		t.Fatalf("未知占位符被吞掉了，文本树 = %v", tt.Texts())
 	}
 }
+
+// 开关窗口全屏会改列表视口的高度：视口一变 MaxY 就跳，而 Y 还停在旧的底上。
+// 跟随判据必须在这一帧重新钉到底，否则「取消全屏」之后新弹幕只会累计，
+// 列表定在原地不动。
+func TestDanmuPanelFollowsAfterFullscreenToggle(t *testing.T) {
+	app := NewMockApp()
+	app.Player = app.Streamers[0]
+	app.Router.Push(routePlayer)
+	app.DanmuPanelOn = true
+	for i := 0; i < 80; i++ {
+		app.DanmuLog = append(app.DanmuLog, danmuLine{
+			Text: "弹幕", Nick: "甲", Born: time.Now(), Dur: time.Second,
+		})
+	}
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	if app.PanelScroll.MaxY <= 0 {
+		t.Fatalf("列表没有溢出（MaxY=%v），这条测试没有分辨力", app.PanelScroll.MaxY)
+	}
+	if app.PanelScroll.Y < app.PanelScroll.MaxY-1 {
+		t.Fatalf("开场就不在底部：Y=%v MaxY=%v", app.PanelScroll.Y, app.PanelScroll.MaxY)
+	}
+
+	for _, full := range []bool{true, false} {
+		app.WinFull = full
+		tt.Frame()
+		app.DanmuLog = append(app.DanmuLog, danmuLine{
+			Text: "新弹幕", Nick: "乙", Born: time.Now(), Dur: time.Second,
+		})
+		tt.Frame()
+		if app.panelPending != 0 {
+			t.Fatalf("WinFull=%v 后新弹幕进了未读数 %d：跟随断了", full, app.panelPending)
+		}
+		if app.PanelScroll.Y < app.PanelScroll.MaxY-1 {
+			t.Fatalf("WinFull=%v 后没有滚到底：Y=%v MaxY=%v", full, app.PanelScroll.Y, app.PanelScroll.MaxY)
+		}
+	}
+}

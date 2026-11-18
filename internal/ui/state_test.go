@@ -2,6 +2,7 @@ package ui
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -78,5 +79,84 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	if len(restored.PlatformOrder) != 4 || restored.PlatformOrder[0] != "bilibili" {
 		t.Errorf("平台顺序 %v", restored.PlatformOrder)
+	}
+}
+
+// 弹幕面板是拖宽的，重启必须还是那个宽度：拖拽只改内存里的
+// DanmuPanelW，不落盘的话下次启动又回到 196。
+func TestDanmuPanelWidthPersists(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+
+	app := NewMockApp()
+	app.DanmuPanelW = 264
+	app.stateDirty = true
+	app.saveState()
+
+	path := statePath()
+	if path == "" {
+		t.Fatal("拿不到状态文件路径")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("状态文件没有落盘：%s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	restored := NewMockApp()
+	if restored.DanmuPanelW != 264 {
+		t.Errorf("弹幕面板宽 %v，期望 264", restored.DanmuPanelW)
+	}
+}
+
+// 手改过的 state.json 也要收得回范围：面板宽只认 168–320。
+func TestDanmuPanelWidthClampedOnRestore(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+
+	path := statePath()
+	if path == "" {
+		t.Fatal("拿不到状态文件路径")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"danmuPanelW": 900}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewMockApp()
+	if got := restored.panelWidth(); got != danmuPanelMaxW {
+		t.Errorf("恢复后面板宽 %v，期望钳到 %v", got, danmuPanelMaxW)
+	}
+}
+
+// 面板收起之后重启还是收起：默认是展开，只有真的落盘 false 才能区分。
+func TestDanmuPanelOpenStatePersists(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+
+	app := NewMockApp()
+	app.DanmuPanelOn = false
+	app.stateDirty = true
+	app.saveState()
+
+	path := statePath()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("状态文件没有落盘：%s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	restored := NewMockApp()
+	if restored.DanmuPanelOn {
+		t.Error("面板收起状态没有恢复，重启后又是展开")
 	}
 }

@@ -21,6 +21,13 @@ const (
 	danmuRowGap   float32 = 6
 	danmuRowRad   float32 = 10
 	danmuLabelAlp float32 = 0.68 // rgba(255,255,255,.68)
+
+	// 颜色 / 描边的色块就是胶囊本身：38×24、圆角 8，颜色铺到边上。
+	// 不用 ui.ColorWell 的现成外观——它内部固定 36×20 的内芯，外面还带
+	// 4px padding 和 1px 边，塞进 38×24 时内芯比内容盒还大，色块会被挤歪。
+	danmuWellW       float32 = 38
+	danmuWellH       float32 = 24
+	danmuWellChecker float32 = 6
 )
 
 // danmuSettingsButton 是控制台里的弹幕设置入口。
@@ -28,6 +35,11 @@ const (
 // 和清晰度 / 线路两个下拉一样是 hover 打开、离开 220ms 关
 // （触发条也是 onMouseEnter 开）。
 func (a *App) danmuSettingsButton(c *ui.Context) {
+	// 面板关着时取色浮层也一起收掉：它挂在面板子树里，留着开关状态，
+	// 下次打开面板会先莫名弹出一个取色器。
+	if !a.DanmuSettingsOpen {
+		a.DanmuColorOpen, a.DanmuStrokeOpen = false, false
+	}
 	// 和其它控制条按钮同一套：30×30 无底色，只变色
 	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label("弹幕设置")
 	if btn.Clicked() {
@@ -52,12 +64,13 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 			Shadow(0, 18, 40, 0, ui.RGBA(0, 0, 0, 0.4)).
 			Margin(0, 0, 10, 0).
 			AttachTo(btn, ui.AnchorTopRight, ui.AnchorBottomRight)
-		// 指针移进面板时取消关门计时
-		a.DanmuSettingsHover.hover(c, panel.Hovered(), &a.DanmuSettingsOpen)
+		// 指针移进面板时取消关门计时。取色器是另一个浮层：指针挪过去就
+		// 离开了设置面板，不豁免的话 220ms 后会把面板连同取色器一起关掉。
+		a.DanmuSettingsHover.hover(c, panel.Hovered() || a.DanmuColorOpen || a.DanmuStrokeOpen, &a.DanmuSettingsOpen)
 		panel.Children(func() {
 			ui.Column(c).Gap(12).Children(func() {
-				a.danmuColorRow(c, "颜色", &a.DanmuColor)
-				a.danmuColorRow(c, "描边", &a.DanmuStroke)
+				a.danmuColorRow(c, "颜色", &a.DanmuColor, &a.DanmuColorOpen)
+				a.danmuColorRow(c, "描边", &a.DanmuStroke, &a.DanmuStrokeOpen)
 				a.danmuSwitchRow(c, "彩色弹幕", &a.DanmuColorful)
 				a.danmuSliderRow(c, "字体", fmt.Sprintf("%.0fpx", a.DanmuFont),
 					(a.DanmuFont-14)/16, func(f float32) {
@@ -93,13 +106,79 @@ func danmuLabel(c *ui.Context, text string) ui.Element {
 		TextColor(ui.RGBA(255, 255, 255, danmuLabelAlp))
 }
 
-func (a *App) danmuColorRow(c *ui.Context, label string, color *ui.Color) {
+func (a *App) danmuColorRow(c *ui.Context, label string, color *ui.Color, open *bool) {
 	row := danmuRow(c)
 	row.Children(func() {
 		danmuLabel(c, label).Grow(1)
-		well := ui.ColorWell(c, color).Width(38).Height(24).Radius(theme.RadiusXS)
-		if well.Changed() {
+		a.danmuColorWell(c, label, color, open)
+	})
+}
+
+// danmuColorWell 是「颜色」「描边」右侧的色块：38×24 的胶囊铺满颜色，
+// 点一下在下方开 ui.ColorPicker。
+//
+// 外观自己画，只有取色器还用 MyGo 的 ui.ColorPicker：ColorWell 的内芯
+// 写死 36×20，再加 4px padding 和 1px 边，比这里 38×24 的容器还大，
+// 内芯会被顶出容器，颜色也填不满。
+func (a *App) danmuColorWell(c *ui.Context, label string, color *ui.Color, open *bool) {
+	well := ui.Box(c).Size(danmuWellW, danmuWellH).Radius(theme.RadiusXS).
+		Focusable().Cursor(ui.CursorPointer).
+		Label(label).Role(ui.RoleColorWell)
+	well.Draw(func(p *ui.Painter, r ui.Rect) {
+		// 棋盘格垫底：描边色可能带 alpha，没有它看不出深浅。不透明的颜色
+		// 会把格子全盖住，那就不画。
+		if color.A < 255 {
+			danmuWellCheckers(p, r)
+		}
+		p.Fill(r, *color, theme.RadiusXS)
+		// Stroke 本来就画在矩形内侧，必须用同一个 r 和同一个半径：
+		// 手动内缩再减半径会让两条弧线对不齐，圆角上多出一圈错位的
+		// 描边（高 DPI 下看着是一排小点）。
+		p.Stroke(r, danmuWellRing(*color), theme.RadiusXS, 1)
+	})
+	if well.Clicked() {
+		*open = !*open
+	}
+	ui.PopoverBase(c, well, open, func(panel ui.Element) {
+		panel.Padding(14).Radius(theme.RadiusXL).
+			Background(ui.RGBA(17, 20, 28, 0.94)).
+			Border(1, ui.RGBA(255, 255, 255, 0.12)).
+			Shadow(0, 18, 40, 0, ui.RGBA(0, 0, 0, 0.4)).
+			Margin(8, 0, 0, 0)
+		picker := ui.ColorPicker(c, color)
+		if picker.Changed() {
 			a.markDirty()
+		}
+	})
+}
+
+// danmuWellRing 返回色块那圈 1px 描边。
+//
+// 不能固定用白色：白色色块上那圈白边根本看不见，只有黑色色块显得有框。
+// 按色块实际亮度挑——亮色压暗环、暗色提亮环；半透明色先和底下的棋盘格
+// 合成再算，不然 20% 的白会被当成暗色。
+func danmuWellRing(c ui.Color) ui.Color {
+	lum := 0.2126*float32(c.R) + 0.7152*float32(c.G) + 0.0722*float32(c.B)
+	lum = lum*float32(c.A)/255 + 255*(1-float32(c.A)/255)
+	if lum > 140 {
+		return ui.RGBA(0, 0, 0, 0.30)
+	}
+	return ui.RGBA(255, 255, 255, 0.22)
+}
+
+// danmuWellCheckers 是色块底下的灰白棋盘格。
+func danmuWellCheckers(p *ui.Painter, r ui.Rect) {
+	p.Fill(r, ui.RGB(255, 255, 255), theme.RadiusXS)
+	p.Clip(r, theme.RadiusXS, func() {
+		for y, row := r.Y, 0; y < r.Y+r.H; y, row = y+danmuWellChecker, row+1 {
+			for x, col := r.X, 0; x < r.X+r.W; x, col = x+danmuWellChecker, col+1 {
+				if (row+col)%2 == 0 {
+					continue
+				}
+				p.Fill(ui.Rect{X: x, Y: y,
+					W: min(danmuWellChecker, r.X+r.W-x),
+					H: min(danmuWellChecker, r.Y+r.H-y)}, ui.RGBA(0, 0, 0, 0.12), 0)
+			}
 		}
 	})
 }
