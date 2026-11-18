@@ -519,7 +519,7 @@ func (a *App) playerControls(c *ui.Context) {
 		bar.Children(func() {
 			// ------------------------------ 左：播放 / 刷新 / 音量
 			ui.Row(c).Gap(m.leftGap).AlignItems(ui.Center).Children(func() {
-				// 这三颗是同一档：30×30 热区 + 18px 图标。原来播放/暂停是 22、
+				// 这三颗是同一档：30×30 热区 + playerIconSize。原来播放/暂停是 22、
 				// 刷新 19、音量又套了个 24 的框，三个排在一起大小不齐。
 				playIcon := iconPlay
 				if a.Playing {
@@ -531,8 +531,8 @@ func (a *App) playerControls(c *ui.Context) {
 				}
 				// 播放键在错误态交给 togglePlayback 走显式重试，避免出现
 				// 「图标翻了、画面不动」的死键。
-				a.playerIconBtn(c, playIcon, 18, false, playLabel, a.togglePlayback)
-				a.playerIconBtn(c, iconSync, 18, false, "重新加载", a.retryStream)
+				a.playerIconBtn(c, playIcon, playerIconSize, false, playLabel, a.togglePlayback)
+				a.playerIconBtn(c, iconSync, playerIconSize, false, "重新加载", a.retryStream)
 
 				a.volumeControl(c, m)
 			})
@@ -555,21 +555,10 @@ func (a *App) playerControls(c *ui.Context) {
 						&a.Line, &a.LineOpen, &a.LineHover, a.pickLine)
 				}
 
-				// 弹幕组：开关 / 设置 / 屏蔽词，组内 gap 10，
-				// 和外层几个控件之间才是 12（窄屏 8）。
-				ui.Row(c).Gap(m.danmuGap).AlignItems(ui.Center).Children(func() {
-					danmuIcon := iconDanmuOff
-					if a.DanmuOn {
-						danmuIcon = iconDanmu
-					}
-					danmuLabel := "开启弹幕"
-					if a.DanmuOn {
-						danmuLabel = "关闭弹幕"
-					}
-					a.playerIconBtn(c, danmuIcon, 18, a.DanmuOn, danmuLabel, func() {
-						a.DanmuOn = !a.DanmuOn
-						a.markDirty()
-					})
+				// 弹幕组：开关 / 设置 / 屏蔽词；三颗和外层用同一个 gap，
+				// 整条控制条只有一个节奏（12，窄屏 8）。
+				ui.Row(c).Gap(m.rightGap).AlignItems(ui.Center).Children(func() {
+					a.danmuToggleButton(c)
 					a.danmuSettingsButton(c)
 					a.danmuFilterButton(c)
 				})
@@ -579,7 +568,7 @@ func (a *App) playerControls(c *ui.Context) {
 				if a.miniOpen() {
 					pipLabel = "退出小窗"
 				}
-				a.playerIconBtn(c, iconPip, 18, a.miniOpen(), pipLabel, a.togglePip)
+				a.playerIconBtn(c, iconPip, playerIconSize, a.miniOpen(), pipLabel, a.togglePip)
 
 				// 窗口全屏：铺满应用窗口、任务栏仍可见。
 				// 和右边的系统全屏是两件事，但两者互斥：进来一个就退掉另一个，
@@ -595,7 +584,7 @@ func (a *App) playerControls(c *ui.Context) {
 				if a.WinFull {
 					winFullLabel = "退出窗口全屏"
 				}
-				a.playerIconBtn(c, winFullIcon, 18, a.WinFull, winFullLabel, a.toggleWinFull)
+				a.playerIconBtn(c, winFullIcon, playerIconSize, a.WinFull, winFullLabel, a.toggleWinFull)
 
 				isFull := a.Win != nil && a.Win.IsFullScreen()
 				fullIcon := iconFullscreen
@@ -606,32 +595,42 @@ func (a *App) playerControls(c *ui.Context) {
 				if isFull {
 					fullLabel = "退出全屏"
 				}
-				a.playerIconBtn(c, fullIcon, 18, isFull, fullLabel, a.toggleFullscreen)
+				a.playerIconBtn(c, fullIcon, playerIconSize, isFull, fullLabel, a.toggleFullscreen)
 			})
 		})
 	})
 }
 
+// 控制条图标按「墨迹高度」对齐，不是按字号。
+//
+// playerIconSize 是控制条图标的字号，只有这一档。
+//
+// 字形之间的墨迹差异已经在图标层解决了（见 icons.go 的 fitIcon）：每颗
+// 都归一到同一个墨迹高度和同一个描边粗细，所以这里给同一个字号就够。
+// 以前这里是 24 / 26 两档，靠给矮字形放大字号来补齐墨迹——代价是描边
+// 跟着粗 10%，一排里粗细不齐，而且换图标就得重量一次。
+const playerIconSize float32 = 24
+
 // controlMetrics 是控制条在当前窗口宽度下的尺寸。
 //
 // 控制条的尺寸分 @media (max-width: 1100px) / (max-width: 980px) 两档：
-// 窄一档间距 12/10 收到 8/8、滑条 96 收 90；再窄一档滑条 72，
+// 窄一档间距 12 收到 8、滑条 96 收 90；再窄一档滑条 72，
 // 并且百分比整个让位，免得控制条被挤到换行。
 type controlMetrics struct {
-	leftGap, rightGap, danmuGap float32
-	volumeW                     float32
-	showPercent                 bool
+	leftGap, rightGap float32
+	volumeW           float32
+	showPercent       bool
 }
 
 func metricsFor(c *ui.Context) controlMetrics {
-	m := controlMetrics{leftGap: 12, rightGap: 12, danmuGap: 10, volumeW: 96, showPercent: true}
+	m := controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, showPercent: true}
 	winW, _ := c.Size()
 	switch {
 	case winW <= 980:
-		m.leftGap, m.rightGap, m.danmuGap = 8, 8, 8
+		m.leftGap, m.rightGap = 8, 8
 		m.volumeW, m.showPercent = 72, false
 	case winW <= 1100:
-		m.leftGap, m.rightGap, m.danmuGap = 8, 8, 8
+		m.leftGap, m.rightGap = 8, 8
 		m.volumeW = 90
 	}
 	return m
@@ -655,7 +654,7 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 		if a.Volume <= 0 {
 			muteLabel = "取消静音"
 		}
-		a.playerIconBtn(c, muteIcon, 18, false, muteLabel, a.toggleMute)
+		a.playerIconBtn(c, muteIcon, playerIconSize, false, muteLabel, a.toggleMute)
 
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
 			Cursor(ui.CursorPointer).Label("音量")
@@ -723,7 +722,7 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 // 选项 8×12 padding、13px，选中项 accent 字 + accent 24% 底 + 勾。
 // hoverClose 是 hover 触发浮层的关门计时。
 //
-// 下拉和设置面板都是 onMouseEnter 打开、
+// 清晰度和线路两个下拉是 onMouseEnter 打开、
 // onMouseLeave 排一个 220ms 的定时器关闭，指针从按钮移到面板上会 cancelClose。
 // MyGo 没有可取消的定时器，就记「最后一次确认离开」的时刻：按钮和面板
 // 都不 hover 时开始计时，到点后的第一帧关门。
@@ -877,16 +876,22 @@ func (a *App) playerIconBtn(c *ui.Context, ico *ui.SVG, size float32, active boo
 	if btn.Clicked() {
 		on()
 	}
-	col := playerIcon
-	switch {
-	case active:
-		col = theme.Accent
-	case btn.Hovered():
-		col = playerIconOn
-	}
+	col := playerIconColor(btn, active)
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(size).TextColor(col)
 	})
+}
+
+// playerIconColor 是控制条图标的三态颜色：激活走主题色、hover 纯白、
+// 其余常态。弹幕电视控件要单独给徽标取色，所以从 playerIconBtn 里提出来。
+func playerIconColor(btn ui.Element, active bool) ui.Color {
+	switch {
+	case active:
+		return theme.Accent
+	case btn.Hovered():
+		return playerIconOn
+	}
+	return playerIcon
 }
 
 // 滚轮调音量的灵敏度：一格滚轮（Windows 默认 3 行 × 33 DIP ≈ 100 DIP）5%，

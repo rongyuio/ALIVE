@@ -185,7 +185,7 @@ func installerScript(c *Config, out, exe, files, icon, signing string) (string, 
 	if err != nil {
 		return "", err
 	}
-	languages, err := nsisLanguageMacros(langs)
+	languages, err := nsisLanguageMacros(langs, c.windowsName())
 	if err != nil {
 		return "", err
 	}
@@ -408,8 +408,11 @@ func nsisCloseApp(c *Config) string {
 		}
 	}
 	command := `'"$1" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create([IO.File]::ReadAllText($$env:MYGO_APP_SCRIPT)))"'`
-	running := nsisString(c.windowsName() + " is running. Close it to continue?")
-	stuck := nsisString(c.windowsName() + " is still running. Quit it, then try again.")
+	// ALIVE 本地补丁：文案走 LangString，见 nsisLanguageMacros。这里不能过
+	// nsisString——它会把 $ 转义成 $$，NSIS 就会把 "$(MYGO_APP_RUNNING)"
+	// 原样打出来。
+	running := `"$(MYGO_APP_RUNNING)"`
+	stuck := `"$(MYGO_APP_STUCK)"`
 	var out strings.Builder
 	for _, prefix := range []string{"", "un."} {
 		out.WriteString(`; Quits the app running from the folder on the stack.

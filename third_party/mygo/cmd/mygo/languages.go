@@ -291,7 +291,28 @@ func nsisLanguage(tag string) (string, bool) {
 // the one of the system's language.
 // It is English alone for an app that ships no languages. A language NSIS
 // has no language file of fails the build, as it would fail makensis.
-func nsisLanguageMacros(langs []appLanguage) (string, error) {
+// ALIVE 本地补丁（上游没有）：安装器里「应用正在运行」的两句提示原来写死
+// 英文，声明了语言的安装包只有向导是中文、弹框还是英文。这里把它们做成
+// LangString，按应用声明的语言取翻译，没有的语言退回英文。升级 MyGo 时
+// 这处要一起搬回去（见 doc/reference/mygo.md）。
+var installerTexts = map[string][2]string{
+	"en":      {"%s is running. Close it to continue?", "%s is still running. Quit it, then try again."},
+	"ja":      {"%s が実行中です。終了して続行しますか？", "%s はまだ実行中です。終了してから、もう一度お試しください。"},
+	"zh-Hans": {"%s 正在运行，关闭后继续？", "%s 仍在运行，请先退出再重试。"},
+	"zh-Hant": {"%s 正在執行，關閉後繼續？", "%s 仍在執行，請先結束再重試。"},
+}
+
+// installerText returns the installer's own message 0 or 1 (running, stuck)
+// in tag, with the app's name, in English where MyGo has no translation.
+func installerText(tag string, n int, app string) string {
+	t, ok := installerTexts[i18n.Normalize(tag)]
+	if !ok {
+		t = installerTexts["en"]
+	}
+	return fmt.Sprintf(t[n], app)
+}
+
+func nsisLanguageMacros(langs []appLanguage, app string) (string, error) {
 	if len(langs) == 0 {
 		langs = []appLanguage{{Tag: "en"}}
 	}
@@ -312,6 +333,8 @@ func nsisLanguageMacros(langs []appLanguage) (string, error) {
 			label = l10n.Catalog.Format(l.Tag, "desktopShortcut", nil)
 		}
 		fmt.Fprintf(&labels, "LangString MYGO_DESKTOP_SHORTCUT ${LANG_%s} %s\n", strings.ToUpper(name), nsisString(label))
+		fmt.Fprintf(&labels, "LangString MYGO_APP_RUNNING ${LANG_%s} %s\n", strings.ToUpper(name), nsisString(installerText(l.Tag, 0, app)))
+		fmt.Fprintf(&labels, "LangString MYGO_APP_STUCK ${LANG_%s} %s\n", strings.ToUpper(name), nsisString(installerText(l.Tag, 1, app)))
 	}
 	b.WriteString(labels.String())
 	return b.String(), nil

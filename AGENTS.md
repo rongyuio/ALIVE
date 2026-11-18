@@ -27,7 +27,8 @@ ALIVE 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.c
 - `third_party/mygo/` 是 replace 到本地的上游源码，**不是纯净上游**。相对上游的漂移：
   `plugins/video`（播放、vid 开关，移植自未合的 PR #124）、`plugins/internal`、`media/`、
   `scene/`（引擎契约的导出）是本地的，`ui/engine_export.go` 是本地的单文件补丁（给
-  `VideoPlayer` 补 `Engine()`）。都有注释说明为什么。`internal/raster` 的重叠区像素修复
+  `VideoPlayer` 补 `Engine()`），`cmd/mygo/nsis.go` 把安装器的「应用正在运行」提示
+  改成了 LangString。都有注释说明为什么。`internal/raster` 的重叠区像素修复
   上游 v0.10.0 已合，本地不再需要。
 - `third_party/mpv/` 是 libmpv 运行库与头文件，运行时 `LoadLibrary` 加载，不是链接期依赖。
 - `resources/icon.png` 要正方形：Windows 只取到 256，源图 ≥256 即可（全部缩小，不糊）；

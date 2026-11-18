@@ -89,12 +89,11 @@ type App struct {
 	QualityOpen bool
 	Line        string
 	LineOpen    bool
-	// 这三个浮层是 hover 触发的（onMouseEnter 开、onMouseLeave 排一个 220ms
-	// 后关的定时器），
-	// hoverLeft 记指针最后一次离开按钮和面板的时刻。
-	QualityHover       hoverClose
-	LineHover          hoverClose
-	DanmuSettingsHover hoverClose
+	// 清晰度和线路两个下拉是 hover 触发的（onMouseEnter 开、onMouseLeave
+	// 排一个 220ms 后关的定时器），hoverLeft 记指针最后一次离开按钮和面板
+	// 的时刻。弹幕设置面板不是：它有滑杆和取色器，只认点击。
+	QualityHover hoverClose
+	LineHover    hoverClose
 	// Mini 是小窗播放的独立窗口；nil 表示没开小窗
 	Mini *mygo.Window
 	// media 是播放页的媒体层：转封装 + 播放器 + 弹幕连接。

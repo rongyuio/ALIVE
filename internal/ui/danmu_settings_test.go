@@ -68,21 +68,60 @@ func TestDanmuColorWellKeepsSettingsOpen(t *testing.T) {
 		t.Fatal("点色块没有打开取色器")
 	}
 
-	// 指针挪到画面上：设置面板的 hover 已经失效，取色器开着就必须豁免关门。
+	// 指针挪到画面上并等过 hover 关门那 220ms：两个面板都不该动。
+	// 设置面板现在是点击触发，任何悬停状态都不参与开关。
 	tt.Move(600, 300)
 	tt.Advance(600 * time.Millisecond)
 	tt.Frame()
 	if !app.DanmuSettingsOpen || !app.DanmuColorOpen {
-		t.Fatalf("指针离开设置面板后取色器被关了（设置面板 %v，取色器 %v）",
+		t.Fatalf("指针离开后浮层被关了（设置面板 %v，取色器 %v）",
 			app.DanmuSettingsOpen, app.DanmuColorOpen)
 	}
 
-	// Esc 收掉取色器之后，设置面板回到原来的 hover 关门节奏。
+	// Esc 只收掉最上面那层取色器；设置面板是用户点开的，留着。
 	tt.Key(0, ui.KeyEscape)
 	tt.Advance(600 * time.Millisecond)
 	tt.Frame()
+	if app.DanmuColorOpen {
+		t.Fatal("Esc 没有收掉取色器")
+	}
+	if !app.DanmuSettingsOpen {
+		t.Fatal("Esc 收取色器时把设置面板一起关掉了")
+	}
+}
+
+// 弹幕设置面板只认点击：指针停在按钮上不该自己弹出来。
+//
+// 面板里有滑杆和取色器，hover 打开会在指针路过时打断操作；这条盯住
+// 「有人又把它接回 hoverClose」这种回退。
+func TestDanmuSettingsOpensOnClickOnly(t *testing.T) {
+	app := NewMockApp()
+	app.Player = app.Streamers[0]
+	app.Router.Push(routePlayer)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+
+	r, ok := tt.Find("弹幕设置")
+	if !ok {
+		t.Fatal("找不到弹幕设置按钮")
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Advance(600 * time.Millisecond)
+	tt.Frame()
 	if app.DanmuSettingsOpen {
-		t.Fatal("取色器关掉后，设置面板没有跟着收起来")
+		t.Fatal("指针悬停在弹幕设置上就打开了面板")
+	}
+
+	tt.ClickAt(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	if !app.DanmuSettingsOpen {
+		t.Fatal("点击弹幕设置没有打开面板")
+	}
+
+	// 再点一次收起来
+	tt.ClickAt(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	if app.DanmuSettingsOpen {
+		t.Fatal("再点一次弹幕设置没有收起面板")
 	}
 }
 

@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/egoist/mygo/ui"
+import (
+	"fmt"
+
+	"github.com/egoist/mygo/ui"
+)
 
 // lucide 的线性图标（24×24 网格、2px 描边、圆头圆角），
 // 路径与 lucide-react 是同一套，所以粗细和比例能直接对上。
@@ -14,18 +18,6 @@ func iconSVG(inner string) *ui.SVG {
 			inner + `</svg>`))
 }
 
-// iconFilled 是实心图标：外层就是 fill="currentColor"，没有描边。
-//
-// 播放/暂停是实心图标——`<Pause fill="currentColor" />`，矩形被填满；
-// 只写描边会细成两根线。MyGo 的 SVG 解析不认内层元素上的 fill 覆盖外层，
-// 所以只能整张图改成实心。
-func iconFilled(inner string) *ui.SVG {
-	return ui.MustParseSVG([]byte(
-		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" ` +
-			`stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">` +
-			inner + `</svg>`))
-}
-
 // iconSVGThin 和 iconSVG 一样，只是描边 1.8：窗口按钮那三个图标是手写的
 // 1.8 描边 SVG，不是 lucide 的 2。
 func iconSVGThin(inner string) *ui.SVG {
@@ -33,6 +25,46 @@ func iconSVGThin(inner string) *ui.SVG {
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
 			`stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">` +
 			inner + `</svg>`))
+}
+
+// ---------------------------------------------------------------- 墨迹归一
+
+// iconInkTarget / iconStroke 是播放页 chrome 那一排的统一度量：任何字形
+// 归一到这个墨迹高度、这个描边粗细，整排就只剩一个字号。
+//
+// 19.5 是被最宽的字形反推出来的：小窗是 22×18 的扁字形，等比放大到 20 高
+// 时宽正好 24.4，撑出 24 网格被裁；19.5 时宽 23.7，留在网格里。等比缩放
+// 必须保比例，所以上限由最宽的那个决定，不是随便取的一个整数。
+const (
+	iconInkTarget float32 = 19.5
+	iconStroke    float32 = 2
+)
+
+// fitIcon 把一个 lucide 字形归一到 iconInkTarget 高、iconStroke 粗。
+//
+// 做法是围绕网格中心 (12,12) 等比缩放，并把描边宽度反除——缩放会把笔画
+// 一起放大，不反除的话被放大 1.08 倍的喇叭会粗到 2.17。等比缩放保持宽高比，
+// 所以小窗本来就宽，归一后仍然宽：那是形状，不是误差。
+//
+// inkH 是这个字形原始的墨迹高，来自 lucide 的几何（24 网格）。换图标时
+// 重量一次，TestPlayerChromeInkNormalized 会告诉你数值对不对。
+func fitIcon(inner string, inkH float32) *ui.SVG {
+	return fitSVG(`fill="none"`, iconStroke, inner, inkH)
+}
+
+// fitFilledIcon 是实心版本的 fitIcon：播放 / 暂停是填满的字形，只写描边
+// 会细成两根线。
+func fitFilledIcon(inner string, inkH float32) *ui.SVG {
+	return fitSVG(`fill="currentColor"`, 1, inner, inkH)
+}
+
+func fitSVG(fill string, stroke float32, inner string, inkH float32) *ui.SVG {
+	k := iconInkTarget / inkH
+	return ui.MustParseSVG([]byte(fmt.Sprintf(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" %s `+
+			`stroke="currentColor" stroke-width="%.4f" stroke-linecap="round" stroke-linejoin="round">`+
+			`<g transform="translate(12 12) scale(%.5f) translate(-12 -12)">%s</g></svg>`,
+		fill, stroke/k, k, inner)))
 }
 
 // starPath 是 lucide Star 的原始路径（node_modules/lucide-react 同名文件）。
@@ -57,7 +89,7 @@ var (
 		`<path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/>` +
 			`<path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/>` +
 			`<rect width="6" height="10" x="16" y="12" rx="2"/>`)
-	iconSync    = iconSVG(`<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>`)
+	iconSync    = fitIcon(`<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>`, 20)
 	iconPalette = iconSVG(
 		`<circle cx="13.5" cy="6.5" r="0.5"/><circle cx="17.5" cy="10.5" r="0.5"/>` +
 			`<circle cx="8.5" cy="7.5" r="0.5"/><circle cx="6.5" cy="12.5" r="0.5"/>` +
@@ -119,32 +151,63 @@ var (
 	// 播放页 chrome
 	// 这两条是 lucide v1.72 的路径：play 是带圆角的填充三角形（不是 polygon），
 	// pause 的两根竖条是 5 宽、18 高、rx 1，比早先版本的 4×16 更粗。
-	iconPlay  = iconFilled(`<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>`)
-	iconPause = iconFilled(`<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>`)
+	iconPlay  = fitFilledIcon(`<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>`, 19)
+	iconPause = fitFilledIcon(`<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>`, 19)
 	// Maximize2：全屏 / 退出全屏
-	iconFullscreen = iconSVG(`<path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>`)
+	iconFullscreen = fitIcon(`<path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>`, 20)
 	// Maximize：窗口全屏（铺满应用窗口，不动系统窗口）
-	iconWinFull = iconSVG(`<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>`)
+	iconWinFull = fitIcon(`<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>`, 20)
 	// Minimize：窗口全屏的退出态。和 Maximize 是同一对四角图标（外扩 / 收拢）；
 	// 之前这里借用了 Minimize2，跟系统全屏的退出态撞成同一个形状。
-	iconWinShrink = iconSVG(`<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>`)
+	iconWinShrink = fitIcon(`<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>`, 20)
 	// Minimize2：系统全屏的退出态，和 Maximize2 是同一对斜箭头
-	iconMinimize2 = iconSVG(`<path d="m14 10 7-7"/><path d="M20 10h-6V4"/><path d="m3 21 7-7"/><path d="M4 14h6v6"/>`)
+	iconMinimize2 = fitIcon(`<path d="m14 10 7-7"/><path d="M20 10h-6V4"/><path d="m3 21 7-7"/><path d="M4 14h6v6"/>`, 20)
 	// PictureInPicture2：小窗播放
-	iconPip      = iconSVG(`<path d="M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4"/><rect width="10" height="7" x="12" y="13" rx="2"/>`)
-	iconDanmuOff = iconSVG(`<path d="M19 19H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.7.7 0 0 1 2 21.286V5a2 2 0 0 1 1.184-1.826"/><path d="m2 2 20 20"/><path d="M8.656 3H20a2 2 0 0 1 2 2v11.344"/>`)
-	// 弹幕开关的开启态是 <MessageSquare fill="currentColor" fillOpacity={0.18}>；
-	// MyGo 的 SVG 解析不认 fill-opacity，所以这里只有描边。
-	iconDanmu      = iconSVG(`<path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>`)
-	iconSettings2  = iconSVG(`<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>`)
+	iconPip = fitIcon(`<path d="M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4"/><rect width="10" height="7" x="12" y="13" rx="2"/>`, 18)
+	// 弹幕控件：电视机身去掉天线，屏幕里换成三条左对齐、逐条变短的横线，
+	// 右下角压一枚徽标（勾 / 禁止符 / 六边形 / 漏斗）。
+	//
+	// 徽标完全落在机身墨迹范围内：机身 18×18（描边 2，墨迹 20×20），徽标圆心
+	// 在 (17.2,17.2)、外径 9.6，正好收在 22 那道边里。之前徽标吊在机身外面，
+	// 合成墨迹比同排图标高 1-2px，上下边缘对不齐——一排看过去就是「大小不一」。
+	//
+	// 机身以 12 居中、墨迹 20×20，和 lucide 那几个（同样是 20×20）上下边对齐。
+	// 缺口用 mask 挖成圆的，圆心压在机身右下角上。
+	// 归一化用的是 is 那一套：mask 放进缩放组里，缺口跟着机身一起缩，
+	// 徽标（在 24 网格上画、不缩放）仍然压在洞口上。
+	iconDanmuTV = fitIcon(
+		`<mask id="danmu-tv-cut"><rect width="24" height="24" fill="#fff"/>`+
+			`<circle cx="17.2" cy="17.2" r="5" fill="#000"/></mask>`+
+			`<g mask="url(#danmu-tv-cut)"><rect x="3" y="3" width="18" height="18" rx="3"/>`+
+			`<path d="M5.4 8h6.4"/><path d="M5.4 11h4.8"/><path d="M5.4 14h3.2"/></g>`, 20)
+	// 开启：勾。颜色由 danmuTVIcon 单独给主题色，不跟机身走。
+	iconDanmuBadgeCheck = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
+			`stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">` +
+			`<path d="m13.8 16.8 2.5 2.5 4.1-4.9"/></svg>`))
+	// 关闭：禁止符。圆环和另外三枚徽标同一个外径。
+	iconDanmuBadgeOff = iconSVG(
+		`<circle cx="17.2" cy="17.2" r="3.6"/>` +
+			`<path d="M14.7 19.7 19.7 14.7"/>`)
+	// 设置：六边形描边 + 中心实心点（照例图，不是齿轮）。
+	iconDanmuBadgeSettings = iconSVG(
+		`<path d="M21.1 17.2 19.15 20.6 15.25 20.6 13.3 17.2 15.25 13.8 19.15 13.8 Z"/>` +
+			`<circle cx="17.2" cy="17.2" r="1.6" fill="currentColor" stroke="none"/>`)
+	// 屏蔽：实心漏斗。徽标只有 9px，描边漏斗的三条斜线在这个尺寸下会糊，
+	// 所以整块填满，只留一个短柄。
+	iconDanmuBadgeFilter = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
+			`stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+			`<path fill="currentColor" stroke="none" d="M12.5 12.7 H21.9 L18.6 17.2 V21.5 H16.4 V17.2 Z"/>` +
+			`</svg>`))
 	iconPlayerBack = iconSVG(`<path d="M18 6 6 18"/><path d="m6 6 12 12"/>`)
 	iconQRCode     = iconSVG(`<rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/>`)
 	iconFilter     = iconSVG(`<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>`)
 	// VolumeX / Volume1 / Volume2：v1.72 的喇叭是带圆角的一体路径，
 	// 早先版本那种「梯形 + 短线」在 19px 下转角是硬的。
-	iconVolumeMute = iconSVG(`<path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"/><path d="m16.5 14.5 5-5"/><path d="m16.5 9.5 5 5"/>`)
-	iconVolumeLow  = iconSVG(`<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/>`)
-	iconVolumeHigh = iconSVG(`<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>`)
+	iconVolumeMute = fitIcon(`<path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"/><path d="m16.5 14.5 5-5"/><path d="m16.5 9.5 5 5"/>`, 18)
+	iconVolumeLow  = fitIcon(`<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/>`, 18)
+	iconVolumeHigh = fitIcon(`<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>`, 18)
 
 	iconMinimize = iconSVGThin(`<path d="M6 12h12"/>`)
 	iconMaximize = iconSVGThin(`<rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/>`)

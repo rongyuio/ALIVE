@@ -32,8 +32,9 @@ const (
 
 // danmuSettingsButton 是控制台里的弹幕设置入口。
 //
-// 和清晰度 / 线路两个下拉一样是 hover 打开、离开 220ms 关
-// （触发条也是 onMouseEnter 开）。
+// 只有点击才开：面板里有滑杆和取色器，指针路过就弹出来会打断正在拖动的
+// 操作，也不像个能久留的面板。关闭交给 PopoverBase——点面板外面、按 Esc、
+// 再点一次按钮都收得回去。清晰度 / 线路那两个是纯选项列表，仍然是 hover。
 func (a *App) danmuSettingsButton(c *ui.Context) {
 	// 面板关着时取色浮层也一起收掉：它挂在面板子树里，留着开关状态，
 	// 下次打开面板会先莫名弹出一个取色器。
@@ -43,19 +44,10 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 	// 和其它控制条按钮同一套：30×30 无底色，只变色
 	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label("弹幕设置")
 	if btn.Clicked() {
-		a.DanmuSettingsHover.clicked(&a.DanmuSettingsOpen)
+		a.DanmuSettingsOpen = !a.DanmuSettingsOpen
 	}
-	a.DanmuSettingsHover.hover(c, btn.Hovered(), &a.DanmuSettingsOpen)
-	btn.Children(func() {
-		col := playerIcon
-		switch {
-		case a.DanmuSettingsOpen:
-			col = theme.Accent
-		case btn.Hovered():
-			col = playerIconOn
-		}
-		ui.Icon(c, iconSettings2).FontSize(16).TextColor(col)
-	})
+	col := playerIconColor(btn, a.DanmuSettingsOpen)
+	btn.Children(func() { danmuTVIcon(c, iconDanmuBadgeSettings, col, col) })
 
 	ui.PopoverBase(c, btn, &a.DanmuSettingsOpen, func(panel ui.Element) {
 		panel.Width(danmuPanelW).Padding(14, 16, 14, 16).Radius(16).
@@ -64,9 +56,6 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 			Shadow(0, 18, 40, 0, ui.RGBA(0, 0, 0, 0.4)).
 			Margin(0, 0, 10, 0).
 			AttachTo(btn, ui.AnchorTopRight, ui.AnchorBottomRight)
-		// 指针移进面板时取消关门计时。取色器是另一个浮层：指针挪过去就
-		// 离开了设置面板，不豁免的话 220ms 后会把面板连同取色器一起关掉。
-		a.DanmuSettingsHover.hover(c, panel.Hovered() || a.DanmuColorOpen || a.DanmuStrokeOpen, &a.DanmuSettingsOpen)
 		panel.Children(func() {
 			ui.Column(c).Gap(12).Children(func() {
 				a.danmuColorRow(c, "颜色", &a.DanmuColor, &a.DanmuColorOpen)

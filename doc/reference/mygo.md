@@ -76,7 +76,8 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
    `$(go env GOMODCACHE)/github.com/egoist/mygo@vX.Y.Z`
 2. `diff -rq third_party/mygo <新版本>`，把差异分成两类：
    - **我们的改动**：`media/`、`scene/`、`plugins/video/`、`plugins/internal/`、
-     `ui/engine_export.go`
+     `ui/engine_export.go`、`cmd/mygo/nsis.go`（安装器里「应用正在运行」的两句
+     提示改成 LangString——上游写死英文，声明了语言的安装包只有向导是中文）
    - **旧版遗留**：上游新版本已删掉的文件（比如 `website/showcase`），丢掉即可
 3. 把我们的改动移出去 → 整目录替换成新版本 → 再移回来
 4. 改 `go.mod` 的版本号，`go mod tidy`

@@ -11,7 +11,9 @@ import (
 )
 
 // 控制条的三档尺寸：
-// 常态 12/10/96，≤1100 间距收 8、滑条 90，≤980 滑条 72 且百分比让位。
+// 常态间距 12、滑条 96，≤1100 间距收 8、滑条 90，≤980 滑条 72 且百分比让位。
+// 间距只有一档：弹幕组曾经比别的控件紧 2px（10 对 12），整条控制条的节奏
+// 就多出一个看不出来但能感觉到的断点，现在全条统一。
 // 这几档是纯数值，用 tester 直接读，不依赖真实窗口。
 func TestControlMetrics(t *testing.T) {
 	cases := []struct {
@@ -19,12 +21,12 @@ func TestControlMetrics(t *testing.T) {
 		w, h int
 		want controlMetrics
 	}{
-		{"宽屏", 1440, 900, controlMetrics{12, 12, 10, 96, true}},
-		{"1101 仍是宽屏", 1101, 900, controlMetrics{12, 12, 10, 96, true}},
-		{"1100 收到第一档", 1100, 900, controlMetrics{8, 8, 8, 90, true}},
-		{"981 仍是第一档", 981, 900, controlMetrics{8, 8, 8, 90, true}},
-		{"980 收到第二档", 980, 900, controlMetrics{8, 8, 8, 72, false}},
-		{"最小窗口", 900, 600, controlMetrics{8, 8, 8, 72, false}},
+		{"宽屏", 1440, 900, controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, showPercent: true}},
+		{"1101 仍是宽屏", 1101, 900, controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, showPercent: true}},
+		{"1100 收到第一档", 1100, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 90, showPercent: true}},
+		{"981 仍是第一档", 981, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 90, showPercent: true}},
+		{"980 收到第二档", 980, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 72, showPercent: false}},
+		{"最小窗口", 900, 600, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 72, showPercent: false}},
 	}
 
 	for _, tc := range cases {
@@ -382,6 +384,64 @@ func TestPlayerShellCornerBorderIsContinuous(t *testing.T) {
 				t.Fatalf("scale %v：外壳左上角第 %d 行（角顶下 %d px）最亮只有 %d，圆角弧线断了",
 					scale, y, y-top, peak)
 			}
+		}
+	}
+}
+
+// iconInk 量一颗控制条按钮里亮像素的上下边（相对热区中心，单位 DIP）。
+func iconInk(t *testing.T, tt *ui.Tester, img *image.RGBA, name string) (top, bottom float32) {
+	t.Helper()
+	r, ok := tt.Find(name)
+	if !ok {
+		t.Fatalf("找不到「%s」", name)
+	}
+	top, bottom = 99, -99
+	for y := int(r.Y); y < int(r.Y+r.H); y++ {
+		for x := int(r.X); x < int(r.X+r.W); x++ {
+			c := img.RGBAAt(x, y)
+			if int(c.R)+int(c.G)+int(c.B) <= 120 {
+				continue
+			}
+			dy := float32(y) - (r.Y + r.H/2)
+			if dy < top {
+				top = dy
+			}
+			if dy > bottom {
+				bottom = dy
+			}
+		}
+	}
+	if bottom < top {
+		t.Fatalf("「%s」没有墨迹：采样坐标偏了", name)
+	}
+	return top, bottom
+}
+
+// 控制条上的图标必须在同一条上边、同一条下边上——「一样大」在视觉上就是这件事。
+//
+// lucide 各个字形的实际墨迹高度不一样：同样 24px，暂停、刷新是 20px，喇叭
+// 和小窗只有 18px。同一字号排在一条线上，上下边缘就参差 1-3px。所以字号按
+// 墨迹反推（见 playerIconSize / playerIconSizeTall），这条把结果钉住。
+func TestPlayerIconsShareInkBand(t *testing.T) {
+	app := NewMockApp()
+	app.Player = app.Streamers[0]
+	app.Router.Push(routePlayer)
+	app.DanmuOn = true
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	img := tt.Image()
+
+	const (
+		wantTop    = -10
+		wantBottom = 10
+		slack      = 1
+	)
+	for _, n := range []string{"暂停", "重新加载", "静音", "关闭弹幕", "弹幕设置", "弹幕屏蔽", "小窗播放", "窗口全屏", "全屏"} {
+		top, bottom := iconInk(t, tt, img, n)
+		if top < wantTop-slack || top > wantTop+slack {
+			t.Errorf("「%s」墨迹上边 %.1f，期望 %d±%d：和同排图标不在同一条上边", n, top, wantTop, slack)
+		}
+		if bottom < wantBottom-slack || bottom > wantBottom+slack {
+			t.Errorf("「%s」墨迹下边 %.1f，期望 %d±%d：和同排图标不在同一条下边", n, bottom, wantBottom, slack)
 		}
 	}
 }

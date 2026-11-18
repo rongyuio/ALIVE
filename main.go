@@ -15,6 +15,10 @@ import (
 
 	"alive/internal/media"
 	appui "alive/internal/ui"
+
+	// 目录里只有打包用的 mygo.* 文案，但导入它才会把应用的语言
+	// （zh-Hans）注册给 MyGo 和各个系统的本地化。
+	_ "alive/locales"
 )
 
 func main() {

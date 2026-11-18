@@ -5,5 +5,8 @@
   "out": "build",
   "resources": [
     "third_party/mpv/bin/libmpv-2.dll"
-  ]
+  ],
+  "i18n": {
+    "source": "zh-Hans"
+  }
 }

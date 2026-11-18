@@ -26,16 +26,8 @@ func (a *App) danmuFilterButton(c *ui.Context) {
 	if btn.Clicked() {
 		a.DanmuFilterOpen = !a.DanmuFilterOpen
 	}
-	btn.Children(func() {
-		col := playerIcon
-		switch {
-		case a.DanmuFilterOpen:
-			col = theme.Accent
-		case btn.Hovered():
-			col = playerIconOn
-		}
-		ui.Icon(c, iconFilter).FontSize(16).TextColor(col)
-	})
+	col := playerIconColor(btn, a.DanmuFilterOpen)
+	btn.Children(func() { danmuTVIcon(c, iconDanmuBadgeFilter, col, col) })
 
 	ui.PopoverBase(c, btn, &a.DanmuFilterOpen, func(panel ui.Element) {
 		panel.Width(danmuPanelW).Padding(14, 16, 14, 16).Radius(16).
