@@ -29,6 +29,11 @@ var (
 	Accent, AccentHover, AccentActive, AccentText ui.Color
 	AccentInk, AccentLine                         ui.Color
 	AccentSoft, AccentSofter, AccentGlow          ui.Color
+	// AccentOnInk 是强调色压在灵动岛的墨底上那一版。
+	//
+	// 前两支都对 BgPrimary 推导：浅色主题里它们被压深去当字/当线，压到墨底上
+	// 就什么都不剩。环要像光，就得有一支只对墨底负责的颜色。
+	AccentOnInk ui.Color
 
 	// 描边与分隔
 	Border, BorderStrong, Separator ui.Color
@@ -51,6 +56,16 @@ var (
 
 	// 封面上的人数胶囊：rgba(8,9,11,.78)
 	OverlayInk = ui.RGBA(8, 9, 11, 0.78)
+	// IslandInk 是灵动岛的底：纯黑，不跟配色走。
+	//
+	// 参照物是手机的屏幕挖孔——它永远比界面暗，因为它是硬件，不是卡片。
+	// 岛一旦跟着配色变浅，浅色主题里它就只是一块白底上的白片，只能靠描边
+	// 和半透明的「流光」找存在感；那两种都试过，最后都读成脏边。
+	// 黑底一铺，问题消失：字是亮的、环是亮的、影子有地方落。
+	IslandInk = ui.RGB(6, 7, 9)
+	// IslandTopLight 是墨岛顶部那 1px 受光边。岛不跟配色走，所以这条高光
+	// 也不能借 TopLight——浅色主题里那是一道极淡的墨线，压在黑底上看不见。
+	IslandTopLight = ui.RGBA(255, 255, 255, 0.06)
 	// 白色文字描边 / 高光
 	White90 = ui.RGBA(255, 255, 255, 0.90)
 	White94 = ui.RGBA(255, 255, 255, 0.94)

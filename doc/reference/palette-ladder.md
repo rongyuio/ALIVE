@@ -9,7 +9,7 @@
 |---|---|---|
 | 地 | `BgPrimary` | 窗口底、顶栏底 |
 | 托盘 | `SurfaceChrome` | 平台轨道、工具组、窗口按钮组——装一排控件的那层 |
-| 卡片 | `BgSecondary` | 直播间卡片、分区面板、灵动岛本体 |
+| 卡片 | `BgSecondary` | 直播间卡片、分区面板、浮层内容 |
 
 托盘不是手写的颜色，是**地和卡片在 L\* 上的中点**：
 `midpointL(ground, card)`。OKLCH 的 L 不等距，直接除以二会让深色主题的两段
@@ -40,6 +40,53 @@
   浅色主题里阴影单独撑不住边界），以及功能性边界（聚焦环）。
 - **功能性描边要 ≥3:1。** `Border` 对地只有 1.27:1，它不能单独承担"这里可点"。
 
+## 灵动岛：挖孔，不在阶梯上
+
+岛不参与地面/托盘/卡片的阶梯。它是恒定的 `IslandInk`（`#060709`），
+像手机的屏幕挖孔：永远比界面暗，因为它是硬件，不是卡片。
+
+一开始它跟卡片一样白、再补 1px 描边；后来改到托盘那一档，三种白并排，
+眼睛读不出层级。真正的解法不是再挑一档灰，而是换材质：黑底一铺，
+影子有地方落，环有地方发光，浅色主题也不必在半透明深色里假装有光。
+
+代价是岛上的令牌必须自洽：
+
+- 文字、图标、填充、描边走 `Media*`（压在内容上的墨），不借 `Fill*` / `Border`；
+- 环走 `AccentOnInk`——对墨底推导的第三支强调色，不跟 `AccentInk` / `AccentLine` 混用；
+- 顶部高光用 `IslandTopLight`，不用 `TopLight`。
+
+### 光环：一段弧，2 DIP，整颗岛一笔画完
+
+`islandRingInset = 0`、`islandBodyInset = 2`：整颗岛由 `islandGlow` 一笔
+实色 conic 渐变填出（弧外 `IslandInk`、弧内 `AccentOnInk`），body 从岛沿
+往里 2px 盖上墨面，露出 2px 宽的光带。**不拆成「环 + 底色」两层**：两层
+各抗一次锯齿，弧段上的边界像素就是「光 + 墨 + 顶栏」三色混合，比两侧都暗，
+浅色主题里是一道黑描边。`TestIslandSurfaceIsOneOpaqueFill` 要求所有停靠点
+不透明，`TestIslandOutlineHasNoDarkFringe` 沿岛沿逐像素检查。
+
+**不往岛外扩**——试过一半探出岛沿，浅色主题里外半圈画在顶栏白底上，paper
+的浅灰、parchment 的赭石直接消失，屏幕上又只剩岛内一条。
+
+剖面 `islandRingProfile` 两端回到纯墨，亮的只有约 18% 圆周的一段弧；热段
+`AccentOnInk` 对岛面 ≥4.5:1，尾巴用同一支色降 alpha，不混纯黑——混黑会在
+暗底上拖出灰边。
+
+余晖靠**拖影**：同宽、落后 12°、不透明度 0.38。它先和芯的 alpha 剖面合成，
+再一起换成实色停靠点（`islandGlowStops`），不单独占一层。不往外加宽
+（浅色主题会画到顶栏上），也不用 `Blur`（离屏层每帧重建，实测
+2.4ms → 44.7ms/帧）。
+
+角速度不是匀速：`islandSweep` 让头快、尾慢，回绕处速度连续。reduced motion
+下不转，弧停在固定角度。
+
+岛沿往里 2.5–4.5px 那一圈必须是墨，不是顶栏：岛面由那一笔铺满整个圆角盒，
+否则圆角裁剪会在胶囊两端按行露出顶栏。
+
+兜底：`TestIslandRingBandSitsInsideTheEdge`、`TestIslandRingIsAnArcNotARing`、
+`TestIslandSurfaceIsOneOpaqueFill`、`TestIslandOutlineHasNoDarkFringe`、
+`TestIslandRingEchoTrailsTheHead`、`TestIslandRingIsVisibleInEveryPalette`、
+`TestIslandRingHoldsStillWithReducedMotion`、`TestIslandEdgeIsInkNotBar`、
+`TestAccentOnInkIsVisible`。
 ## 之前是什么
 
 顶栏托盘用的是 `FillQuaternary`——那是**相对卡片**的浅填充。放到地上：
@@ -48,6 +95,7 @@
 - 深色主题里它跑到地上面（+4.8 个 OKLCH L），同一个托盘换主题就从凹槽变凸片。
 
 描边和填充同时存在，再加上中间那颗白色的灵动岛，一条 64 高的顶栏里有四种材质。
+岛不在阶梯上，另算一档墨面，见上面「灵动岛」一节。
 
 ## 没做的
 
@@ -58,3 +106,6 @@
   不和装饰边一起做。
 - **播放器外壳的描边。** `player.go` 那圈线参与圆角裁剪（`Clip` 裁 padding box），
   在 `container_test.go` 里以 `container: allow` 标注为例外。
+
+
+

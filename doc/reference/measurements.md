@@ -93,6 +93,30 @@ MYGO_FRAME_STATS=1 MYGO_UNCAPPED=1 ./build/e2e/alive-e2e.exe 2> frame.log
 要更准的数字，得固定同一个房间、同一段画面，并取更多轮。这次没有，因为
 结论已经是"远没到需要担心的量级"。
 
+### 灵动岛流光：真窗口量不到成本（2026-11-20）
+
+岛上的 `Loop` 每帧重画。这一组数是 2026-11-20 早些时候量的：当时环 + 拖影是
+两层面具（mask）叠出来的；同一天改成了一笔实色 conic 填色（见
+[decisions/0006](../decisions/0006-palette-ladder.md)「光环」一节），mask 那两面
+没了，量级只会更小，没有重测。真窗口、真实 GPU 上量一遍：
+
+```sh
+MYGO_FRAME_STATS=1 MYGO_UNCAPPED=1 build/e2e/alive-e2e.exe 2> frame.log
+```
+
+条件：Windows 11，Ryzen 7 9700X，RX 9070 XT，1440×900，首页（时钟岛，流光
+常驻），连续 8 秒采样。
+
+| 采样 | ms/帧 |
+|---|---|
+| 最低 | 1.35 |
+| 中位 | 2.22 |
+| 最高 | 2.32 |
+
+离屏 Tester 的 A/B（带环 2.38ms / 把 `islandRing` 短路 2.47ms）本来就在噪声
+里；真窗口这个数同样远低于 16.7ms。**结论：两层 mask 不值得优化，但 `Blur`
+不值得用**——同一台机器上余晖改成 `.Blur()` 后离屏均值 44.7ms/帧，那是另一个
+量级，见 [decisions/0006](../decisions/0006-palette-ladder.md)。
 ## 现行实现：libmpv（2026-11-16）
 
 播放主路径是 libmpv 的软件渲染（[decisions/0004](../decisions/0004-libmpv.md)）。

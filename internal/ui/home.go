@@ -1315,6 +1315,16 @@ func (a *App) platformTabs(c *ui.Context) {
 							tab.Opacity(0.35)
 						}
 					}
+					// 未选中的 tab 悬停时铺一块 FillTertiary：右侧工具组和
+					// 窗口按钮用的是同一支，两边都坐在同一种 SurfaceChrome
+					// 托盘里。以前这里只把字色提亮，整颗胶囊是空的，看起来
+					// 和右边不是一套语言。
+					//
+					// 选中项不叠底：它的底由 Accent 滑块画，tab 压在上面
+					// （ZIndex 1），再铺一层就把滑块盖掉了。
+					if idx != selected && tab.Hovered() {
+						tab.Background(theme.FillTertiary)
+					}
 					tab.Children(func() {
 						col := theme.TextTertiary
 						if idx == selected {

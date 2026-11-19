@@ -35,6 +35,7 @@ type Palette struct {
 	// 浅色主题里青柠压在白底上只有 1.1:1，这两个版本是同一支色的两种用途。
 	AccentInk    ui.Color
 	AccentLine   ui.Color
+	AccentOnInk  ui.Color
 	AccentSoft   ui.Color
 	AccentSofter ui.Color
 	AccentGlow   ui.Color
@@ -46,6 +47,13 @@ type Palette struct {
 	// TopLight 是平涂表面顶部那 1px 受光边；深色主题是白，浅色主题是极淡的墨色。
 	TopLight ui.Color
 }
+
+// islandRingMin 是流光热段对岛面的最低对比度。
+//
+// WCAG §1.4.11 对非文字图形要 3:1，但那条是按「静止的边界」写的。这里是一道
+// 2 DIP 宽、一直在动的弧：移动 + 细，两个因素都会压低可感知对比，所以往上
+// 留一档，取 4.5——和正文同一档，不是随手加严。
+const islandRingMin = 4.5
 
 // spec 是生成一套配色的全部输入，单位都是 Oklch 的 L 与 C、h。
 //
@@ -266,6 +274,21 @@ func (s spec) buildWith(l ladder) Palette {
 	// 同一支色的两个"可用"版本：当字和当线。
 	p.AccentInk = withContrast(s.AccentL, s.AccentC, s.AccentH, p.BgPrimary, l.accentInkMin, s.Dark)
 	p.AccentLine = withContrast(s.AccentL, s.AccentC, s.AccentH, p.BgPrimary, l.accentLineMin, s.Dark)
+	// 第三支：压在灵动岛的墨底上。
+	//
+	// 前两支都是对 BgPrimary 推导的：浅色主题里它们被压深过去当字/当线，
+	// 压到 #060709 上等于消失——环不是「颜色不够亮」，是根本没有光。
+	// 墨底是恒定的暗面，所以这一支永远往亮里走；深色主题里品牌色本来就
+	// 够亮，withContrast 会原样返回它。
+	//
+	// 有一类配色的强调色本身就是「深墨」（paper 的近黑）。直接按对比度往上推，
+	// 得到的是 #5f6064 这种中灰：压在黑底上既不亮也不暗，读起来是脏的。
+	// 这类配色把明度翻过来——在亮底上当墨的那一支，在墨底上就当光。
+	inkL := s.AccentL
+	if inkL < 0.35 {
+		inkL = 1 - inkL
+	}
+	p.AccentOnInk = withContrast(inkL, s.AccentC, s.AccentH, IslandInk, islandRingMin, true)
 	p.AccentSoft = withAlpha(p.Accent, 0.12)
 	p.AccentSofter = withAlpha(p.Accent, 0.07)
 	p.AccentGlow = withAlpha(p.Accent, 0.20)
@@ -465,6 +488,7 @@ func Apply(id string) {
 	Accent, AccentHover, AccentActive = p.Accent, p.AccentHover, p.AccentActive
 	AccentText, AccentInk = p.AccentText, p.AccentInk
 	AccentLine = p.AccentLine
+	AccentOnInk = p.AccentOnInk
 	AccentSoft, AccentSofter, AccentGlow = p.AccentSoft, p.AccentSofter, p.AccentGlow
 	Border, BorderStrong, Separator = p.Border, p.BorderStrong, p.Separator
 	StatusOffline = p.StatusOffline

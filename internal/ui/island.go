@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -11,12 +12,20 @@ import (
 	"alive/internal/theme"
 )
 
-// 光环的几何：容器带 1px 描边，::before inset:-1px + padding:2px，
-// 环压在描边上并向外扩 1px。本体让出环的内侧 1px。
+// 光面的几何：整颗岛由同一笔实色渐变换出，body 从里侧盖上。
+//
+// 岛沿是圆角胶囊，直边上的抗锯齿恰好落在像素格里，弧段上却是半覆盖。
+// 以前墨底是一个圆角 Background，流光另画一层、带宽遮罩的外沿又压在同一
+// 条圆周上——两条边各自抗一次锯齿，弧段上的边界像素就成了「光 × a +
+// 墨 × 墨覆盖 + 顶栏 × 余下」，比两侧都暗。浅色主题里最清楚：黑岛白栏
+// 之间那道弧被描了一圈黑边。
+//
+// 现在整颗岛只由 islandGlow 这一笔填色画出（弧外是岛墨、弧内是强调色，
+// 拖影预先混进同一条色带），岛沿只抗一次锯齿。环的内沿交给 body：它从
+// 岛沿往里 2px 处盖上墨面，那一条两边都是墨，不会再混出第三种颜色。
 const (
-	islandRingInset float32 = -1
-	islandRingPad   float32 = 2
-	islandBodyInset float32 = 1
+	islandRingInset float32 = 0
+	islandBodyInset float32 = 2
 )
 
 // 播放页信息岛的尺寸。
@@ -74,20 +83,20 @@ const islandTop = (theme.NavbarHeight - theme.IslandH) / 2
 // 一截弧。取整到 8 而不是逐像素卡边界——边界上会一帧有一帧无。
 const islandLiveDotRoom float32 = 8
 
-// islandContentH 是岛的内容区高度：岛高减掉外层 1px 描边，再减掉 body 的
-// 1px 内缩，上下各一份。38 - 2×1 - 2×1 = 34。
-const islandContentH float32 = theme.IslandH - 2 - 2*islandBodyInset
+// islandContentH 是岛的内容区高度：岛高减掉 body 的 2px 内缩，上下各一份。
+// 38 - 2×2 = 34。岛没有描边，那 2px 全部让给了环带。
+const islandContentH float32 = theme.IslandH - 2*islandBodyInset
 
 // islandListenAvatar 是后台收听态里那颗头像的直径，正好填满内容区。
 //
-// 必须取 34，不是 36。取 36 会在上下左右各溢出 1px，被 body 切掉——圆的
-// 四条边各有一段直线，收缩收尾那一帧裁切量骤变，看起来就是「缩成圆以后
-// 头像跳了一下」。
+// 必须正好等于内容区：小 1px 会在圆形态里露出一圈岛底，大 1px 会被 body
+// 切掉——圆的四条边各有一段直线，收缩收尾那一帧裁切量骤变，看起来就是
+// 「缩成圆以后头像跳了一下」。
 const islandListenAvatar float32 = islandContentH
 
 // islandPlayerAvatar 是播放页展开态里那颗头像的直径。
 //
-// 比后台收听那颗小 2：展开态的岛是整条，头像左边贴着岛沿、右边接标题和
+// 比后台收听那颗小 4：展开态的岛是整条，头像左边贴着岛沿、右边接标题和
 // 关注键，上下留一点呼吸。内容区 34，32 上下各留 1。
 const islandPlayerAvatar float32 = theme.IslandH - 6
 
@@ -154,9 +163,7 @@ func (a *App) Island(c *ui.Context) {
 	// 高度恒为 theme.IslandH（38），和首页那枚眼睛岛一模一样。
 	// 展开只让宽度往两边长，高度一像素都不动——这是灵动岛的死规矩。
 	island := ui.Box(c.Key("island")).Label("灵动岛").Absolute().Top(islandTop).
-		Height(theme.IslandH).Radius(theme.RadiusFull).
-		// 这颗岛带 1px 描边，光环正压在这条描边上
-		Border(1, theme.Border)
+		Height(theme.IslandH).Radius(theme.RadiusFull)
 
 	// 收缩用 Smooth、展开用 Snappy。
 	//
@@ -190,26 +197,27 @@ func (a *App) Island(c *ui.Context) {
 	// 和浮层用的 ShadowPopover/ShadowLg 是两套语言。
 	island.Shadow(0, 24, 56, -28, theme.ShadowModal).
 		Shadow(0, 4, 14, 0, theme.ShadowContact).
-		InsetShadow(0, 1, 0, 0, theme.TopLight)
+		InsetShadow(0, 1, 0, 0, theme.IslandTopLight)
 
 	island.Children(func() {
-		// 两种环，按状态分（见 islandRings）：
+		// 两种光，按状态分（见 islandRings）：
 		//
 		//	首页 / 播放页    conic 流光——表达「这是活的界面」
 		//	后台收听         主题色呼吸环——表达「这一路还在放」
+		//
+		// 光面必须**每一帧都画**：它就是岛的墨底本身。收听态 ring=0 时
+		// 色带整条是墨，岛照样有形状；不画的话岛就只剩呼吸环那一圈。
 		ring, breath := islandRings(player, listening, islandMorph(w, openW))
-		if ring > 0 {
-			a.islandRing(c, theme.RadiusFull, ring)
-		}
+		a.islandGlow(c, theme.RadiusFull, ring)
 		if breath > 0 {
 			a.islandBreath(c, breath)
 		}
 
-		// ---------- 本体：环内侧缩进 1px，和环做成兄弟节点
+		// ---------- 本体：从环的内沿接上，和环做成兄弟节点
 		body := ui.Box(c).Absolute().Top(islandBodyInset).Left(islandBodyInset).
 			Right(islandBodyInset).Bottom(islandBodyInset).
 			Radius(theme.RadiusFull - islandBodyInset).
-			Background(theme.BgSecondary)
+			Background(theme.IslandInk)
 		body.ClipInset(0, 0, 0, 0, theme.RadiusFull-islandBodyInset)
 
 		body.Children(func() {
@@ -228,7 +236,7 @@ func (a *App) Island(c *ui.Context) {
 // 节奏照抄全部关注页那颗在线点的 livePulse（2 秒一循环），只是颜色取主题
 // 强调色——这里的语义是「还在放」，不是「在线」。
 //
-// 环带比顶部那圈 conic 流光细一半（1.5 而不是 2）：流光是一整圈的装饰，
+// 环带比顶部那圈 conic 流光细一点（1.5 而不是 2）：流光是一整圈的装饰，
 // 呼吸环只在边缘提示一下，粗了会抢头像。
 //
 // 必须是「描边环」而不是实心块：body 在它之后画，实心块会被整个盖住，
@@ -242,7 +250,9 @@ func (a *App) islandBreath(c *ui.Context, alpha float32) {
 		Top(islandRingInset).Left(islandRingInset).
 		Right(islandRingInset).Bottom(islandRingInset).
 		Radius(theme.RadiusFull).Padding(islandBreathPad)
-	ring.Background(theme.AccentLine).Masks(
+	// 颜色取 AccentOnInk：这圈也画在墨底上。AccentLine 是对 BgPrimary 推的，
+	// 浅色主题里它是压深过的橄榄绿，压在 #060709 上读不出「在放」。
+	ring.Background(theme.AccentOnInk).Masks(
 		ui.Mask{Image: solid, Box: ui.MaskContentBox, Composite: ui.MaskExclude},
 		ui.Mask{Image: solid},
 	)
@@ -358,7 +368,7 @@ func islandPlayerContentW(c *ui.Context, s Streamer, winW float32) float32 {
 
 // islandPlayerWidth 把量出的两行文字宽度换成岛的目标宽度。
 //
-// 组成：岛 1px 描边 × 2 + 左右内边距 + 头像 + 两段间距 + 较宽的那行文字 +
+// 组成：body 内缩 × 2 + 左右内边距 + 头像 + 两段间距 + 较宽的那行文字 +
 // 文字缓冲 + 关注键。结果再钳进 [下限, 上限] 和窗口一半：顶栏两侧还有平台
 // tab 与图标格，岛不能把它们盖掉；内容再短也不能缩到文字列只剩一条缝。
 //
@@ -449,10 +459,10 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 		Justify(ui.Center).Gap(2)
 	text.Children(func() {
 		ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
-			SingleLine().TextColor(theme.TextPrimary).LineHeight(1.3)
+			SingleLine().TextColor(theme.MediaText).LineHeight(1.3)
 		ui.Text(c, islandPlayerMeta(s)).
 			FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
-			TextColor(theme.TextTertiary)
+			TextColor(theme.MediaTextDim)
 	})
 
 	// 关注：纯图标，不带文字。头像右下角那个绿点已经说明在播，这里
@@ -469,15 +479,17 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 		btn.Background(theme.StatusOnline.Alpha(0.16)).
 			Border(1, theme.StatusOnline.Alpha(0.34))
 	} else {
-		btn.Background(theme.FillTertiary).Border(1, theme.Border)
+		// 岛是墨底，不能用相对地面推导的 Fill/Border：浅色主题里那是近白的
+		// 填充，白星压上去就没了。用「压在图上的墨」那一族。
+		btn.Background(theme.MediaRow).Border(1, theme.MediaRowLine)
 		if btn.Hovered() {
-			btn.Background(theme.FillSecondary).BorderColor(theme.BorderStrong)
+			btn.Background(theme.MediaHair).BorderColor(theme.MediaHairStrong)
 		}
 	}
 	if btn.Clicked() {
 		a.toggleFollow(s)
 	}
-	col := theme.TextPrimary
+	col := theme.MediaText
 	if followed {
 		col = theme.StatusOnline
 	}
@@ -541,7 +553,7 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive boo
 		ui.Box(c).Size(size, size).Radius(size / 2).
 			Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().Children(func() {
 			ui.Text(c, initial(s.Name)).FontSize(size * 0.36).FontWeight(600).
-				TextColor(theme.TextSecondary)
+				TextColor(theme.MediaTextBody)
 		})
 	}
 	if !showLive || !s.Live {
@@ -581,7 +593,7 @@ func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32, showLive boo
 		ring.Opacity(alpha)
 	}
 	ui.Box(c).Absolute().Left(size-d+1).Top(size-d+1).Size(d, d).Radius(d/2).
-		Background(theme.StatusOnline).Border(2, theme.BgSecondary)
+		Background(theme.StatusOnline).Border(2, theme.IslandInk)
 }
 
 // islandPill 是首页态：一枚 24 小时制的数字时钟，hover 不改变任何内容。
@@ -641,7 +653,7 @@ func (a *App) clockDigits(c *ui.Context, now time.Time, text, slot string) {
 			// 看起来是「整块滑进来」，不是翻牌。
 			if c.Preferences().ReduceMotion {
 				ui.Text(c, ch).Font(FontClock).FontSize(clockFontSize).
-					FontWeight(600).TextColor(theme.TextPrimary).SingleLine()
+					FontWeight(600).TextColor(theme.MediaText).SingleLine()
 				return
 			}
 			// 进度直接用时间算，不走 Keyframes。
@@ -660,7 +672,7 @@ func (a *App) clockDigits(c *ui.Context, now time.Time, text, slot string) {
 			mid := (clockDigitH - clockTextH) / 2
 			// 新数字：从下方升到正中。
 			ui.Text(c, ch).Font(FontClock).FontSize(clockFontSize).
-				FontWeight(600).TextColor(theme.TextPrimary).SingleLine().
+				FontWeight(600).TextColor(theme.MediaText).SingleLine().
 				Absolute().Top(mid).Translate(0, d*clockDigitH)
 			// 旧数字：从正中升出窗口上方。
 			// 必须是**上一个**字符，不是当前这个——两层用同一个字符的话，
@@ -670,7 +682,7 @@ func (a *App) clockDigits(c *ui.Context, now time.Time, text, slot string) {
 				prev = string(rune(ch[0] - 1))
 			}
 			ui.Text(c, prev).Font(FontClock).FontSize(clockFontSize).
-				FontWeight(600).TextColor(theme.TextPrimary).SingleLine().
+				FontWeight(600).TextColor(theme.MediaText).SingleLine().
 				Absolute().Top(mid).Translate(0, (d-1)*clockDigitH)
 		})
 	}
@@ -717,46 +729,141 @@ func clockRollProgress(now time.Time) float32 {
 // 数字一起抢边缘，整条读起来更糊；压暗之后数字浮出来，视觉上也透气。
 func clockColon(c *ui.Context) {
 	ui.Text(c, ":").Font(FontClock).FontSize(clockFontSize).FontWeight(600).
-		TextColor(theme.TextTertiary).SingleLine()
+		TextColor(theme.MediaTextDim).SingleLine()
 }
 
-// islandRing 画那圈贴着边缘跑的 conic 流光。
+// islandGlow 画出整颗岛的面：墨底和 conic 流光由同一笔填色画出。
 //
-// 流光的构成：
-//   - conic 渐变，底子是 30% 的主题强调色，105° 处一道全亮的头
-//   - 4.5s 线性绕行一圈
-//   - 只留 padding 那一圈：content-box 取反的遮罩
+// 一笔画完不是为了少一层，是为了岛沿只抗一次锯齿。实色渐变的停靠点
+// 已经是「墨里混进多少强调色」的结果（见 islandGlowStops），环外是纯墨、
+// 环内是 AccentOnInk——所以这一笔同时承担底色和光，body 在上面盖住内部，
+// 一条 2px 的光带只在岛的边缘露出来。
 //
-// 所以环的颜色必须跟着配色走（--accent-ink），不能写死青柠；
-// 旋转用 Loop 持续请求帧，动的是光，不是盒子。
-func (a *App) islandRing(c *ui.Context, r, alpha float32) {
-	black := ui.RGB(0, 0, 0)
-	solid := ui.LinearGradient{From: black, To: black}
-
-	period := 4500 * time.Millisecond
-
-	dim := theme.AccentInk.Mix(ui.Transparent, 0.70) // 30% 的强调色
-	hot := theme.AccentInk
-
-	ring := ui.Box(c).Absolute().
+// 拖影也在这条色带里：以前它是一层独立的、角度落后 12° 的环，压在芯上。
+// 两层各有各的抗锯齿，弧段上照样会叠出暗边；现在它的 alpha 剖面先和芯
+// 合成，再一起换成实色停靠点，屏幕上仍然是一道头亮尾淡的弧。
+//
+// 角速度不是匀速：头部快、尾部慢，回绕处速度连续，没有顿挫。reduced
+// motion 下不转，留一段固定的弧，光还在，只是不跑。
+func (a *App) islandGlow(c *ui.Context, r, alpha float32) {
+	glow := ui.Box(c).Absolute().
 		Top(islandRingInset).Left(islandRingInset).
 		Right(islandRingInset).Bottom(islandRingInset).
-		Radius(r - islandRingInset).Padding(islandRingPad)
-	angle := ring.Loop("island-ring", period, ui.Linear) * 360
-	ring.ConicGradient(ui.ConicGradient{
+		Radius(r - islandRingInset)
+
+	angle := islandRingRestAngle
+	if alpha > 0 && !c.Preferences().ReduceMotion {
+		angle = glow.Loop("island-ring", islandRingPeriod, islandSweep) * 360
+	}
+	glow.ConicGradient(ui.ConicGradient{
 		Angle: angle,
-		Oklab: true,
-		Stops: []ui.GradientStop{
-			{Color: dim, At: 0},
-			{Color: dim, At: 40.0 / 360},
-			{Color: hot, At: 105.0 / 360},
-			{Color: dim, At: 165.0 / 360},
-			{Color: dim, At: 1},
-		},
-	}).Masks(
-		ui.Mask{Image: solid, Box: ui.MaskContentBox, Composite: ui.MaskExclude},
-		ui.Mask{Image: solid},
-	).Opacity(alpha)
+		// 停靠点是在 sRGB 里预混过的实色，再走 Oklab 会把尾梢的颜色
+		// 带偏：alpha 叠墨本来是一条 sRGB 直线，这里要的就是它。
+		Stops: islandGlowStops(alpha),
+	})
+}
+
+const (
+	islandRingPeriod = 4500 * time.Millisecond
+	// islandRingRestAngle 是 reduced motion 下热段的落点：0° 让头停在
+	// 右侧偏下——不压标题，也不在正中，读起来仍是一段光。
+	islandRingRestAngle float32 = 0
+	// islandRingEchoLag 是拖影落后的角度（度）。太小看不出两层，太大就
+	// 变成两道光。12° 约等于头宽的 1/3。
+	islandRingEchoLag float32 = 12
+	// islandRingEchoAlpha 是拖影的不透明度：芯的四成不到。
+	islandRingEchoAlpha float32 = 0.38
+)
+
+// islandSweep 把 0–1 的线性相位换成角度进度。
+//
+// 匀速转圈读起来是转盘，不是光。这里让头在中段快、两头慢，且
+// f(0)=0、f(1)=1、两端速度相等（都是 1+bias），所以每圈回绕不会顿一下。
+// bias 0.6 时最快与最慢约 4:1：肉眼能看出「扫过去」，又不至于忽快忽慢。
+func islandSweep(p float32) float32 {
+	const bias float32 = 0.6
+	return p + bias*float32(math.Sin(2*math.Pi*float64(p)))/(2*math.Pi)
+}
+
+// ringStop 是流光 alpha 剖面上的一个折点：at 是全周相位（0–1），a 是强调色
+// 占了多少（0 是纯岛墨，1 是全亮的 AccentOnInk）。
+type ringStop struct {
+	at, a float32
+}
+
+// islandRingProfile 是核心那道弧的 alpha 剖面：72° 起尾、108° 最亮、
+// 137° 散尽，其余整圈为 0。
+//
+// 只改 alpha 不改 RGB：混到纯透明黑会在暗底上拖出一圈灰边——上一版那圈
+// 「脏描边」就是 30% 的强调色铺满圆周换来的。
+var islandRingProfile = []ringStop{
+	{0, 0},
+	{0.20, 0},    // 尾巴从 72° 开始接上
+	{0.24, 0.30}, // 尾梢：几乎看不见，只是一点提亮
+	{0.30, 1},    // 头部：108°
+	{0.34, 0.35}, // 头前的余光
+	{0.38, 0},    // 到 137° 散尽
+	{1, 0},
+}
+
+// islandRingAlphaAt 是剖面在相位 pos 上的值，段内线性。
+func islandRingAlphaAt(pos float32) float32 {
+	if pos <= islandRingProfile[0].at {
+		return islandRingProfile[0].a
+	}
+	for i := 1; i < len(islandRingProfile); i++ {
+		a, b := islandRingProfile[i-1], islandRingProfile[i]
+		if pos <= b.at {
+			if b.at == a.at {
+				return b.a
+			}
+			return a.a + (b.a-a.a)*(pos-a.at)/(b.at-a.at)
+		}
+	}
+	return islandRingProfile[len(islandRingProfile)-1].a
+}
+
+// islandGlowStops 把「核心 + 拖影」合成一条实色色带，供 islandGlow 一笔画完。
+//
+// 芯先画、拖影压在上面的效果是 e + c·(1-e)，再乘整体淡入淡出 alpha；
+// 这个值换成「墨里混进多少强调色」就是停靠点的颜色。拖影是芯平移
+// islandRingEchoLag 度。
+//
+// 停靠点取两条剖面折点的并集，长段再补一个中点：两个折点之间这个合成
+// 值是二次的，线性插值最多差 1% 的 alpha，肉眼看不出来。
+func islandGlowStops(alpha float32) []ui.GradientStop {
+	lag := islandRingEchoLag / 360
+	at := []float32{0, 1}
+	for _, s := range islandRingProfile {
+		for _, p := range []float32{s.at, s.at - lag} {
+			if p > 0 && p < 1 {
+				at = append(at, p)
+			}
+		}
+	}
+	slices.Sort(at)
+	at = slices.Compact(at)
+
+	pos := make([]float32, 0, len(at))
+	for i, p := range at {
+		pos = append(pos, p)
+		if i+1 < len(at) && at[i+1]-p > 0.03 {
+			pos = append(pos, (p+at[i+1])/2)
+		}
+	}
+
+	hot := theme.AccentOnInk
+	stops := make([]ui.GradientStop, 0, len(pos))
+	for _, p := range pos {
+		c := islandRingAlphaAt(p)
+		e := islandRingEchoAlpha * islandRingAlphaAt(p-lag)
+		u := alpha * (e + c*(1-e))
+		stops = append(stops, ui.GradientStop{
+			Color: theme.IslandInk.Mix(hot, u),
+			At:    p,
+		})
+	}
+	return stops
 }
 
 // livePulse 把 0–1 的周期相位换成脉冲环的 scale / opacity：
