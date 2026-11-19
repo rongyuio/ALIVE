@@ -49,11 +49,14 @@ type douyinProvider struct {
 	ids *cache[douyinRoomRef]
 	lim *limiter
 
-	// 登录态由 webview 登录写入，所有请求自动带上。
-	authMu     sync.RWMutex
-	authCookie string
-	login      *WebLogin
-
+	// 没有登录态。
+	//
+	// 抖音的画质档位和弹幕匿名就全有：实测在播房间的 5 档（原画 / 蓝光 /
+	// 超清 / 高清 / 标清）和弹幕 WS 都不需要会话。房间信息走的 reflow 在
+	// webcast.amemv.com 上，浏览器那份请求本身也不带 douyin.com 的 cookie；
+	// 带上反而会被上游当成「无效会话」回 status_code=101。所以这里不接
+	// 浏览器登录，请求层也不带 Cookie。
+	//
 	// 分区表是静态数据，解析一次常驻；catNames 用于给卡片补分类胶囊。
 	catOnce   sync.Once
 	catGroups []CategoryGroup
@@ -72,14 +75,10 @@ func newDouyin() *douyinProvider {
 		// 一旦拿到验证页，wrap 里的 block() 会把整个平台冷下来兜住。
 		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
-	p.api.cookies = p.authCookieString
-	// 抖音的 verify 留空：用户信息接口同样要 secsdk 签名，与其在启动时
-	// 赌一次风控，不如信 cookie——会话坏了取流会自己失败。
-	p.login = newWebLogin(Douyin, douyinWebLoginSpec(), douyinVerifyCookie, douyinCookieOrder)
-	// 登录态要回填给请求层：authCookie 是所有请求带 cookie 的唯一来源。
-	// 必须在 Restore 之前挂上，否则启动时恢复出来的会话进不去。
-	p.login.SetSessionHandler(p.setAuthCookie)
-	p.login.Restore()
+	// 护栏：万一以后又把登录接回来，会话只属于 douyin.com——
+	// reflow 在 webcast.amemv.com 上，把抖音域的 cookie 发过去会被回
+	// 101 invalid session，连匿名都不如。
+	p.api.cookieHosts = []string{"douyin.com"}
 	return p
 }
 

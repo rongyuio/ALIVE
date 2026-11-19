@@ -222,6 +222,13 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 			return fail(err)
 		}
 	}
+	// 音量合成器里的会话名。不设的话 Windows 音量面板上会冒出一个小喇叭叫
+	// mpv，用户看到一个没见过的进程在出声。设不上就算了：最坏只是名字没变，
+	// 播放和音量控制不受影响。
+	if opts.ClientName != "" {
+		_ = e.option(n.handle, "audio-client-name", opts.ClientName)
+		_ = e.option(n.handle, "title", opts.ClientName)
+	}
 	if opts.Silent {
 		if err = e.err(e.option(n.handle, "ao", "null")); err != nil {
 			return fail(err)

@@ -57,6 +57,10 @@ type Engine struct {
 // 上限是兜底：没有音轨的流、或者音频起不来时，不能永远不给画面。
 const audioGateBudget = 2 * time.Second
 
+// audioClientName 是播放器向系统注册的名字，也就是 Windows 音量合成器里
+// 显示的应用名。mpv 默认用「mpv」，面板上就是一路陌生的喇叭。
+const audioClientName = "ALIVE"
+
 // audioGate 决定「已经解出来的画面现在能不能交出去」。
 //
 // 判据是音频时钟有没有走起来：mpv 里 time-pos 由音频驱动（video-sync=audio），
@@ -98,7 +102,7 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
-	p, err := video.New(video.Options{Library: lib, Headers: opts.Headers, Width: opts.Width, Height: opts.Height})
+	p, err := video.New(video.Options{Library: lib, Headers: opts.Headers, Width: opts.Width, Height: opts.Height, ClientName: audioClientName})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}

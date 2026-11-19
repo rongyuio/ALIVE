@@ -31,6 +31,7 @@
 | [0004-libmpv.md](decisions/0004-libmpv.md) | 播放换成 libmpv：实测数据、mygo#124 为什么不能直接用、软件渲染的天花板、fork 了 mygo 哪一处 | 动播放层、怀疑「是不是该自己写引擎」、升级 mpv 之前 |
 | [0005-no-launch-screen.md](decisions/0005-no-launch-screen.md) | 冷启动删掉启动层：为什么它撒谎、锁输入、不可测；换成了首帧即应用 + 静止占位 | 想加回启动画面 / 加载遮罩之前 |
 | [0006-palette-ladder.md](decisions/0006-palette-ladder.md) | 配色由六个参数生成，对比度写成测试；强调色拆成填充/当字/当线 | 加配色、改主题令牌、讨论毛玻璃之前 |
+| [0007-douyin-search.md](decisions/0007-douyin-search.md) | 抖音为什么只收直播间号：登录只解开 2483，搜索仍要浏览器指纹，且网页搜索召回的是账号不是直播间 | 想给抖音加关键词搜索、或又想把浏览器登录接回来之前 |
 
 ### reference
 

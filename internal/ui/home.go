@@ -170,12 +170,6 @@ type App struct {
 	// 账号按平台隔离——B 站的号拿不到斗鱼的清晰度，切平台就该换个人，
 	// 所以这里不存一个「全局登录态」，而是每次按当前平台去查。
 	AuthOpen bool
-	// authReturn 记录「为了登录临时离开的直播间」。
-	//
-	// 虎牙、抖音的登录要占满主区域（平台自己的真网页），播放页没有主区域
-	// 可让，所以点账号时先切回平台首页去登，登完（或用户放弃）再自动回到
-	// 这个直播间。nil 表示当前没有这趟来回。
-	authReturn *Streamer
 	// authLogged 记住各平台上一次看到的登录状态，用来判断「刚登录成功」。
 	authLogged map[string]bool
 	// pendingSwitch 是点了但还没真正切过去的平台。
@@ -209,19 +203,6 @@ type App struct {
 	// authQR / authQRSeq 是按平台缓存的二维码纹理：换码才重新解码。
 	authQR    map[string]*ui.Bitmap
 	authQRSeq map[string]int
-
-	// 浏览器登录：虎牙和抖音没有能纯 HTTP 复现的扫码协议，登录面板里
-	// 挂一个系统 webview 完成登录，登录成功读走 cookie 就把窗口销毁。
-	//
-	// 只在面板打开期间存在。loginSess 是临时会话（InPrivate），cookie
-	// 不落盘；loginStop 停掉轮询的 goroutine。
-	loginPage *mygo.WebView
-	loginSess *mygo.Session
-	loginKey  string
-	loginStop chan struct{}
-	// loginReady 表示登录页已经渲染好。在那之前主区域盖一层 loading，
-	// 免得用户看到白屏或者半渲染的中间态。
-	loginReady bool
 
 	// 「关注」页是一等页面（顶栏 tab 组第一格），和首页同级。
 	// 这些字段是它自己的筛选状态，切走再回来还留着。
@@ -392,28 +373,16 @@ func NewApp() *App {
 // bindAuth 给每个支持登录的平台各挂一个状态监听。
 //
 // 不是一个「全局登录」：每个平台一份会话、一份监听，互不影响。
-// B 站和斗鱼走扫码，虎牙和抖音走系统 webview。
+// 只有 B 站和斗鱼有登录（扫码）。
 func (a *App) bindAuth() {
 	a.authLogged = map[string]bool{}
 	a.authQR = map[string]*ui.Bitmap{}
 	a.authQRSeq = map[string]int{}
-	for _, p := range []live.Platform{live.Bilibili, live.Douyu, live.Huya, live.Douyin} {
+	// 只有扫码登录的两个平台。虎牙和抖音都不接登录：画质档位和弹幕匿名
+	// 就全有，登录换不到东西（见 doc/architecture/platform.md §七）。
+	for _, p := range []live.Platform{live.Bilibili, live.Douyu} {
 		if auth, ok := live.AuthFor(p); ok {
 			a.bindPlatformAuth(p, auth)
-			continue
-		}
-		if wl, ok := live.BrowserAuthFor(p); ok {
-			a.bindPlatformAuth(p, wl)
-			// 会话失效时不急着重登：先用同一个 profile 起一次后台页面，
-			// 平台自己可能就把它续上了。
-			login := wl
-			wl.SetInvalidHandler(func() bool {
-				if a.Win == nil {
-					return false
-				}
-				a.renewLoginSession(login)
-				return true
-			})
 		}
 	}
 }
@@ -451,11 +420,6 @@ func (a *App) applyAuthChange(p live.Platform, logged bool) {
 		return
 	}
 	a.authLogged[key] = logged
-	// 为了登录临时离开的直播间：登上了就把直播间接回来。放在重取流之前——
-	// 重取流那步要求人已经回到播放页。
-	if logged && a.authReturn != nil && a.authReturn.Platform == key {
-		a.returnFromLogin()
-	}
 	// 登录态一变就要重取流，两个方向都是：登录后能拿到更高的档位；退出后
 	// 那些「仅登录可见」的档位必须立刻作废——继续播原来的地址，等于拿着
 	// 一个已经没有权限的流，界面上还写着那个档位。
@@ -471,11 +435,6 @@ func (a *App) applyAuthChange(p live.Platform, logged bool) {
 // 之前停留的列表。从「关注」页点开 B 站主播、而 tab 还停在虎牙时，
 // 照 a.Platform 画就会把虎牙的账号挂在 B 站直播间里。
 func (a *App) viewPlatform() string {
-	// 为登录临时离开直播间时，这一屏就是「那个平台的登录流程」：账号入口、
-	// 登录页、顶栏高亮都得跟着它，而不是跟着脚下这页首页的 tab。
-	if a.authReturn != nil {
-		return a.authReturn.Platform
-	}
 	if a.Router.Path() == routePlayer {
 		if p := a.current().Platform; p != "" {
 			return p
@@ -489,11 +448,6 @@ func (a *App) viewPlatform() string {
 // 扫码和浏览器登录都满足 Authenticator，界面不关心会话是怎么拿到的。
 func (a *App) currentAuth() live.Authenticator {
 	return authFor(a.viewPlatform())
-}
-
-// currentWebLogin 返回当前平台的浏览器登录入口，没有则 false。
-func (a *App) currentWebLogin() (*live.WebLogin, bool) {
-	return live.BrowserAuthFor(live.Platform(a.viewPlatform()))
 }
 
 // Shell 是窗口的根视图：地面 + 主区（顶栏 + 内容）+ 悬浮灵动岛。
@@ -607,23 +561,6 @@ func (a *App) Home(c *ui.Context) {
 	if !a.bootAnnounced && a.ListLoading && len(a.Rooms) == 0 {
 		a.bootAnnounced = true
 		c.Announce("正在载入直播间")
-	}
-	// 浏览器登录：主体区域整个换成登录页。页面原样铺开，登录框由平台
-	// 自己弹出——不裁剪、不代点，页面改版也不影响这里。
-	if wl, ok := a.currentWebLogin(); ok && a.AuthOpen && !wl.Auth().LoggedIn {
-		if page := a.ensureLoginWebView(wl); page != nil {
-			ui.Box(c).Grow(1).Children(func() {
-				ui.WebView(c, page).Fill().Radius(theme.RadiusXL)
-				// 页面画好之前盖住：标题栏、空白、半渲染的骨架都不给看。
-				if !a.loginReady {
-					ui.Box(c).Absolute().Fill().Radius(theme.RadiusXL).
-						Background(theme.BgPrimary).Center().Children(func() {
-						a.loginLoading(c)
-					})
-				}
-			})
-			return
-		}
 	}
 	pad := a.bodyPadX(c)
 	// 换分区就回到顶部；同一个分区内（去播放页再回来）位置由 ListState 自己记住。
@@ -1214,9 +1151,6 @@ func (a *App) commitPlatformSwitch(id string) {
 	// 账号是分平台的，头像浮层里的内容会跟着换人；换 tab 就关掉，
 	// 别让上一家的二维码和昵称留在屏幕上。
 	a.AuthOpen = false
-	// 用户自己换了平台，就不再是「去登录那一趟」了。startRoomLogin 会
-	// 在这之后重新设上。
-	a.authReturn = nil
 	// 换平台了，旧平台的纹理对新平台没有任何用处：立刻清掉 L1。
 	// 但要保住新平台已经预取好的首屏封面，否则用户还是要等一遍解码。
 	// 原始字节（L2）全部留着——切回去时能直接解码，不用重新下载。

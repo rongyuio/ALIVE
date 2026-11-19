@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -45,11 +44,12 @@ type huyaProvider struct {
 	search *cache[[]Room]
 	lim    *limiter
 
-	// 登录态是进程内可变的：webview 登录完成、退出登录都会换掉它。
-	authMu     sync.RWMutex
-	authCookie string
-	login      *WebLogin
-
+	// 没有登录态。
+	//
+	// 虎牙的画质档位和弹幕匿名就全有：实测 6 个分类的在播房间，登录与匿名
+	// 拿到的三档完全相同（原画 / 最高码率 / 标清），原画的 FLV 元数据是
+	// 1440p，CDN 对匿名照样 200；匿名弹幕也照常收到。登录只换到头像和昵称，
+	// 不值得再维护一套 webview。见 doc/architecture/platform.md §七。
 	// 表情包是后台补的数据：拉一次存进 runtimeEmotes。
 	// 失败 60 秒后再试，避免房间连不上时反复打接口。
 	emoteTried atomic.Int64
@@ -66,13 +66,6 @@ func newHuya() *huyaProvider {
 		// 60ms 间隔只防同一瞬间齐发，风控冷却机制照常生效。
 		lim: newLimiter(refreshConcurrency, 60*time.Millisecond),
 	}
-	// 登录态由 webview 登录写入，所有请求自动带上。
-	p.api.cookies = p.authCookieString
-	p.login = newWebLogin(Huya, huyaWebLoginSpec(), huyaVerifyCookie, huyaCookieOrder)
-	// 登录态要回填给请求层：authCookie 是所有请求带 cookie 的唯一来源。
-	// 必须在 Restore 之前挂上，否则启动时恢复出来的会话进不去。
-	p.login.SetSessionHandler(p.setAuthCookie)
-	p.login.Restore()
 	return p
 }
 

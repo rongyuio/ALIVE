@@ -21,19 +21,13 @@ const (
 	authAvatarW float32 = 26
 )
 
-// authFor 返回某个平台的登录入口（扫码或 webview），没有则 nil。
+// authFor 返回某个平台的登录入口（扫码），没有则 nil。
 //
 // 与 currentAuth 的区别只在于平台由调用方给：切平台时要预取的是
 // 「所有平台」的头像，而不只是当前这个。
 func authFor(platform string) live.Authenticator {
-	p := live.Platform(platform)
-	if auth, ok := live.AuthFor(p); ok {
-		return auth
-	}
-	if wl, ok := live.BrowserAuthFor(p); ok {
-		return wl
-	}
-	return nil
+	auth, _ := live.AuthFor(live.Platform(platform))
+	return auth
 }
 
 // syncAuthAvatars 把各平台已登录账号的头像提前备进图片缓存。
@@ -62,74 +56,20 @@ func (a *App) syncAuthAvatars() {
 	}
 }
 
-// roomLoginDetourNeeded 报告「在播放页点账号是否需要先回平台页面」。
-//
-// 扫码平台（B 站、斗鱼）的码就画在浮层里，播放页直接开；浏览器登录
-// （虎牙、抖音）要把整个主区域让给平台自己的网页，播放页没有这块地方。
-func (a *App) roomLoginDetourNeeded() bool {
-	if a.Router.Path() != routePlayer {
-		return false
-	}
-	if room := a.current(); room.Platform == "" || room.RoomID == "" {
-		return false // 播放页上还没有具体房间，没有「回来」这回事
-	}
-	if _, ok := a.currentWebLogin(); !ok {
-		return false
-	}
-	auth := a.currentAuth()
-	return auth != nil && !auth.Auth().LoggedIn
-}
-
-// startRoomLogin 记下正在看的直播间，然后把页面切到登录页去。
-//
-// 用 Replace 而不是 Push：这趟来回不该进历史——登录成功或放弃之后，
-// 界面上跟没离开过播放页一样，退出钮还是回到进来之前那个页面。
-func (a *App) startRoomLogin(room Streamer) {
-	back := room
-	a.authReturn = &back
-	a.AuthOpen = true
-	a.Router.Replace(routeHome)
-}
-
-// returnFromLogin 结束「去登录」这趟来回：登录成功或用户放弃都走这里。
-//
-// 只有还停在首页时才把直播间接回来——用户要是自己开了别的房间、或者
-// 换了 tab，就别硬拉回去，清掉标记即可。
-func (a *App) returnFromLogin() {
-	a.authReturn = nil
-	a.AuthOpen = false
-	if a.loginPage != nil {
-		a.destroyLoginWebView()
-	}
-	if a.Router.Path() != routeHome {
-		return
-	}
-	a.Router.Replace(routePlayer)
-}
-
-// closeAuthPanel 收起账号入口：浮层关掉，浏览器登录窗口一起销毁。
+// closeAuthPanel 收起账号入口。
 //
 // 入口从顶栏消失的页面（「全部关注」「订阅」）也要调一次——只把按钮不画，
 // 状态还留在 AuthOpen，等回到有账号入口的页面时浮层会自己弹回来。
 func (a *App) closeAuthPanel() {
 	a.AuthOpen = false
-	if a.loginPage != nil {
-		a.destroyLoginWebView()
-	}
 }
 
 // authButton 是顶栏右上角的登录入口。
 //
 // 账号是**按平台**的：当前 tab 是 B 站就显示 B 站的号，切到斗鱼换成斗鱼的。
 // 播放页跟着正在看的主播走（viewPlatform），不是进房之前停留的那个 tab。
-// 还没有登录能力的平台（虎牙、抖音）整块不出现，而不是摆一个点了没用的图标。
+// 没有登录能力的平台（抖音）整块不出现，而不是摆一个点了没用的图标。
 func (a *App) authButton(c *ui.Context) {
-	// 为登录临时离开的直播间：登录成功、或者用户把面板关掉，都该回去。
-	// 用户要是自己开了别的房间/换了 tab，就不再硬拉回原来那间。
-	if a.authReturn != nil && (a.Router.Path() != routeHome || !a.AuthOpen) {
-		a.returnFromLogin()
-	}
-
 	auth := a.currentAuth()
 	if auth == nil {
 		return
@@ -157,26 +97,12 @@ func (a *App) authButton(c *ui.Context) {
 	}
 
 	if btn.Clicked() {
-		// 播放页上没有主区域可以让给浏览器登录：点账号先去平台首页，
-		// 登录流程还是原来那套，登完再自动把直播间接回来。
-		if !a.AuthOpen && a.roomLoginDetourNeeded() {
-			a.startRoomLogin(a.current())
-			if !st.LoggedIn && len(st.QR) == 0 && st.Err == "" {
-				auth.BeginLogin()
-			}
-			return
-		}
 		a.AuthOpen = !a.AuthOpen
 		// 第一次打开就顺手要一张码：进去还要再点一下才出码太啰嗦。
 		if a.AuthOpen && !st.LoggedIn && len(st.QR) == 0 && st.Err == "" {
 			auth.BeginLogin()
 		}
 	}
-	// 面板关掉就把登录窗口一起收了：webview 常驻会白占一整套渲染进程。
-	if !a.AuthOpen && a.loginPage != nil {
-		a.destroyLoginWebView()
-	}
-
 	btn.Children(func() {
 		if st.LoggedIn && st.Avatar != "" {
 			if bmp := media.Default.Avatar(st.Avatar, dia); bmp != nil {
@@ -194,11 +120,6 @@ func (a *App) authButton(c *ui.Context) {
 			ui.Icon(c, iconUser).FontSize(dia * 0.6).TextColor(col)
 		})
 	})
-
-	// 浏览器登录不走浮层：主体区域整个换成登录页。
-	if _, ok := a.currentWebLogin(); ok && !st.LoggedIn {
-		return
-	}
 
 	ui.PopoverBase(c, btn, &a.AuthOpen, func(panel ui.Element) {
 		// 用 MinWidth 而不是 Width：内容（二维码 / 长一点的错误文案）
@@ -219,9 +140,6 @@ func (a *App) authButton(c *ui.Context) {
 }
 
 // authScanPanel 是未登录时的扫码面板。
-//
-// 虎牙和抖音没有能纯 HTTP 复现的扫码协议，二维码由隐藏的 webview 提供：
-// 这里只负责把引擎起起来，图片照样走下面那套渲染。
 func (a *App) authScanPanel(c *ui.Context, auth live.Authenticator, st live.AuthState, key string) {
 
 	// 二维码是 PNG，解一次缓存起来；每帧重解码是白烧 CPU。

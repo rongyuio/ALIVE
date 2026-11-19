@@ -34,7 +34,8 @@ ALIVE 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.c
 - `resources/icon.png` 要正方形：Windows 只取到 256，源图 ≥256 即可（全部缩小，不糊）；
   出 macOS/Linux 包要求 ≥1024，它们会渲染到 1024 和 512。
 - `mygo.json` 是应用元信息（name / identifier / version / out）的唯一来源。
-- `.agents/skills/` 是 MyGo 官方 skill，动 MyGo 相关代码前先读。
+- MyGo 官方 skill 装在用户级（`/mygo-maintenance`、`/mygo-native-modules`），仓库里不再存
+  副本——上游随版本更新它们，本地副本只会漂移。
 
 ## 文档
 
@@ -52,8 +53,8 @@ ALIVE 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.c
 所以看的文档就是跑的代码；但它还在 0.x，API 在 minor 之间会变，记忆里的写法很可能属于旧
 版本。写任何 MyGo 相关东西之前，按这个顺序取信息：
 
-1. `.agents/skills/` 里对应的 skill：`mygo-maintenance`（生命周期、元素身份、线程、验证）、
-   `mygo-native-modules`（原生模块）。驱动真实窗口的自动化没有仓库内 skill，指南用
+1. 调用户级 skill：`/mygo-maintenance`（生命周期、元素身份、线程、验证）、
+   `/mygo-native-modules`（原生模块）。驱动真实窗口的自动化没有 skill，指南用
    `mygo-automation skills` 取。
 2. `third_party/mygo/docs/` 里对应的那一篇。控件索引是 `docs/ui/README.md`，
    **用到哪个控件读哪个的那一篇**：`list.md`、`scroll.md`、`popover.md`、`motion.md`、

@@ -49,6 +49,14 @@ type Options struct {
 	// Width/Height 是调用方事先知道的视频尺寸（平台声明值）。mpv 还没解析出
 	// 真实尺寸时用它顶着，免得第一帧先按 640×360 渲染再跳变。
 	Width, Height int
+
+	// ClientName 是播放器向系统注册的名字：Windows 音量合成器里的应用名、
+	// PulseAudio/PipeWire 里的流名。留空就沿用 mpv 自己的默认值。
+	//
+	// 必须连着 audio-client-name 一起设 title：mpv 在音频起来之后会用
+	// --title 展开出的标题再把会话名覆盖一遍，默认模板是「<媒体名> - mpv」，
+	// 所以只设 audio-client-name 会被这行覆盖回 mpv。
+	ClientName string
 }
 
 // Capabilities reflects a successfully created native renderer. Codec/container

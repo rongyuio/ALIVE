@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,13 @@ type apiClient struct {
 	// 登录态是进程内可变的（扫码完成、续期、退出），所以这里取函数
 	// 而不是字符串，免得每次换号都要重建 client。
 	cookies func() string
+	// cookieHosts 限定登录 Cookie 只发给哪些域（含子域）；空表示不筛选。
+	//
+	// 浏览器按域发 cookie，这个 client 只有一串扁平的登录态，所以要由
+	// 平台说自己属于谁。抖音就是在这里踩的坑：登录态是 live.douyin.com
+	// 的，房间信息却在 webcast.amemv.com；会话一过期，把 sessionid 发过去
+	// 上游就回 status_code=101 invalid session——连匿名请求都不如。
+	cookieHosts []string
 }
 
 func newAPIClient(platform Platform, referer string) *apiClient {
@@ -134,7 +142,7 @@ func (c *apiClient) apply(req *http.Request, h header) {
 	}
 	// 先上默认登录态，再让调用方的头覆盖：单次请求要带别的 cookie 时
 	// 直接传 "Cookie"，不用改 client。
-	if c.cookies != nil {
+	if c.cookies != nil && c.sendsCookies(req.URL.Hostname()) {
 		if v := c.cookies(); v != "" {
 			req.Header.Set("Cookie", v)
 		}
@@ -142,6 +150,20 @@ func (c *apiClient) apply(req *http.Request, h header) {
 	for k, v := range h {
 		req.Header.Set(k, v)
 	}
+}
+
+// sendsCookies 报告发往 host 的请求该不该带登录 Cookie。
+func (c *apiClient) sendsCookies(host string) bool {
+	if len(c.cookieHosts) == 0 {
+		return true
+	}
+	host = strings.ToLower(host)
+	for _, h := range c.cookieHosts {
+		if host == h || strings.HasSuffix(host, "."+h) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *apiClient) do(req *http.Request, op string) ([]byte, error) {
