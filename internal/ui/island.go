@@ -183,19 +183,14 @@ func (a *App) Island(c *ui.Context) {
 	// 取整之后岛每次只挪一整像素，头像跟着走也是整像素。
 	island.Width(w).Left(roundDIP((winW - w) / 2))
 
-	// ---------- 投影：深色与浅色两套。
-	// 浅色主题用低透明度蓝黑，套深色的纯黑阴影会在白底上压出一圈脏灰。
+	// ---------- 投影：走主题的两级阶梯。
 	//
-	// 收起态是很散的一层：0 24px 56px -28px，几乎看不出投影边界。
-	if theme.Current().Dark {
-		island.Shadow(0, 24, 56, -28, ui.RGBA(0, 0, 0, 0.90)).
-			Shadow(0, 4, 14, 0, ui.RGBA(0, 0, 0, 0.36)).
-			InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.05))
-	} else {
-		island.Shadow(0, 22, 52, -28, ui.RGBA(15, 23, 42, 0.34)).
-			Shadow(0, 4, 12, 0, ui.RGBA(15, 23, 42, 0.10)).
-			InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.80))
-	}
+	// 岛是唯一一直悬在内容上方的元素，影子必须像"离地几毫米"：一层散的
+	// 环境光加一层贴着边的接触影。以前这里按深浅主题各写死一对手调值，
+	// 和浮层用的 ShadowPopover/ShadowLg 是两套语言。
+	island.Shadow(0, 24, 56, -28, theme.ShadowModal).
+		Shadow(0, 4, 14, 0, theme.ShadowContact).
+		InsetShadow(0, 1, 0, 0, theme.TopLight)
 
 	island.Children(func() {
 		// 两种环，按状态分（见 islandRings）：
@@ -247,7 +242,7 @@ func (a *App) islandBreath(c *ui.Context, alpha float32) {
 		Top(islandRingInset).Left(islandRingInset).
 		Right(islandRingInset).Bottom(islandRingInset).
 		Radius(theme.RadiusFull).Padding(islandBreathPad)
-	ring.Background(theme.Accent).Masks(
+	ring.Background(theme.AccentLine).Masks(
 		ui.Mask{Image: solid, Box: ui.MaskContentBox, Composite: ui.MaskExclude},
 		ui.Mask{Image: solid},
 	)

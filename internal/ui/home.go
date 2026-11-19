@@ -508,6 +508,8 @@ func (a *App) Shell(c *ui.Context) {
 	// 系统外观要在 SetTheme 之前读：SetTheme 之后 Context 返回的是我们这套
 	// 配色，就再也看不到系统是深色还是浅色了。
 	a.syncThemeMode(c.Theme().Dark)
+	// 系统要更高的对比度时，自绘的颜色得跟着走——否则这个开关对我们无效。
+	theme.SetHighContrast(c.Preferences().HighContrast)
 	// 每帧开头按当前配色重写包级颜色，之后所有绘制读到的就是这套色
 	theme.Apply(a.PaletteID)
 	c.SetTheme(theme.Theme())
@@ -658,7 +660,7 @@ func (a *App) Home(c *ui.Context) {
 // categoryBarSkeleton 是分区栏的加载占位：和真面板同高、同圆角。
 func (a *App) categoryBarSkeleton(c *ui.Context) {
 	ui.Row(c).Height(52).Padding(0, 16, 0, 16).Radius(theme.RadiusXL).
-		Border(1, theme.Border).Background(theme.BgSecondary).Gap(10).
+		Background(theme.BgSecondary).Gap(10).
 		AlignItems(ui.Center).Children(func() {
 		ui.Text(c, "正在加载分区…").FontSize(theme.TextSM).
 			TextColor(theme.TextTertiary)
@@ -955,13 +957,19 @@ func (a *App) gridFooter(c *ui.Context, avail float32, n int) {
 
 // ============================================================ 顶栏
 
+// chromeH 是顶栏三种托盘里所有按钮的内高。托盘高 = chromeH + 2×3。
+//
+// 三组托盘曾经各用各的：轨道 34、图标按钮 38、窗口按钮 34，窄屏又是 36/34/32。
+// 同一条 64 高的栏里，三个盒子高度各不相同，眼睛先看见的就是这个。
+const chromeH float32 = 34
+
 // Navbar 是自绘标题栏。
 //
 // 顶栏整条高 64、左右 padding 14、gap 14、背景就是 bg-primary；
-// 左侧平台 tablist，右侧一组 actions（gap 10）：
-// 搜索按钮 → 工具组 → 1px 分隔线 → 窗口按钮。
-// 工具组把「同步 / 配色」两颗 38×38 的图标按钮包进一层 fill-quaternary 的胶囊里
-// （gap 4 + padding 3），和窗口按钮组是同一套语言。
+// 左侧平台 tablist，右侧一组 actions（gap 10）：工具组 → 窗口按钮组。
+// 三组托盘同一条配方：surface-chrome 底、3px 内边距、无描边。
+// 以前这里有一根 1px 分隔线，那是窗口按钮还没有自己的托盘时留下的；
+// 两边都有托盘之后它就是第二道边。
 func (a *App) Navbar(c *ui.Context) {
 	pad, gap := float32(14), float32(14)
 	if a.narrow(c) {
@@ -983,7 +991,7 @@ func (a *App) Navbar(c *ui.Context) {
 			// 值得搜索的只有某个平台的直播列表：关注页没有平台上下文，
 			// 它自带页内搜索，那里不摆搜索按钮。
 			ui.Row(c).Gap(4).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
-				Background(theme.FillQuaternary).Children(func() {
+				Background(theme.SurfaceChrome).Children(func() {
 				if a.searchAvailable() {
 					a.searchButton(c)
 				} else {
@@ -1007,8 +1015,6 @@ func (a *App) Navbar(c *ui.Context) {
 					a.closeAuthPanel()
 				}
 			})
-
-			ui.Box(c).Width(1).Height(24).Background(theme.Separator)
 
 			a.windowControls(c)
 		})
@@ -1077,7 +1083,7 @@ func (a *App) toastView(c *ui.Context) {
 	box := ui.Box(c).Absolute().Right(18).Bottom(18).MaxWidth(maxW).
 		MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
 		Background(theme.BgElevated).Border(1, theme.Border).
-		Shadow(0, 22, 56, -22, theme.ShadowPopover)
+		Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact)
 
 	if !c.Preferences().ReduceMotion {
 		in := box.Keyframes(fmt.Sprintf("toast-in-%d", a.ToastSeq), []ui.Keyframe{
@@ -1245,10 +1251,10 @@ func (a *App) platformTabs(c *ui.Context) {
 	}
 
 	tabW := float32(64)
-	tabH := float32(34)
+	tabH := chromeH
 	if a.narrow(c) {
-		// ≤1240：列宽 56、tab 高 36
-		tabW, tabH = 56, 36
+		// ≤1240：只收列宽；高度跟另外两组托盘一样，否则顶栏里三个托盘高低不齐
+		tabW = 56
 	}
 
 	// 滑块跟着当前页面（关注 / 订阅 / 平台）走。
@@ -1261,12 +1267,14 @@ func (a *App) platformTabs(c *ui.Context) {
 		}
 	}
 
+	// 轨道和右侧两组按钮是同一类容器：surface-chrome 底、3px 内边距、无描边。
+	//
+	// 这里先后踩过两次：先在浅色主题下写死 #ffffff，顶栏左边白、右边灰；
+	// 后来改用 fill-quaternary，那是相对卡片定的浅填充，放到地上只剩 1.9
+	// 个 L*，于是又补了 1px 描边——形状是线画的，不是色块画的。
+	// surface-chrome 是地和卡片的 L* 中点，托盘自己就站得住。
 	track := ui.Row(c).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
-		Background(theme.FillQuaternary)
-	if !theme.Current().Dark {
-		// 浅色下的轨道：白底 + 1px 描边
-		track.Background(ui.Hex("#ffffff")).Border(1, theme.Border)
-	}
+		Background(theme.SurfaceChrome)
 
 	track.Children(func() {
 		list := ui.Box(c).Width(tabW * float32(len(tabs))).Height(tabH)
@@ -1338,12 +1346,9 @@ func (a *App) platformTabs(c *ui.Context) {
 	})
 }
 
-// iconButton 是工具组里的一枚图标按钮：38×38 圆形（≤1240 时 34×34），图标 18。
+// iconButton 是工具组里的一枚图标按钮：chromeH 见方，图标 18。
 func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string, on func()) {
-	size := float32(38)
-	if a.narrow(c) {
-		size = 34
-	}
+	size := chromeH
 	btn := ui.Box(c).Size(size, size).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label(label)
 	hovered := btn.Hovered()
@@ -1364,11 +1369,11 @@ func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string, on func()) {
 
 // windowControls 是右上角的最小化 / 最大化 / 关闭。
 //
-// 一组实色胶囊：外层 3px padding + fill-quaternary 底 + 1px 描边，
-// 里面三枚 40×34 的圆角按钮，图标 16px、1.8 描边，关闭键 hover 变红。
+// 一组托盘：外层 3px padding + surface-chrome 底、无描边，
+// 里面三枚 40×chromeH 的圆角按钮，图标 16px、1.8 描边，关闭键 hover 变红。
 func (a *App) windowControls(c *ui.Context) {
 	ui.Row(c).Gap(2).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
-		Background(theme.FillQuaternary).Border(1, theme.Border).
+		Background(theme.SurfaceChrome).
 		Children(func() {
 			a.caption(c, iconMinimize, "最小化", false, func() {
 				if a.Win != nil {
@@ -1390,10 +1395,10 @@ func (a *App) windowControls(c *ui.Context) {
 
 // caption 是一枚窗口按钮。
 func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on func()) {
-	w, h := float32(40), float32(34)
+	w, h := float32(40), chromeH
 	if a.narrow(c) {
-		// ≤1240：34×32
-		w, h = 34, 32
+		// ≤1240：只收宽度
+		w = 34
 	}
 	btn := ui.Box(c).Size(w, h).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label(label)

@@ -31,11 +31,11 @@ func (a *App) danmuFilterButton(c *ui.Context) {
 
 	ui.PopoverBase(c, btn, &a.DanmuFilterOpen, func(panel ui.Element) {
 		panel.Width(danmuPanelW).Padding(14, 16, 14, 16).Radius(16).
-			Background(ui.RGBA(17, 20, 28, 0.88)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12)).
-			Shadow(0, 18, 40, 0, ui.RGBA(0, 0, 0, 0.4)).
+			Border(1, theme.MediaHair).
+			Shadow(0, 18, 40, 0, theme.MediaShadow).
 			Margin(0, 0, 10, 0).
 			AttachTo(btn, ui.AnchorTopRight, ui.AnchorBottomRight)
+		panel = mediaPanel(c, panel)
 		panel.Children(func() {
 			ui.Column(c).Gap(12).Children(func() {
 				a.danmuFilterHeader(c)
@@ -49,7 +49,7 @@ func (a *App) danmuFilterButton(c *ui.Context) {
 func (a *App) danmuFilterHeader(c *ui.Context) {
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 		ui.Text(c, "屏蔽词").FontSize(theme.TextXS).FontWeight(600).
-			TextColor(ui.RGBA(255, 255, 255, 0.92)).Grow(1)
+			TextColor(theme.MediaText).Grow(1)
 		ui.Text(c, fmt.Sprintf("%d 个", len(a.DanmuFilters))).
 			FontSize(theme.Text2XS).TextColor(theme.Accent)
 	})
@@ -58,8 +58,8 @@ func (a *App) danmuFilterHeader(c *ui.Context) {
 // danmuFilterInput 是关键词输入框：回车添加，Esc 收起面板。
 func (a *App) danmuFilterInput(c *ui.Context) {
 	field := ui.Row(c).Height(danmuFilterFieldH).Padding(0, 10, 0, 10).Gap(8).
-		Radius(theme.RadiusXS).Background(ui.RGBA(255, 255, 255, 0.05)).Center()
-	border := ui.RGBA(255, 255, 255, 0.08)
+		Radius(theme.RadiusXS).Background(theme.MediaRow).Center()
+	border := theme.MediaRowLine
 	if field.FocusWithin() {
 		border = theme.AccentInk
 	}
@@ -69,7 +69,7 @@ func (a *App) danmuFilterInput(c *ui.Context) {
 		ui.Icon(c, iconFilter).FontSize(13).TextColor(ui.RGBA(255, 255, 255, 0.4))
 		ui.TextInputBase(c, &a.DanmuFilterQuery).FontSize(theme.TextXS).Grow(1).
 			Placeholder("输入关键词，回车添加").
-			PlaceholderColor(ui.RGBA(255, 255, 255, 0.35)).
+			PlaceholderColor(theme.MediaTextFaint).
 			OnTextKey(a.danmuFilterKey)
 	})
 }
@@ -128,21 +128,21 @@ func (a *App) danmuFilterList(c *ui.Context) {
 func (a *App) danmuFilterRow(c *ui.Context, i int, word string) {
 	row := ui.Row(c).FillWidth().Padding(6, 8, 6, 8).Gap(8).Radius(theme.RadiusXS).
 		AlignItems(ui.Center).
-		Background(ui.RGBA(255, 255, 255, 0.05)).
-		Border(1, ui.RGBA(255, 255, 255, 0.08))
+		Background(theme.MediaRow).
+		Border(1, theme.MediaRowLine)
 	if row.Hovered() {
-		row.Background(ui.RGBA(255, 255, 255, 0.08))
+		row.Background(theme.MediaRowLine)
 	}
 	row.Children(func() {
 		// 长词截断：面板只有 200 宽，一个超长关键词不能把删除按钮挤出去
 		ui.Box(c).Grow(1).Children(func() {
 			ui.Text(c, word).FontSize(theme.TextXS).
-				TextColor(ui.RGBA(255, 255, 255, 0.88)).SingleLine()
+				TextColor(theme.MediaTextDim).SingleLine()
 		})
 		del := ui.Box(c).Size(18, 18).Radius(9).Center().
 			Cursor(ui.CursorPointer).Label("删除屏蔽词 " + word)
 		if del.Hovered() {
-			del.Background(ui.RGBA(255, 255, 255, 0.12))
+			del.Background(theme.MediaHair)
 		}
 		if del.Clicked() {
 			a.removeDanmuFilter(i)

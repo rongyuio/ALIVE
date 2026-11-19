@@ -40,7 +40,7 @@ func (a *App) syncOverlay(c *ui.Context) {
 			Background(theme.BgElevated).Border(1, theme.Border).
 			Label("数据同步").
 			// --shadow-lg：0 38px 72px -30px rgba(0,0,0,.85)
-			Shadow(0, 38, 72, -30, theme.ShadowLg)
+			Shadow(0, 38, 72, -30, theme.ShadowModal).Shadow(0, 6, 16, 0, theme.ShadowContact)
 		// 点面板本身不该把它关掉
 		if panel.Clicked() {
 			a.SyncOpen = true
@@ -94,7 +94,7 @@ func (a *App) syncHeader(c *ui.Context) {
 func (a *App) syncTabs(c *ui.Context) {
 	ui.Row(c).Padding(0, 16, 0, 16).Children(func() {
 		ui.Row(c).Gap(2).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
-			Background(theme.FillQuaternary).Border(1, theme.Border).
+			Background(theme.FillQuaternary).
 			Children(func() {
 				a.syncTab(c, "export", iconUpload, "导出")
 				a.syncTab(c, "import", iconDownload, "导入")

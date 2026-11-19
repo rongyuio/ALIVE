@@ -137,10 +137,7 @@ func (a *App) authButton(c *ui.Context) {
 	st := auth.Auth()
 	key := string(st.Platform)
 
-	size := float32(38)
-	if a.narrow(c) {
-		size = 34
-	}
+	size := chromeH
 	dia := size - 12
 
 	btn := ui.Box(c).Size(size, size).Radius(theme.RadiusFull).
@@ -210,7 +207,7 @@ func (a *App) authButton(c *ui.Context) {
 			Background(theme.BgElevated).Border(1, theme.Border).
 			Label("登录浮层").
 			// --shadow-lg: 0 38px 72px -30px rgba(0,0,0,.85)
-			Shadow(0, 38, 72, -30, theme.ShadowLg).
+			Shadow(0, 38, 72, -30, theme.ShadowModal).Shadow(0, 6, 16, 0, theme.ShadowContact).
 			Margin(10, 0, 0, 0).
 			AttachTo(btn, ui.AnchorBottomRight, ui.AnchorTopRight)
 		if st.LoggedIn {

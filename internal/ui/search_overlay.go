@@ -68,7 +68,7 @@ func (a *App) authAvailable() bool {
 //
 // 顶栏不常驻输入框——常驻输入框会把宽度撑开、顶到中间的灵动岛。
 func (a *App) searchButton(c *ui.Context) {
-	btn := ui.Box(c).Size(38, 38).Radius(theme.RadiusFull).
+	btn := ui.Box(c).Size(chromeH, chromeH).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label("搜索")
 	hovered := btn.Hovered()
 
@@ -98,7 +98,7 @@ func (a *App) searchButton(c *ui.Context) {
 		panel.Width(a.searchPanelWidth(c)).Padding(8).Gap(6).
 			Radius(theme.RadiusMD).Background(theme.BgElevated).
 			Border(1, theme.Border).
-			Shadow(0, 22, 56, -22, theme.ShadowPopover).
+			Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact).
 			Margin(10, 0, 0, 0).
 			AttachTo(btn, ui.AnchorBottomRight, ui.AnchorTopRight)
 		a.searchPopover(c)
@@ -121,10 +121,10 @@ func (a *App) searchPopover(c *ui.Context) {
 	// 查询词或平台变了就在这里起一次防抖请求；没变则什么都不做
 	a.syncSearch()
 
-	// ---- 输入框：38 高、圆角 8、fill-quaternary + 1px 描边
+	// ---- 输入框：38 高、圆角 8、fill-quaternary 底，描边只在聚焦时出现
 	field := ui.Row(c).Height(searchFieldH).Padding(0, 10, 0, 10).Gap(8).
 		Radius(theme.RadiusXS).Background(theme.FillQuaternary).Center()
-	border := theme.Border
+	border := ui.Transparent
 	if field.FocusWithin() {
 		border = theme.AccentInk
 	}

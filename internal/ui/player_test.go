@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/live"
+	"alive/internal/theme"
 )
 
 // 控制条的三档尺寸：
@@ -350,12 +351,16 @@ func TestPlayerShellCornerBorderIsContinuous(t *testing.T) {
 		tt.Advance(1500 * time.Millisecond)
 		img := tt.Image()
 
+		// 描边的亮度区间跟着主题走，不写死：配色换了，这里不该跟着红。
+		borderRow := int(theme.Border.R) + int(theme.Border.G) + int(theme.Border.B)
+		lo, hi := borderRow-14, borderRow+14
+
 		// 顶边：第一行横贯大半幅画面的描边
 		top, left := -1, -1
 		for y := 0; y < img.Bounds().Dy() && top < 0; y++ {
 			n := 0
 			for x := 0; x < img.Bounds().Dx(); x++ {
-				if sum(img, x, y) >= 100 && sum(img, x, y) <= 135 {
+				if sum(img, x, y) >= lo && sum(img, x, y) <= hi {
 					n++
 				}
 			}
@@ -368,7 +373,7 @@ func TestPlayerShellCornerBorderIsContinuous(t *testing.T) {
 		}
 		// 左边：顶边往下走满一个圆角之后，第一条竖着的描边
 		for x := 0; x < img.Bounds().Dx(); x++ {
-			if sum(img, x, top+int(radius*scale)+2) >= 100 {
+			if sum(img, x, top+int(radius*scale)+2) >= lo {
 				left = x
 				break
 			}
@@ -434,6 +439,9 @@ func TestPlayerIconsShareInkBand(t *testing.T) {
 	// 钉住音量，测试才不会跟着本机 state.json 变。
 	app.Volume = 0.6
 	tt := ui.NewTester(app.Shell, 1440, 900)
+	// 控制条现在是玻璃：下面有画面时，亮像素会从背景透进来，量到的墨迹
+	// 就不再只是图标。这条量的是图标几何，不是材质——把透明关掉再量。
+	tt.SetPreferences(ui.Preferences{ReduceTransparency: true})
 	img := tt.Image()
 
 	const (

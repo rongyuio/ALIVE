@@ -40,7 +40,7 @@ const (
 	moreItemH     float32 = 38
 )
 
-// 浮层阴影统一走 theme.ShadowPopover（随明暗主题切换）。
+// 浮层阴影统一走 theme.ShadowPanel + ShadowContact（随明暗主题切换）。
 
 // categoryHit 是分区搜索的一条结果：命中的二级分区连同它所属的一级分组。
 type categoryHit struct {
@@ -184,14 +184,14 @@ func (a *App) toggleSubscribe() {
 
 // categoryBar 是分区栏：一级文字 tab + 二级 chip + 三级 chip（仅斗鱼）。
 //
-// 一整块面板是 radius 16 + 1px 描边 + shadow-low，
+// 一整块面板和卡片同一块材质：radius 16 + 受光边，不描边。
 // 三行之间 gap 10，行内一律横滑、永不换行。
 func (a *App) categoryBar(c *ui.Context) {
 	if len(a.Groups) == 0 {
 		return
 	}
 	panel := ui.Column(c).Gap(10).Padding(12, 14, 14, 14).
-		Radius(theme.RadiusXL).Border(1, theme.Border).
+		Radius(theme.RadiusXL).
 		Background(theme.BgSecondary)
 	panel.Shadow(0, 1, 0, 0, theme.TopLight)
 
@@ -285,9 +285,10 @@ func (a *App) categorySearch(c *ui.Context) {
 		width = catSearchWide
 	}
 
+	// 静态不描边：填充和卡片差 8.8 个 L*，形状自己就站得住；描边只留给聚焦。
 	// .catSearch { transition: width 240ms var(--ease-out) }
 	// .catField:focus-within { border-color: accent-ink }，190ms
-	border := theme.Border
+	border := ui.Transparent
 	if field.FocusWithin() {
 		border = theme.AccentInk
 	}
@@ -336,7 +337,7 @@ func (a *App) categorySearch(c *ui.Context) {
 		}
 		panel.Width(catPanelW).Padding(6).Radius(theme.RadiusMD).
 			Background(theme.BgElevated).Border(1, theme.Border).
-			Shadow(0, 22, 56, -22, theme.ShadowPopover).
+			Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact).
 			Margin(8, 0, 0, 0).
 			AttachTo(field, ui.AnchorBottomRight, ui.AnchorTopRight)
 		a.categorySearchPanel(c)
@@ -578,7 +579,7 @@ func (a *App) moreButton(c *ui.Context, row ui.Element) {
 		w := a.morePanelWidth(c)
 		panel.Width(w).Padding(16).Radius(theme.RadiusXL).
 			Background(theme.BgElevated).Border(1, theme.Border).
-			Shadow(0, 22, 56, -22, theme.ShadowPopover).
+			Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact).
 			Margin(12, 0, 0, 0).
 			AttachTo(row, ui.AnchorBottomRight, ui.AnchorTopRight)
 		a.morePanel(c, w)

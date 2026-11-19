@@ -51,11 +51,11 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 
 	ui.PopoverBase(c, btn, &a.DanmuSettingsOpen, func(panel ui.Element) {
 		panel.Width(danmuPanelW).Padding(14, 16, 14, 16).Radius(16).
-			Background(ui.RGBA(17, 20, 28, 0.88)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12)).
-			Shadow(0, 18, 40, 0, ui.RGBA(0, 0, 0, 0.4)).
+			Border(1, theme.MediaHair).
+			Shadow(0, 18, 40, 0, theme.MediaShadow).
 			Margin(0, 0, 10, 0).
 			AttachTo(btn, ui.AnchorTopRight, ui.AnchorBottomRight)
+		panel = mediaPanel(c, panel)
 		panel.Children(func() {
 			ui.Column(c).Gap(12).Children(func() {
 				a.danmuColorRow(c, "颜色", &a.DanmuColor, &a.DanmuColorOpen)
@@ -86,8 +86,8 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 func danmuRow(c *ui.Context) ui.Element {
 	return ui.Row(c).Padding(danmuRowPadV, danmuRowPadH, danmuRowPadV, danmuRowPadH).
 		Gap(12).Radius(danmuRowRad).AlignItems(ui.Center).
-		Background(ui.RGBA(255, 255, 255, 0.05)).
-		Border(1, ui.RGBA(255, 255, 255, 0.08))
+		Background(theme.MediaRow).
+		Border(1, theme.MediaRowLine)
 }
 
 func danmuLabel(c *ui.Context, text string) ui.Element {
@@ -131,8 +131,8 @@ func (a *App) danmuColorWell(c *ui.Context, label string, color *ui.Color, open 
 	ui.PopoverBase(c, well, open, func(panel ui.Element) {
 		panel.Padding(14).Radius(theme.RadiusXL).
 			Background(ui.RGBA(17, 20, 28, 0.94)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12)).
-			Shadow(0, 18, 40, 0, ui.RGBA(0, 0, 0, 0.4)).
+			Border(1, theme.MediaHair).
+			Shadow(0, 18, 40, 0, theme.MediaShadow).
 			Margin(8, 0, 0, 0)
 		picker := ui.ColorPicker(c, color)
 		if picker.Changed() {
@@ -152,7 +152,7 @@ func danmuWellRing(c ui.Color) ui.Color {
 	if lum > 140 {
 		return ui.RGBA(0, 0, 0, 0.30)
 	}
-	return ui.RGBA(255, 255, 255, 0.22)
+	return theme.MediaTrackFill
 }
 
 // danmuWellCheckers 是色块底下的灰白棋盘格。
@@ -181,7 +181,7 @@ func (a *App) danmuSwitchRow(c *ui.Context, label string, on *bool) {
 		if *on {
 			sw.Background(theme.Accent)
 		} else {
-			sw.Background(ui.RGBA(255, 255, 255, 0.22))
+			sw.Background(theme.MediaTrackFill)
 		}
 		if sw.Clicked() {
 			*on = !*on
@@ -198,7 +198,7 @@ func (a *App) danmuSwitchRow(c *ui.Context, label string, on *bool) {
 			if *on {
 				thumb.Background(ui.Hex("#1a1a1a"))
 			} else {
-				thumb.Background(ui.RGBA(255, 255, 255, 0.92))
+				thumb.Background(theme.MediaText)
 			}
 		})
 	})
@@ -215,8 +215,8 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, frac float32, s
 
 	row := ui.Column(c).Padding(danmuRowPadV, danmuRowPadH, danmuRowPadV, danmuRowPadH).
 		Gap(danmuRowGap).Radius(danmuRowRad).
-		Background(ui.RGBA(255, 255, 255, 0.05)).
-		Border(1, ui.RGBA(255, 255, 255, 0.08))
+		Background(theme.MediaRow).
+		Border(1, theme.MediaRowLine)
 	row.Children(func() {
 		ui.Row(c).FillWidth().Children(func() {
 			danmuLabel(c, label).Grow(1)
@@ -225,7 +225,7 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, frac float32, s
 
 		track := ui.Box(c).Width(danmuSliderW).Height(4).Radius(theme.RadiusFull).
 			Label(label).
-			Background(ui.RGBA(255, 255, 255, 0.15)).Cursor(ui.CursorPointer)
+			Background(theme.MediaTrack).Cursor(ui.CursorPointer)
 		if x, _, ok := track.PointerPosition(); ok && (track.Pressed() || track.Dragging()) {
 			f := x / danmuSliderW
 			if f < 0 {

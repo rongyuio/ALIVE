@@ -16,9 +16,9 @@ const (
 	palettePanelW = 352
 )
 
-// paletteButton 是工具组里的配色按钮：38×38，图标 + 右下角一枚当前强调色的小点。
+// paletteButton 是工具组里的配色按钮：chromeH 见方，图标 + 右下角一枚当前强调色的小点。
 func (a *App) paletteButton(c *ui.Context) {
-	btn := ui.Box(c).Size(38, 38).Radius(theme.RadiusFull).
+	btn := ui.Box(c).Size(chromeH, chromeH).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label("配色面板")
 	hovered := btn.Hovered()
 	if a.PaletteOpen || hovered {
@@ -44,7 +44,7 @@ func (a *App) paletteButton(c *ui.Context) {
 			Background(theme.BgElevated).Border(1, theme.Border).
 			Label("配色浮层").
 			// --shadow-lg: 0 38px 72px -30px rgba(0,0,0,.85)
-			Shadow(0, 38, 72, -30, theme.ShadowLg).
+			Shadow(0, 38, 72, -30, theme.ShadowModal).Shadow(0, 6, 16, 0, theme.ShadowContact).
 			Margin(10, 0, 0, 0).
 			AttachTo(btn, ui.AnchorBottomRight, ui.AnchorTopRight)
 		a.palettePanel(c)
@@ -178,7 +178,7 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 		Radius(theme.RadiusMD).Background(theme.FillQuaternary).
 		Border(1, ui.Transparent).Cursor(ui.CursorPointer).Label("配色:" + p.Name)
 	if active {
-		item.Border(1, theme.Accent).Background(theme.FillTertiary)
+		item.Border(1, theme.AccentLine).Background(theme.FillTertiary)
 	} else if item.Hovered() {
 		item.BorderColor(theme.BorderStrong).Background(theme.FillTertiary)
 	}

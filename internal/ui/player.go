@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/media"
@@ -15,8 +16,8 @@ import (
 // 「深色半透明 + 1px 白色 12% 描边」，叠在画面上才压得住。
 var (
 	playerBarBg     = ui.RGBA(9, 10, 12, 0.55)
-	playerBarBorder = ui.RGBA(255, 255, 255, 0.09)
-	playerIcon      = ui.RGBA(255, 255, 255, 0.88)
+	playerBarBorder = theme.MediaHair
+	playerIcon      = theme.MediaTextDim
 	playerIconOn    = ui.Hex("#ffffff")
 )
 
@@ -67,6 +68,8 @@ func (a *App) PlayerPage(c *ui.Context) {
 		pad = 0
 	}
 	ui.Box(c).Grow(1).Padding(0, pad, 0, pad).Children(func() {
+		// container: allow 播放器外壳的 1px 描边参与圆角裁剪（Clip 裁 padding box），
+		// 不是静态容器的装饰边；换掉要先重做那圈圆角。
 		shell := ui.Column(c).Fill().
 			Border(1, theme.Border).Background(theme.BgSecondary)
 		if full {
@@ -310,7 +313,7 @@ func (a *App) stageFrame(c *ui.Context) {
 		ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
 	}
 	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(0, 0, 0, 0.22))
+		Background(theme.MediaScrimSoft)
 }
 
 // stageOverlay 是画面上的状态层。状态一共五种：拉流中、断流重连、
@@ -357,14 +360,14 @@ func (a *App) stageOverlay(c *ui.Context) {
 		a.overlayLayer(c, func() {
 			// 58 圆底 + 26 图标
 			icon := ui.Box(c).Size(58, 58).Radius(29).Margin(0, 0, 4, 0).
-				Background(ui.RGBA(255, 255, 255, 0.08)).
-				Border(1, ui.RGBA(255, 255, 255, 0.10)).Center()
+				Background(theme.MediaRowLine).
+				Border(1, theme.MediaHair).Center()
 			icon.Children(func() {
 				ui.Icon(c, iconMonitorOff).FontSize(26).
-					TextColor(ui.RGBA(255, 255, 255, 0.68))
+					TextColor(theme.MediaTextDim)
 			})
 			ui.Text(c, "主播暂时没有开播").FontSize(theme.TextLG).FontWeight(600).
-				TextColor(ui.RGBA(255, 255, 255, 0.94))
+				TextColor(theme.White94)
 			a.overlayText(c, "开播后会自动加载，也可以手动刷新试试")
 			a.overlayButton(c, "立即刷新", a.retryStream)
 		})
@@ -388,7 +391,7 @@ func (a *App) overlayLayer(c *ui.Context, fn func()) {
 func (a *App) overlayText(c *ui.Context, text string) {
 	w, _ := c.Size()
 	ui.Text(c, text).FontSize(theme.TextSM).
-		TextColor(ui.RGBA(255, 255, 255, 0.86)).
+		TextColor(theme.MediaTextBody).
 		LineHeight(1.7).TextAlign(ui.Center).MaxWidth(w * 0.7)
 }
 
@@ -475,11 +478,11 @@ func (a *App) playerTopbar(c *ui.Context) {
 		// ------------------------------ 返回：44 圆钮
 		back := ui.Box(c).Size(44, 44).Radius(999).
 			Background(ui.RGBA(10, 10, 12, 0.62)).
-			Border(1, ui.RGBA(255, 255, 255, 0.18)).
+			Border(1, theme.MediaTrack).
 			Center().Cursor(ui.CursorPointer).Label("退出直播间")
 		if back.Hovered() {
 			back.Background(ui.RGBA(10, 10, 12, 0.72)).
-				BorderColor(ui.RGBA(255, 255, 255, 0.24))
+				BorderColor(theme.MediaHairStrong)
 		}
 		if back.Clicked() {
 			// 叉是明确退出：关引擎、断弹幕，不留后台声音。别的离开方式
@@ -489,7 +492,7 @@ func (a *App) playerTopbar(c *ui.Context) {
 		}
 		back.Children(func() {
 			// 关闭用 X，不是返回箭头
-			ui.Icon(c, iconPlayerBack).FontSize(19).TextColor(ui.RGBA(255, 255, 255, 0.92))
+			ui.Icon(c, iconPlayerBack).FontSize(19).TextColor(theme.MediaText)
 		})
 
 		// 弹性空白也穿透：它占了顶栏右侧整段，不穿透就等于把拖窗条
@@ -511,9 +514,15 @@ func (a *App) playerControls(c *ui.Context) {
 	dock.Translate(0, (1-a.chromeFade(dock))*10)
 	dock.Children(func() {
 		bar := ui.Row(c).Height(44).Padding(7, 14, 7, 14).Radius(16).FillWidth().
-			Background(playerBarBg).Border(1, playerBarBorder).
-			AlignItems(ui.Center)
-		bar.Shadow(0, 18, 44, -20, ui.RGBA(0, 0, 0, 0.7)).
+			Border(1, playerBarBorder).AlignItems(ui.Center)
+		// 整条控制条下面是真的画面，用真玻璃让它透上来。
+		// 系统要求减少透明时退回原来的实色——这不是建议。
+		if c.Preferences().ReduceTransparency {
+			bar.Background(playerBarBg)
+		} else {
+			bar.Material(glass.Glass{Style: glass.Regular, Tint: playerBarBg})
+		}
+		bar.Shadow(0, 18, 44, -20, theme.MediaShadowStrong).
 			InsetShadow(0, 0, 0, 1, theme.TopLight)
 
 		bar.Children(func() {
@@ -697,9 +706,9 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 		active := a.volumeDragging || hot.Hovered()
 		hot.Children(func() {
 			track := ui.Box(c).Width(m.volumeW).Height(4).Radius(999).
-				Background(ui.RGBA(255, 255, 255, 0.18))
+				Background(theme.MediaTrack)
 			if active {
-				track.Height(6).Background(ui.RGBA(255, 255, 255, 0.26))
+				track.Height(6).Background(theme.MediaTrackFill)
 			}
 			track.Children(func() {
 				ui.Box(c).Absolute().Left(0).Top(0).Bottom(0).
@@ -810,11 +819,11 @@ func (a *App) playerDropdown(c *ui.Context, label string, options []string, valu
 		// 下拉面板是 min-width: 130px，不是固定宽：档位名带「1080P 原画」
 		// 这种前缀，写死 130 会把「自动（720P 超清）」挤成两行。
 		panel.MinWidth(130).Padding(10, 12, 10, 12).Radius(14).
-			Background(ui.RGBA(16, 19, 28, 0.82)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12)).
-			Shadow(0, 18, 36, 0, ui.RGBA(0, 0, 0, 0.35)).
+			Border(1, theme.MediaHair).
+			Shadow(0, 18, 36, 0, theme.MediaShadow).
 			Margin(0, 0, 8, 0).
 			AttachTo(btn, ui.AnchorTopRight, ui.AnchorBottomRight)
+		panel = mediaPanel(c, panel)
 		// 指针从按钮滑进面板时要取消关闭计时（面板自己也有
 		// onMouseEnter={cancelClose}），否则菜单会从手底下消失。
 		h.hover(c, panel.Hovered(), open)
@@ -851,7 +860,7 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open 
 		}
 	}
 	row.Children(func() {
-		col := ui.RGBA(255, 255, 255, 0.85)
+		col := theme.MediaTextBody
 		if active {
 			col = theme.Accent
 		}

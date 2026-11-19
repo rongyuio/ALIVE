@@ -146,7 +146,7 @@ func (a *App) danmuPanelHandle(c *ui.Context, open bool) {
 			// border-radius: 10px 0 0 10px —— 只有靠面板外侧的两个角是圆的
 			tab := ui.Box(c).Width(20).Height(64).Radius(10, 0, 0, 10).
 				Background(theme.Accent).Center()
-			tab.Shadow(0, 8, 20, -10, ui.RGBA(0, 0, 0, 0.7))
+			tab.Shadow(0, 8, 20, -10, theme.MediaShadowStrong)
 			// .panelHandleTab { opacity: 0; transition: opacity var(--dur-2) }
 			op := tab.AnimateTo("panel-tab", boolF(hot.Hovered()),
 				theme.EaseOut(190*time.Millisecond))

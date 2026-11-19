@@ -26,7 +26,7 @@ func (a *App) shortcutsOverlay(c *ui.Context) {
 		panel := ui.Column(c).Width(420).Padding(20, 20, 18, 20).
 			Radius(theme.RadiusXL).Background(theme.BgElevated).
 			Border(1, theme.Border).
-			Shadow(0, 24, 60, -24, theme.ShadowPopover)
+			Shadow(0, 24, 60, -24, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact)
 		// 点面板本身不该关掉它
 		if panel.Clicked() {
 			a.ShortcutsOpen = true

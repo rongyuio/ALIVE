@@ -127,7 +127,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 		bar := ui.Row(c).Absolute().Left(8).Right(8).Bottom(8).Height(36).
 			Padding(4, 8, 4, 8).Radius(12).Gap(8).AlignItems(ui.Center).
 			Background(ui.RGBA(9, 10, 12, 0.62)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12))
+			Border(1, theme.MediaHair)
 		op := bar.AnimateTo("mini-bar", boolF(hovered), theme.EaseOut(160*time.Millisecond))
 		bar.Opacity(op)
 		// 淡出时不应该还能点到（看不见的按钮最烦人）
@@ -176,12 +176,12 @@ func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, label string, size float32, on
 	btn := ui.Box(c).Size(28, 28).Radius(8).Center().
 		Cursor(ui.CursorPointer).Label(label)
 	if btn.Hovered() {
-		btn.Background(ui.RGBA(255, 255, 255, 0.12))
+		btn.Background(theme.MediaHair)
 	}
 	if btn.Clicked() {
 		on()
 	}
-	col := ui.RGBA(255, 255, 255, 0.82)
+	col := theme.MediaTextBody
 	if btn.Hovered() {
 		col = ui.Hex("#ffffff")
 	}
@@ -265,12 +265,12 @@ func (a *App) captionBtn(c *ui.Context, ico *ui.SVG, label string, close bool, o
 	case hovered && close:
 		btn.Background(ui.Hex("#c42b1c"))
 	case hovered:
-		btn.Background(ui.RGBA(255, 255, 255, 0.10))
+		btn.Background(theme.MediaHair)
 	}
 	if btn.Clicked() {
 		on()
 	}
-	col := ui.RGBA(255, 255, 255, 0.92)
+	col := theme.MediaText
 	if hovered {
 		col = ui.Hex("#ffffff")
 	}

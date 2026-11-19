@@ -12,82 +12,98 @@ import (
 
 // ---------------------------------------------------------------- 表面色阶
 
+// 这四组颜色由 palette.go 的 specs 推导，init 时按默认配色填一遍。
+// 这里不再写十六进制：一份颜色只能有一个来源，否则两套说法迟早对不上。
 var (
-	BgPrimary   = ui.Hex("#0a0b0d") // 窗口地面
-	BgSecondary = ui.Hex("#14161b") // 卡片 / 顶栏 / 浮层底
-	BgTertiary  = ui.Hex("#1c1f25") // 封面占位、更深一档
-	BgElevated  = ui.Hex("#191c22") // 弹层
-	SidebarBg   = ui.Hex("#0c0e11")
+	// 窗口地面 / 卡片、顶栏、浮层底 / 封面占位、更深一档 / 弹层
+	BgPrimary, BgSecondary, BgTertiary, BgElevated ui.Color
+	// 顶栏里那类「装一排控件」的托盘：地和卡片的正中间，比地高、比卡片低。
+	SurfaceChrome ui.Color
+	// 填充四档，从最浅到最深
+	FillQuaternary, FillTertiary, FillSecondary, HoverBg ui.Color
 
-	FillQuaternary = ui.Hex("#16181d")
-	FillTertiary   = ui.Hex("#1e2128")
-	FillSecondary  = ui.Hex("#272b33")
-	HoverBg        = ui.Hex("#1e2128")
+	// 文字四档：正文 / 次级 / 三级 / 元数据
+	TextPrimary, TextSecondary, TextTertiary, TextMeta ui.Color
+
+	// 强调色：填充、悬停、按下、上面的字、当字用、当线条用
+	Accent, AccentHover, AccentActive, AccentText ui.Color
+	AccentInk, AccentLine                         ui.Color
+	AccentSoft, AccentSofter, AccentGlow          ui.Color
+
+	// 描边与分隔
+	Border, BorderStrong, Separator ui.Color
+
+	// 离线态的点（在线点所有配色共用一个绿，见下面的常量）
+	StatusOffline ui.Color
 )
 
-// ---------------------------------------------------------------- 文字
+func init() { Apply(Palettes[0].ID) }
 
+// ---------------------------------------------------------------- 固定色
+
+// 这几支不随配色变：状态色是语义，白色是压在画面上的墨。
 var (
-	TextPrimary   = ui.Hex("#f4f4ef")
-	TextSecondary = ui.Hex("#a7aab2")
-	TextTertiary  = ui.Hex("#8b909a")
-	TextMeta      = ui.Hex("#737884")
-)
-
-// ---------------------------------------------------------------- 强调色（信号青柠）
-
-var (
-	Accent       = ui.Hex("#d8ff4f")
-	AccentHover  = ui.Hex("#e6ff7c")
-	AccentActive = ui.Hex("#c2ed2f")
-	AccentText   = ui.Hex("#0b0c08") // 青柠上的字
-	AccentInk    = ui.Hex("#d8ff4f") // 青柠当文字用
-	AccentSoft   = ui.RGBA(216, 255, 79, 0.12)
-	AccentSofter = ui.RGBA(216, 255, 79, 0.07)
-	AccentGlow   = ui.RGBA(216, 255, 79, 0.20)
-)
-
-// ---------------------------------------------------------------- 描边与分隔
-
-var (
-	Border       = ui.Hex("#24272e")
-	BorderStrong = ui.Hex("#343842")
-	Separator    = ui.Hex("#1f2229")
-)
-
-// ---------------------------------------------------------------- 状态色
-
-var (
-	StatusLive    = ui.Hex("#ff4757")
-	StatusOffline = ui.Hex("#5c6169")
 	// 关注面板头像右下角的在线点：所有配色都是同一个绿
 	StatusOnline = ui.Hex("#22c55e")
 	Success      = ui.Hex("#7bdc8a")
 	Warning      = ui.Hex("#f5b544")
 	Danger       = ui.Hex("#ff5c6c")
-)
 
-// ---------------------------------------------------------------- 半透明叠加（来自 CSS 的 rgba 值）
-
-var (
-	// 平涂表面顶部那 1px 受光边：inset 0 1px 0 rgba(255,255,255,.04)。
-	// 切换配色时由 Apply 按配色的明暗换成合适的值。
-	TopLight = ui.RGBA(255, 255, 255, 0.04)
-
-	// 阴影令牌：--shadow-popover / --shadow-lg。
-	// 深色主题近乎纯黑；浅色主题是低透明度的蓝黑（daylight / paper 的值）。
-	// 由 Apply 按配色明暗切换——浅色主题套用深色阴影会压出一圈脏灰。
-	ShadowPopover = ui.RGBA(0, 0, 0, 0.80)
-	ShadowLg      = ui.RGBA(0, 0, 0, 0.85)
 	// 封面上的人数胶囊：rgba(8,9,11,.78)
-	OverlayInk       = ui.RGBA(8, 9, 11, 0.78)
-	OverlayInkStrong = ui.RGBA(8, 9, 11, 0.90)
-	// 播放器控制条：rgba(10,11,13,.92)
-	PlayerGlass = ui.RGBA(10, 11, 13, 0.92)
+	OverlayInk = ui.RGBA(8, 9, 11, 0.78)
 	// 白色文字描边 / 高光
 	White90 = ui.RGBA(255, 255, 255, 0.90)
 	White94 = ui.RGBA(255, 255, 255, 0.94)
 	White12 = ui.RGBA(255, 255, 255, 0.12)
+)
+
+// ---------------------------------------------------------------- 压在画面上的墨
+
+// 播放器和弹幕面板浮在视频/封面上，那里的颜色不能跟配色走：
+// 浅色主题里把面板刷白，字就没了。这一组只按"深底浅字"取，
+// 和 Palette 无关，所以不参加对比度审计里那些随配色变的组合。
+var (
+	// 面板底：rgba(17,20,28,.88)，减少透明时的实色退路
+	MediaPanel = ui.RGBA(17, 20, 28, 0.88)
+	// 玻璃面板的 tint：比实色轻一档，模糊才看得见
+	MediaPanelTint = ui.RGBA(17, 20, 28, 0.72)
+	// 面板里的一行：0.05 底 + 0.08 描边
+	MediaRow     = ui.RGBA(255, 255, 255, 0.05)
+	MediaRowLine = ui.RGBA(255, 255, 255, 0.08)
+	// 发丝线 / 分隔
+	MediaHair = ui.RGBA(255, 255, 255, 0.12)
+	// 浮在画面上的阴影：小浮层 / 控制条。
+	// 之前 0.35 / 0.40 / 0.70 三个值混着用，还把一个"压暗"的令牌当阴影色。
+	MediaShadow       = ui.RGBA(0, 0, 0, 0.35)
+	MediaShadowStrong = ui.RGBA(0, 0, 0, 0.70)
+	// 滑杆轨道、未选中的滑块
+	MediaTrack = ui.RGBA(255, 255, 255, 0.15)
+	// 面板上的字：主 / 正文 / 次 / 极弱。
+	// 之前这里有 0.86、0.85、0.82、0.68、0.60、0.40、0.35 七个值，
+	// 相差不到 3% 的透明度分不出层级，只是各自的随手数。
+	MediaText       = ui.RGBA(255, 255, 255, 0.92)
+	MediaTextBody   = ui.RGBA(255, 255, 255, 0.85)
+	MediaTextDim    = ui.RGBA(255, 255, 255, 0.70)
+	MediaTextFaint  = ui.RGBA(255, 255, 255, 0.45)
+	MediaTrackFill  = ui.RGBA(255, 255, 255, 0.26)
+	MediaHairStrong = ui.RGBA(255, 255, 255, 0.24)
+	MediaScrimSoft  = ui.RGBA(0, 0, 0, 0.22)
+)
+
+// ---------------------------------------------------------------- 半透明叠加
+
+var (
+	// 平涂表面顶部那 1px 受光边：切换配色时由 Apply 按明暗换成合适的值。
+	TopLight ui.Color
+
+	// 阴影阶梯：两级一层——大而散的环境光 + 小而实的接触影。
+	//
+	// 单层阴影只能选"浮不起来"或"像贴纸"：0 22 56 -22 这样的散影在白底上
+	// 几乎看不见，压重了又没有接触感。Apple 的影子一直是两层。
+	// ShadowPanel 是下拉和气泡，ShadowModal 是面板、登录层和灵动岛。
+	ShadowPanel   ui.Color
+	ShadowModal   ui.Color
+	ShadowContact ui.Color
 )
 
 // ---------------------------------------------------------------- 尺度

@@ -63,11 +63,11 @@ var followsSectionNames = []string{"关注主播", "订阅分区"}
 
 // followsPanel 是关注页顶部的分区面板：一级分区 + 当前分区的二级分级。
 //
-// 外壳和首页的 categoryBar 同一块材质（RadiusXL + 1px 描边 + 受光边、
+// 外壳和首页的 categoryBar 同一块材质（RadiusXL + 受光边、不描边，
 // 三行之间 gap 10），这样从平台页切到关注页正文起点不跳。
 func (a *App) followsPanel(c *ui.Context) {
 	panel := ui.Column(c).Gap(10).Padding(12, 14, 14, 14).
-		Radius(theme.RadiusXL).Border(1, theme.Border).
+		Radius(theme.RadiusXL).
 		Background(theme.BgSecondary)
 	panel.Shadow(0, 1, 0, 0, theme.TopLight)
 
@@ -184,7 +184,8 @@ func (a *App) followsActions(c *ui.Context) {
 		search := ui.Row(c).Height(34).Padding(0, 8, 0, 11).Gap(7).
 			Radius(theme.RadiusFull).Background(theme.FillQuaternary).
 			Center().Cursor(ui.CursorText)
-		border := theme.Border
+		// 和分区搜索一样：静态不描边，聚焦才画
+		border := ui.Transparent
 		if search.FocusWithin() {
 			border = theme.AccentInk
 		}
@@ -332,7 +333,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 					Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().
 					Children(func() {
 						ui.Text(c, initial(s.Name)).FontSize(14).FontWeight(600).
-							TextColor(ui.RGBA(255, 255, 255, 0.88))
+							TextColor(theme.MediaTextDim)
 					})
 			}
 			// 在线点：13×13，2px 的地面色描边把它从头像上「抠」出来
@@ -367,12 +368,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 			if s.Live {
 				dot.Background(theme.StatusOnline)
 			} else {
-				// 离线点：深色主题 #475569，浅色主题 #94a3b8
-				off := ui.Hex("#475569")
-				if !theme.Current().Dark {
-					off = ui.Hex("#94a3b8")
-				}
-				dot.Background(off)
+				dot.Background(theme.StatusOffline)
 			}
 		})
 

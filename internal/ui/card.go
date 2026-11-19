@@ -165,11 +165,15 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 				})
 			}
 
-			// 播放提示：圆心 46，accent 底，hover 淡入
+			// 播放提示：圆心 46，深色遮罩 + 白三角，hover 淡入。
+			//
+			// 这里曾经是 accent 圆底。首页一屏十几张封面，鼠标扫过去每张都亮一次
+			// 青柠，强调色就不叫强调色了——封面本来就是彩色的，这个圆只需要
+			// 让"点它会播"这件事看得见，不需要品牌色。
 			if hovered {
 				ui.Box(c).Absolute().Left(w/2-23).Top(coverH/2-23).Size(46, 46).Radius(23).
-					Background(theme.Accent).Center().Children(func() {
-					ui.Text(c, "▶").FontSize(15).TextColor(theme.AccentText)
+					Background(theme.OverlayInk).Center().Children(func() {
+					ui.Text(c, "▶").FontSize(15).TextColor(theme.White94)
 				})
 			}
 		})
@@ -237,7 +241,7 @@ func avatarCircle(c *ui.Context, s Streamer, size float32) {
 	base := ui.Oklch(0.42, 0.10, s.Hue+180)
 	ui.Box(c).Size(size, size).Radius(size / 2).Background(base).Center().Children(func() {
 		ui.Text(c, initial(s.Name)).FontSize(size * 0.4).FontWeight(600).
-			TextColor(ui.RGBA(255, 255, 255, 0.88))
+			TextColor(theme.MediaTextDim)
 	})
 }
 
