@@ -583,13 +583,13 @@ func TestDeadReason(t *testing.T) {
 
 // ---------------------------------------------------------------- 后台收听
 
-// trackSpy 记视频轨被开关了几次、最后是什么状态。
+// trackSpy 记全尺寸呈现被开关了几次、最后是什么状态。
 type trackSpy struct {
 	mu     sync.Mutex
 	states []bool
 }
 
-func (s *trackSpy) SetVideoEnabled(on bool) {
+func (s *trackSpy) SetPresenting(on bool) {
 	s.mu.Lock()
 	s.states = append(s.states, on)
 	s.mu.Unlock()
@@ -613,7 +613,7 @@ func (s *trackSpy) count() int {
 // useTrack 把引擎取用换成 spy，并给 app 挂一个非 nil 的播放器。
 //
 // ui.VideoPlayer 造不出不碰 libmpv 的实例，这里只用到「非 nil」这一个性质：
-// detachMedia / attachMedia 的判据是它，视频轨的开关走 engineOf。
+// detachMedia / attachMedia 的判据是它，呈现的开关走 engineOf。
 func useTrack(t *testing.T, a *App, spy *trackSpy) {
 	t.Helper()
 	old := engineOf
@@ -622,7 +622,7 @@ func useTrack(t *testing.T, a *App, spy *trackSpy) {
 	a.media.player = nil
 }
 
-// 离开播放页进后台收听：视频轨关掉、房间记号留着、引擎不关。
+// 离开播放页进后台收听：全尺寸呈现关掉、房间记号留着、引擎不关。
 func TestDetachKeepsSound(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
@@ -634,7 +634,7 @@ func TestDetachKeepsSound(t *testing.T) {
 		t.Fatal("没有进入后台收听")
 	}
 	if on, ok := spy.last(); !ok || on {
-		t.Fatalf("视频轨最后状态是 %v（有没有设过 %v），应当关掉", on, ok)
+		t.Fatalf("全尺寸呈现最后状态是 %v（有没有设过 %v），应当关掉", on, ok)
 	}
 	if a.media.roomKey == "" {
 		t.Fatal("后台收听把房间记号清了：地址续期和断流重连都会失去目标")
@@ -642,15 +642,18 @@ func TestDetachKeepsSound(t *testing.T) {
 
 	// 幂等：再调一次不该重复设。
 	if n := spy.count(); n != 1 {
-		t.Fatalf("第二次 detach 又设了一次视频轨（共 %d 次）", n)
+		t.Fatalf("第二次 detach 又关了一次呈现（共 %d 次）", n)
 	}
 }
 
-// 回到播放页：整路重新起播，后台标记清掉。
+// 回到播放页：接上后台那一路，不重新取流、不开新引擎。
 //
-// 不走 vid=auto：视频轨关掉之后要等 mpv 走回下一个关键帧，实测 1.5–7 秒，
-// 快慢全看流的 GOP；重新取流 + 开新播放器只要 0.4–1 秒。
-func TestAttachRestartsStream(t *testing.T) {
+// 后台保留解码，只把渲染目标收到 160×90：mpv 实例、地址续期、音频输出和
+// 参考帧链都活着。回来把全尺寸呈现打开，引擎立刻用当前帧重渲染——实测 4ms
+// 出全尺寸画面，声音一秒没断。
+//
+// 整路重新起播的代价实测是 1.09–1.56 秒的新路首声，也就是那一下断音。
+func TestAttachResumesSameEngine(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
@@ -658,20 +661,47 @@ func TestAttachRestartsStream(t *testing.T) {
 
 	a.detachMedia()
 	before := a.media.seq
+	epoch := a.media.openedAt
 	a.attachMedia()
 
 	if a.media.background {
 		t.Fatal("回到播放页之后还挂着后台收听标记")
 	}
+	if a.media.seq != before {
+		t.Fatal("回来重新起播了：后台那一路的声音本来就没断")
+	}
+	if a.media.loading {
+		t.Fatal("回来进了 loading：画面上只剩加载层，最后一帧被盖掉了")
+	}
+	if on, ok := spy.last(); !ok || !on {
+		t.Fatalf("回来没有打开全尺寸呈现：%v（设过 %v）", on, ok)
+	}
+	if n := spy.count(); n != 2 {
+		t.Fatalf("呈现设了 %d 次（关+开应当正好 2 次）", n)
+	}
+	if !a.media.openedAt.Equal(epoch) {
+		t.Fatal("回来把打开时刻重置了：首帧预算会从头再算一遍")
+	}
+}
+
+// 引擎真的不在时（理论上不该发生：detach 需要引擎），回来只能整路起播，
+// 不能把人留在一张黑屏上。
+func TestAttachWithoutEngineStartsStream(t *testing.T) {
+	a := seededApp(t)
+	old := engineOf
+	engineOf = func(*ui.VideoPlayer) videoTrack { return nil }
+	t.Cleanup(func() { engineOf = old })
+	useProvider(t, &stubStreamer{full: live.Stream{Live: true}, selected: live.Variant{Label: "原画"}})
+	a.media.background = true
+	before := a.media.seq
+
+	a.attachMedia()
+
+	if a.media.background {
+		t.Fatal("没有引擎时回来还挂着后台收听标记")
+	}
 	if a.media.seq == before {
-		t.Fatal("回来没有重新起播：还在用后台那一路")
-	}
-	if !a.media.loading {
-		t.Fatal("重新起播没有进入 loading：用户看不到加载动画")
-	}
-	// 后台那一路的视频轨是关着的，回来也不该再把它当恢复手段。
-	if on, ok := spy.last(); !ok || on {
-		t.Fatalf("回来又把旧引擎的视频轨打开了：%v（设过 %v）", on, ok)
+		t.Fatal("没有引擎时回来没有重新起播")
 	}
 }
 
@@ -730,7 +760,7 @@ func TestBackgroundIgnoresFirstFrameBudget(t *testing.T) {
 
 // 转场期间 Router 会重建上一页：那时 PlayerPage 仍会跑 attachMedia，
 // 而人已经在别的页面上了。不加路由判据，attach 和 Shell 的 detach 会每帧
-// 互相翻一次——实测一秒十几条日志，视频轨跟着来回切。
+// 互相翻一次——实测一秒十几条日志，呈现跟着来回切。
 func TestAttachIgnoredOffPlayerPage(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
@@ -745,6 +775,6 @@ func TestAttachIgnoredOffPlayerPage(t *testing.T) {
 		t.Fatal("不在播放页时 attachMedia 把后台收听标记清了")
 	}
 	if on, _ := spy.last(); on {
-		t.Fatal("不在播放页时 attachMedia 把视频轨打开了")
+		t.Fatal("不在播放页时 attachMedia 把全尺寸呈现打开了")
 	}
 }

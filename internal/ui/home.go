@@ -116,8 +116,24 @@ type App struct {
 	// 两者本来就是两份数据（messages 留 300，Overlay 只管当帧）。
 	Danmu    []danmuLine
 	DanmuLog []danmuLine
-	danmuSeq int
 	danmu    danmuState
+
+	// 弹幕时钟：只有画面真的在前进时才走。
+	//
+	// 墙钟在暂停、缓冲、换路时照走，弹幕于是继续从静止的画面上飘过去——
+	// 用户看到的是「画面停了，弹幕还在剧透」。这里把弹幕时间做成可停的钟：
+	// 有播放器时按位置增量累加，暂停/缓冲时位置不动，弹幕也就不动。
+	// clock 可注入，测试直接推进它，不 sleep。
+	clock     func() time.Time
+	danmuNow  time.Time
+	danmuLast time.Time
+	danmuPos  time.Duration
+	// danmuTracks 是上一帧算出来的实际轨道数；danmuLanes 记每条轨道最后
+	// 一条弹幕的出生时刻与估算宽度。分配必须用实际轨道数，不能拿 seq 取模
+	// 一个写死的 14；同轨能不能接力，要看后一条会不会追上前一条。
+	danmuTracks int
+	danmuLanes  []danmuLane
+	danmuStageW float32
 
 	// 弹幕设置（落盘键 dtv_danmu_preferences_v1）
 	DanmuSettingsOpen bool
@@ -334,6 +350,7 @@ func newApp() *App {
 		ThemeMode: themeModeSystem,
 		Volume:    0.6,
 		Playing:   true,
+		clock:     time.Now,
 		// 清晰度 / 线路都只能来自平台返回值，本地不留默认：B 站没有叫
 		// 「原画」的档位（它是「1080P 原画」），虎牙抖音的档位名又各不相同。
 		// 空串表示「还不知道是哪一档」，取到档位后由 player_media 校正成第一档。

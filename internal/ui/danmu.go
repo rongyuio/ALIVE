@@ -140,6 +140,158 @@ func (a *App) ensureDanmuLoop() {
 	}()
 }
 
+// danmuTime 是弹幕当前用的时间，第一次用到时用注入的时钟落一个初值。
+func (a *App) danmuTime() time.Time {
+	if a.danmuNow.IsZero() {
+		a.danmuNow = a.clock()
+	}
+	return a.danmuNow
+}
+
+// danmuAdvance 决定这一拍弹幕时钟该走多少。
+//
+// 有播放器时只看 time-pos 的增量：位置不动（暂停、缓冲、卡死）就一步不走；
+// 位置一次跳得比墙钟还多（seek / 换路）只补墙钟那一段，弹幕不会瞬移。没有
+// 播放器时（还在取流）才退回墙钟，且只在播放态走。
+func danmuAdvance(dt time.Duration, hasPlayer, playing bool, pos, lastPos time.Duration) (add, newPos time.Duration) {
+	if hasPlayer {
+		delta := pos - lastPos
+		if delta <= 0 {
+			return 0, pos
+		}
+		if delta > dt {
+			delta = dt
+		}
+		return delta, pos
+	}
+	if !playing {
+		return 0, lastPos
+	}
+	return dt, lastPos
+}
+
+// advanceDanmuClock 把弹幕时钟往前推。
+//
+// 判据是「画面有没有真的前进」，不是墙钟：有播放器时按 time-pos 的增量走，
+// 位置不动（暂停、缓冲、卡死）就一步都不走。没有播放器时才退回墙钟增量。
+func (a *App) advanceDanmuClock() {
+	now := a.clock()
+	if a.danmuLast.IsZero() {
+		a.danmuLast = now
+		return
+	}
+	dt := now.Sub(a.danmuLast)
+	a.danmuLast = now
+	if dt <= 0 {
+		return
+	}
+	if p := a.media.player; p != nil {
+		add, pos := danmuAdvance(dt, true, true, p.Position(), a.danmuPos)
+		a.danmuPos = pos
+		a.danmuNow = a.danmuNow.Add(add)
+		return
+	}
+	add, _ := danmuAdvance(dt, false, a.Playing, 0, 0)
+	a.danmuNow = a.danmuNow.Add(add)
+}
+
+// danmuLane 是一条轨道上最后一条弹幕的参数。
+//
+// 轨道分配要判断的是「后一条会不会追上前一条」，所以必须记住前一条的出生
+// 时刻和宽度：宽度决定速度（v = (屏宽+宽度)/时长），也决定入场要走多久。
+type danmuLane struct {
+	at time.Time
+	w  float32
+}
+
+// takeDanmuTrack 给一条新弹幕分轨道。
+//
+// 从上往下找**第一条放得下的轨道**，不是先找空轨：空轨当然放得下，已经飞了
+// 一段、能安全接力的同轨也放得下。跳过能用的轨道硬往下排，屏幕上就会排成
+// 一条固定斜线。
+//
+// 「放得下」有两条判据，缺一不可：
+//  1. 入场不重叠：前一条的尾巴已经完全进入画面；
+//  2. 不追尾：后一条不会在前一条离场前追上它。
+//
+// 第 2 条只在后一条更快（更宽）时才会失败。照着当前速度模型
+// v = (S+w)/D 化简后就是 w2*(D-dt) <= S*dt，不用逐步模拟。
+//
+// 所有轨道都放不下时才叠，挑最早能空出来的那条：宁叠不丢。
+func (a *App) takeDanmuTrack(now time.Time, w2 float32) int {
+	n := a.danmuTracks
+	if n < 1 {
+		n = 14
+	}
+	if len(a.danmuLanes) < n {
+		a.danmuLanes = append(a.danmuLanes, make([]danmuLane, n-len(a.danmuLanes))...)
+	}
+	S := float64(a.danmuStageW)
+	if S <= 0 {
+		S = 1200
+	}
+	D := a.DanmuDur.Seconds()
+	if D <= 0 {
+		D = 10
+	}
+	dur := time.Duration(D * float64(time.Second))
+
+	for i := 0; i < n; i++ {
+		l := a.danmuLanes[i]
+		if l.at.IsZero() || !now.Before(l.at.Add(dur)) { // 上一条已经完全离开
+			a.danmuLanes[i] = danmuLane{at: now, w: w2}
+			return i
+		}
+		dt := now.Sub(l.at).Seconds()
+		if dt <= 0 {
+			continue
+		}
+		v1 := (S + float64(l.w)) / D
+		if dt < float64(l.w)/v1 { // 前一条还没完全进入
+			continue
+		}
+		if float64(w2)*(D-dt) <= S*dt { // 不会追尾
+			a.danmuLanes[i] = danmuLane{at: now, w: w2}
+			return i
+		}
+	}
+
+	// 所有轨道都排不下：叠在最早能接力的那条上。
+	best := 0
+	for i := 1; i < n; i++ {
+		if a.danmuLanes[i].at.Before(a.danmuLanes[best].at) {
+			best = i
+		}
+	}
+	a.danmuLanes[best] = danmuLane{at: now, w: w2}
+	return best
+}
+
+// danmuWidthEstimate 在入队时估一条弹幕的滚动宽度。
+//
+// 分配器需要它来判断入场时间与追尾；入队时没有排版上下文，只能按字符宽度
+// 推。中文/全角按一个字号，ASCII 按 0.55，再留 15% 余量——估窄了会放出会
+// 追尾的弹幕，估宽了只是轨道用得稀一点。
+func danmuWidthEstimate(d danmuLine, font float32) float32 {
+	if d.imageOnly() {
+		w, _ := emoteSize(d.Emotes[0], font*danmuStickerScale)
+		return w
+	}
+	var w float32
+	for _, r := range d.Text {
+		if r < 0x2E80 {
+			w += font * 0.55
+		} else {
+			w += font
+		}
+	}
+	for _, e := range d.Emotes {
+		ew, _ := emoteSize(e, font)
+		w += ew
+	}
+	return w * 1.15
+}
+
 // tickDanmu 在主线程推进弹幕：清掉过期的，按间隔补新的。
 func (a *App) tickDanmu() {
 	if a.Router.Path() != routePlayer {
@@ -147,7 +299,8 @@ func (a *App) tickDanmu() {
 		return
 	}
 
-	now := time.Now()
+	a.advanceDanmuClock()
+	now := a.danmuTime()
 	live := a.Danmu[:0]
 	for _, d := range a.Danmu {
 		if now.Sub(d.Born) < d.Dur {
@@ -162,9 +315,12 @@ func (a *App) tickDanmu() {
 // 轨道与位移都在这里算：
 // 区域为画面上方 50%，通道 30px；滚动时长 10s 穿过整屏。
 func (a *App) danmuLayer(c *ui.Context) {
-	if !a.DanmuOn || len(a.Danmu) == 0 {
+	if !a.DanmuOn {
 		return
 	}
+	// 位置每帧重算。33ms 的 tick 只负责补充与清理；如果时钟只在 tick 里
+	// 推进，弹幕就是 30Hz，配 60fps 的画面看起来像掉帧。
+	a.advanceDanmuClock()
 	w, h := c.Size()
 	// 画面矩形 = 窗口 − 顶栏（全屏时没有顶栏）− 左右 padding（全屏时没有）
 	// − 右侧弹幕面板。面板在系统全屏下不画（见 PlayerPage），宽度也就不能扣。
@@ -183,8 +339,18 @@ func (a *App) danmuLayer(c *ui.Context) {
 	if tracks < 1 {
 		tracks = 1
 	}
+	// 记下这一帧的真实轨道数和 stage 宽度：新弹幕入队时按它们分配轨道。
+	// 视图每帧重建，这两个值只是给入队路径用的观测缓存。
+	a.danmuTracks = tracks
+	a.danmuStageW = stageW
 
-	now := time.Now()
+	// 没有在飞的弹幕也要先把轨道数记下来：第一条弹幕入队时就按真实窗口
+	// 分配，不然会先按默认的 14 条排一轮，小窗口里立刻重叠。
+	if len(a.Danmu) == 0 {
+		return
+	}
+
+	now := a.danmuTime()
 	// 用四边绝对定位铺满 stage：Fill() 在 Box 里不会撑开高度，
 	// 那样弹幕会以塌缩后的容器中心定位，整层掉到画面中部。
 	layer := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).Clip()

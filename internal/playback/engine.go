@@ -265,6 +265,12 @@ func (e *Engine) SetRate(r float64) {
 	}
 }
 
+// SetOption 在运行时改一个 mpv 选项，只给测量探针用。
+//
+// 连续性调查要回答「加缓存是不是把冻结换成延迟」，只能在同一条流上只改一个
+// 变量复测。生产代码不调用它。
+func (e *Engine) SetOption(name, value string) error { return e.p.SetOption(name, value) }
+
 // SetVolume 设置音量，0 到 1。mpv 用的是 0 到 100。
 func (e *Engine) SetVolume(v float64) {
 	if v < 0 {
@@ -279,12 +285,13 @@ func (e *Engine) SetVolume(v float64) {
 // SetMuted 静音或取消静音。
 func (e *Engine) SetMuted(m bool) { _ = e.p.SetMuted(m) }
 
-// SetVideoEnabled 开关视频轨：false 只留声音，true 恢复画面。
+// SetPresenting 开关全尺寸呈现。
 //
-// 后台收听用这一条。mpv 的音频输出和视频解码是两条独立的线，关掉视频轨
-// 之后声音照常走、时钟照常走，省掉每帧的软件渲染与 BGRA 转换；恢复时
-// mpv 重新选轨，从下一个关键帧开始出图。
-func (e *Engine) SetVideoEnabled(on bool) { _ = e.p.SetVideo(on) }
+// false 时视频轨照常解码，只把软件渲染目标收到 160×90；true 恢复视频原始
+// 尺寸并立刻用当前帧重渲染一次。它不碰 vid、不碰 demuxer、不碰 AO：
+// 重新选轨会让 mpv 清空读前缓存并等下一个关键帧（实测 0.08–5.2 秒），
+// 而这里音频和参考帧链都没动，回来只差一帧。
+func (e *Engine) SetPresenting(on bool) { e.p.SetPresenting(on) }
 
 // Debug 返回底层 libmpv 的原始状态，诊断用。
 func (e *Engine) Debug() video.State { return e.p.State() }

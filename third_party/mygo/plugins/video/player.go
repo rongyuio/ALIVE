@@ -77,31 +77,48 @@ type State struct {
 	Volume, Rate               float64
 	Muted, Seekable, Buffering bool
 	Err                        error
+
+	// 以下字段是 ALIVE 的本地补丁（上游没有）。直播「短暂不连续」有五种来源，
+	// Position 和 Buffering 只能看出其中一种：音频断流时 Position 照样走，
+	// 呈现抖动时两者都正常。有了这些数才能把上游断供、音频断流、呈现抖动
+	// 分开，而不是靠猜。
+	AudioPTS                 time.Duration // 音频时钟；没有音轨或未起步时为 0
+	CacheDuration, CacheTime time.Duration // 读前缓存里有多少秒、当前读头位置
+	CacheBuffering           int64         // 0–100，缓冲完成度
+	CacheIdle                bool          // demuxer 在等数据（读前缓存空）
+	DecoderDrops             int64         // 解码器主动丢的帧
+	Mistimed                 int64         // 因音画不同步被判为「迟了」的帧
+	DisplayFPS, VFFPS        float64       // 显示器刷新率 / 实际视频帧率
+	VideoSpeed, AudioSpeed   float64       // 音视频各自的校正倍率（1.0 = 不校正）
+	AVSync                   float64       // 当前音画偏差（秒）
+	HWDec                    string        // 实际启用的硬解；空或 "no" 表示软件解码
 }
 
 // Player owns a native playback engine, event worker and rendering worker.
 // Its methods are safe from any goroutine. Close it when its window closes.
 // Commands enqueue asynchronously; State reports the engine's confirmed result.
 type Player struct {
-	mu               sync.Mutex
-	commandMu        sync.Mutex
-	state            State
-	native           backend
-	opts             Options
-	wake, renderWake chan struct{}
-	stop, done       chan struct{}
-	workers          sync.WaitGroup
-	invalidate       func()
-	frame            *Frame
-	serial           uint64
-	width, height    int
-	requestID        uint64
-	loadID           uint64
-	pending          map[uint64]bool // true for a load request
-	loading          bool
-	startPending     bool
-	entry            int64
-	paused           bool
+	mu                 sync.Mutex
+	commandMu          sync.Mutex
+	state              State
+	native             backend
+	opts               Options
+	wake, renderWake   chan struct{}
+	stop, done         chan struct{}
+	workers            sync.WaitGroup
+	invalidate         func()
+	frame              *Frame
+	serial             uint64
+	width, height      int
+	presentW, presentH int  // 非零时按这个尺寸渲染（后台听收不解全尺寸画面）
+	forceRender        bool // 尺寸变化后立刻用当前帧重渲染一次
+	requestID          uint64
+	loadID             uint64
+	pending            map[uint64]bool // true for a load request
+	loading            bool
+	startPending       bool
+	entry              int64
+	paused             bool
 }
 
 func New(opts Options) (*Player, error) {
@@ -229,6 +246,19 @@ func (p *Player) Seek(position time.Duration) error {
 	}
 	return p.send([]string{"seek", strconv.FormatFloat(position.Seconds(), 'f', 6, 64), "absolute+exact"}, false)
 }
+
+// SetOption 在运行时改一个 mpv 选项，走 options/<name> 属性。
+//
+// ALIVE 本地补丁，只给测量探针用：缓存与同步参数是不是问题，只能靠同一路流、
+// 同一时段、只改一个变量来回答。生产代码不要拿它当开关——那会变成一堆没人
+// 记得的隐式配置。
+func (p *Player) SetOption(name, value string) error {
+	if name == "" || strings.ContainsRune(name, 0) || strings.ContainsRune(value, 0) {
+		return errors.New("video: 非法的选项名或值")
+	}
+	return p.send([]string{"set", "options/" + name, value}, false)
+}
+
 func (p *Player) SetVolume(volume float64) error {
 	if !finite(volume) || volume < 0 || volume > 100 {
 		return errors.New("video: volume must be between 0 and 100")
@@ -249,23 +279,31 @@ func (p *Player) SetRate(rate float64) error {
 	return p.send([]string{"set", "speed", strconv.FormatFloat(rate, 'f', 3, 64)}, false)
 }
 
-// SetVideo turns the video track on or off, its sound playing either way.
+// SetPresenting turns full-size presentation on or off without touching the
+// video track or the audio output. Off keeps decoding at a small render size;
+// the last frame is still updated, but at 160×90, and nobody is meant to show
+// it. On restores the video's own size and re-renders the current frame at
+// once, so the next pull is a full-size picture.
 //
-// Off is vid=no: mpv stops decoding pictures and its render context stops
-// waking the window, while the audio output keeps going on its own thread
-// and the clock keeps to the sound. On is vid=auto, which picks the track
-// again and decodes from the next keyframe — a live stream shows nothing
-// for however long that takes.
-//
-// alive added this on top of upstream for background listening: leaving
-// the player page keeps the stream's sound and drops its pictures, and
-// nothing else in this package reached the vid option.
-func (p *Player) SetVideo(on bool) error {
-	value := "auto"
-	if !on {
-		value = "no"
+// alive added this on top of upstream for background listening. It replaces
+// vid=no: deselecting the track made mpv flush its demuxer cache and wait for
+// the stream's next keyframe on return (0.08–5.2s measured on a live HLS).
+// Keeping the track selected and only shrinking the render target leaves the
+// demuxer, the audio clock and the decoded reference chain untouched, so the
+// picture resumes within one frame and the sound never stops.
+func (p *Player) SetPresenting(on bool) {
+	p.mu.Lock()
+	if on {
+		p.presentW, p.presentH = 0, 0
+	} else {
+		p.presentW, p.presentH = 160, 90
 	}
-	return p.send([]string{"set", "vid", value}, false)
+	p.forceRender = true
+	p.mu.Unlock()
+	select {
+	case p.renderWake <- struct{}{}:
+	default:
+	}
 }
 func finite(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) }
 func seconds(n float64) time.Duration {
@@ -341,7 +379,8 @@ func (p *Player) apply(ev event) {
 		clear(p.pending)
 		s.Err = errors.New("video: native event queue overflow")
 	case 22:
-		if ev.unavailable && ev.name != "time-pos" && ev.name != "duration" && ev.name != "seekable" {
+		if ev.unavailable && ev.name != "time-pos" && ev.name != "duration" && ev.name != "seekable" &&
+			!isDiagProperty(ev.name) {
 			return
 		}
 		switch ev.name {
@@ -372,6 +411,40 @@ func (p *Player) apply(ev event) {
 			s.Seekable = ev.flag
 		case "paused-for-cache":
 			s.Buffering = ev.flag
+		case "audio-pts":
+			if !ev.unavailable && finite(ev.number) {
+				s.AudioPTS = seconds(ev.number)
+			} else {
+				s.AudioPTS = 0
+			}
+		case "demuxer-cache-duration":
+			s.CacheDuration = seconds(ev.number)
+		case "demuxer-cache-time":
+			s.CacheTime = seconds(ev.number)
+		case "cache-buffering-state":
+			s.CacheBuffering = ev.ival
+		case "demuxer-cache-idle":
+			s.CacheIdle = ev.flag
+		case "decoder-frame-drop-count":
+			s.DecoderDrops = ev.ival
+		case "mistimed-frame-count":
+			s.Mistimed = ev.ival
+		case "display-fps":
+			s.DisplayFPS = ev.number
+		case "estimated-vf-fps":
+			s.VFFPS = ev.number
+		case "video-speed-correction":
+			s.VideoSpeed = ev.number
+		case "audio-speed-correction":
+			s.AudioSpeed = ev.number
+		case "total-avsync-change":
+			s.AVSync = ev.number
+		case "hwdec-current":
+			if ev.unavailable {
+				s.HWDec = ""
+			} else {
+				s.HWDec = ev.text
+			}
 		case "dwidth":
 			if ev.ival > 0 {
 				p.width = int(ev.ival)
@@ -393,6 +466,22 @@ func (p *Player) apply(ev event) {
 		}
 	}
 }
+
+// isDiagProperty 报告 name 是不是 ALIVE 加的那批连续性诊断属性。
+//
+// 这些属性在「没有音轨」「没有显示端」时会变成不可用；事件仍然要收下来，
+// 并把值清零。保留上一次的旧值更危险——日志会以为音频还在走。
+func isDiagProperty(name string) bool {
+	switch name {
+	case "audio-pts", "hwdec-current", "demuxer-cache-duration", "demuxer-cache-time",
+		"cache-buffering-state", "demuxer-cache-idle", "decoder-frame-drop-count",
+		"mistimed-frame-count", "display-fps", "estimated-vf-fps",
+		"video-speed-correction", "audio-speed-correction", "total-avsync-change":
+		return true
+	}
+	return false
+}
+
 func (p *Player) events() {
 	defer p.workers.Done()
 	for {
@@ -426,12 +515,14 @@ func (p *Player) frames() {
 		}
 		p.mu.Lock()
 		closed := p.state.Phase == Closed
+		force := p.forceRender
+		p.forceRender = false
 		p.mu.Unlock()
 		if closed {
 			return
 		}
 		w, h := p.target()
-		frame, fresh, err := p.native.render(w, h)
+		frame, fresh, err := p.native.render(w, h, force)
 		p.mu.Lock()
 		if p.state.Phase != Closed {
 			if err == nil {
@@ -459,6 +550,7 @@ func (p *Player) target() (int, int) {
 	// 旋转和像素宽高比；事件还没到时用调用方给的值顶着。
 	p.mu.Lock()
 	w, h := p.width, p.height
+	rw, rh := p.presentW, p.presentH
 	p.mu.Unlock()
 	if w <= 0 || h <= 0 {
 		w, h = p.opts.Width, p.opts.Height
@@ -479,6 +571,9 @@ func (p *Player) target() (int, int) {
 		p.mu.Lock()
 		p.width, p.height = w, h
 		p.mu.Unlock()
+		if rw > 0 && rh > 0 {
+			return rw &^ 1, rh &^ 1
+		}
 		return w, h
 	}
 	p.mu.Lock()

@@ -33,6 +33,7 @@
 | [0006-palette-ladder.md](decisions/0006-palette-ladder.md) | 配色由六个参数生成，对比度写成测试；强调色拆成填充/当字/当线 | 加配色、改主题令牌、讨论毛玻璃之前 |
 | [0007-douyin-search.md](decisions/0007-douyin-search.md) | 抖音为什么只收直播间号：登录只解开 2483，搜索仍要浏览器指纹，且网页搜索召回的是账号不是直播间 | 想给抖音加关键词搜索、或又想把浏览器登录接回来之前 |
 | [0008-palette-system.md](decisions/0008-palette-system.md) | 配色的定位、舒适契约、六套主题、旧六套审计、负参考与状态色（**2026-11-20 已落地**） | 改配色、强调色、状态色、表面阶梯之前 |
+| [0009-live-continuity.md](decisions/0009-live-continuity.md) | 直播连续性的五类判据、实测归因（上游空档）、弹幕时钟与轨道的定点修复、回到播放页「音频不断 + 画面 <1s」的取舍与否证 | 改播放缓存/音频参数/热切换/后台收听，或再怀疑「直播卡顿」之前 |
 
 ### reference
 
@@ -52,7 +53,8 @@
 |---|---|
 | `internal/playback/*` | [architecture/playback.md](architecture/playback.md)、[decisions/0004](decisions/0004-libmpv.md) |
 | `third_party/mygo/plugins/video/*` | [decisions/0004](decisions/0004-libmpv.md)、`third_party/mpv/README.md` |
-| `internal/ui/player_media.go` | [architecture/playback.md](architecture/playback.md) |
+| `internal/ui/player_media.go` | [architecture/playback.md](architecture/playback.md)、[decisions/0009](decisions/0009-live-continuity.md) |
+| `internal/ui/danmu*.go` | [decisions/0009](decisions/0009-live-continuity.md) |
 | `internal/live/*` | [architecture/platform.md](architecture/platform.md) |
 | `internal/ui/*`（界面） | [reference/mygo.md](reference/mygo.md)、[reference/palette-ladder.md](reference/palette-ladder.md)、根目录 `AGENTS.md` |
 

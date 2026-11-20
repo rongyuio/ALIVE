@@ -2,9 +2,9 @@ package ui
 
 import "testing"
 
-// 后台收听时重开一路（登录成功要重取流）：新引擎建成后视频轨要立刻关掉，
-// 后台标记也要补回来，否则画面没人在看、解码照跑，岛还会掉回默认态。
-func TestAdoptBackgroundKeepsVideoOff(t *testing.T) {
+// 后台收听时重开一路（登录成功要重取流）：新引擎建成后全尺寸呈现要立刻关掉，
+// 只留 160×90 的小尺寸解码，后台标记也要补回来，否则岛还会掉回默认态。
+func TestAdoptBackgroundKeepsPresentingOff(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
@@ -13,13 +13,13 @@ func TestAdoptBackgroundKeepsVideoOff(t *testing.T) {
 	a.media.roomKey = "huya|333003"
 	a.media.loading = false
 
-	a.adoptBackgroundVideoOff()
+	a.adoptBackgroundPresentingOff()
 
 	if !a.media.background {
 		t.Fatal("后台重开没进后台收听态")
 	}
 	if on, ok := spy.last(); !ok || on {
-		t.Fatalf("视频轨最后状态是 %v（有没有设过 %v），应当关掉", on, ok)
+		t.Fatalf("全尺寸呈现最后状态是 %v（有没有设过 %v），应当关掉", on, ok)
 	}
 	if a.media.detachedAt.IsZero() {
 		t.Fatal("没记下进入后台的时刻")
@@ -33,13 +33,13 @@ func TestAdoptBackgroundIgnoredOnPlayerPage(t *testing.T) {
 	useTrack(t, a, spy)
 
 	a.Router.Push(routePlayer)
-	a.adoptBackgroundVideoOff()
+	a.adoptBackgroundPresentingOff()
 
 	if a.media.background {
 		t.Fatal("在播放页上被判成了后台收听")
 	}
 	if n := spy.count(); n != 0 {
-		t.Fatalf("在播放页上动了视频轨（%d 次）", n)
+		t.Fatalf("在播放页上动了呈现（%d 次）", n)
 	}
 }
 

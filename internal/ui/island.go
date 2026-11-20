@@ -104,7 +104,7 @@ const islandPlayerAvatar float32 = theme.IslandH - 6
 //
 // 判据是「人不在播放页，但这一路还开着」，两种时候成立：
 //
-//   - background：引擎活着、视频轨关着，声音在走（detachMedia 置上，
+//   - background：引擎活着、全尺寸呈现关着、解码在跑，声音在走（detachMedia 置上，
 //     stopPlayback 清掉）；
 //   - loading：这一路正在重开（登录成功要重取流、后台断流重连）。这段时间
 //     background 已经被 stopPlayback 清掉、新引擎还没建出来，只看 background
@@ -526,7 +526,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 			hit.Background(ui.RGBA(255, 255, 255, 0.06))
 		}
 		if hit.Clicked() {
-			// 回播放页只走路由：attachMedia 在 PlayerPage 里把视频轨打开。
+			// 回播放页只走路由：attachMedia 在 PlayerPage 里把全尺寸呈现打开。
 			a.Router.Push(routePlayer)
 		}
 	}

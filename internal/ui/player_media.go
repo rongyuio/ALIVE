@@ -88,12 +88,21 @@ type playerMedia struct {
 	lastSwapAt   time.Time
 	swapFailures int
 
-	// background 表示正在后台收听：引擎活着、音频在走，视频轨关掉了。
+	// background 表示正在后台收听：引擎活着、音频在走、解码不停，
+	// 只是全尺寸呈现关掉了（渲染目标 160×90）。
 	// 离开播放页但没点叉 / 没按 Esc 时进入，回到播放页时退出。
 	//
 	// 这一态下 roomKey 和 player 都留着——它要的就是「还是那一路、还在出声」，
 	// 和 closeMedia 的「全关掉」是两件事。
 	background bool
+	// 连续性日志的观测点：缓冲起止、音频停走。只在状态翻转时写一条，
+	// 正常播放不产生日志。
+	buffering      bool
+	bufferingSince time.Time
+	diagAt         time.Time
+	diagPos        time.Duration
+	diagAudio      time.Duration
+	audioStalled   bool
 	// detachedAt 是进入后台收听的时刻，日志用。
 	detachedAt time.Time
 	// tickPending 表示后台收听的定时心跳已经排上，避免每帧重复排。
@@ -210,7 +219,7 @@ func (a *App) mediaTick() {
 
 // kickMediaTick 在后台收听时驱动 mediaTick。
 //
-// 有画面时 Video 元素每帧都在请求下一帧，看门狗跟着走；后台收听把视频轨关了，
+// 有画面时 Video 元素每帧都在请求下一帧，看门狗跟着走；后台收听把全尺寸呈现关了，
 // 没有元素再请求帧，于是只能自己排。间隔取和播放页一样的健康检查节拍。
 //
 // 定时器不持有 App 的可变状态，只往主线程排一次 Update——它本身就是线程安全的，
@@ -244,10 +253,11 @@ func (a *App) closeMedia() {
 	a.media.roomKey = ""
 }
 
-// detachMedia 进入后台收听：视频轨关掉，声音留着。
+// detachMedia 进入后台收听：全尺寸呈现关掉，解码与声音留着。
 //
-// 和 closeMedia 的区别是「关到哪一层」：这里只关视频轨，mpv 实例、地址续期、
-// 断流重连、房间记号全部保留。关掉的是解码，不是画质——后台 CPU 2%–3% 单核。
+// 和 closeMedia 的区别是「关到哪一层」：这里只关呈现，mpv 实例、地址续期、
+// 断流重连、房间记号全部保留。解码不停——回来时画面只差一帧，声音一秒不断；
+// 代价是后台单核 7.0–9.8%（硬解，1080p60，见 decisions/0009）。
 //
 // 没有引擎时不做事：还在取流的路上就离开播放页，那一路会被 closeMedia 收掉，
 // 不该在这里留一个「假装在听」的态。判据是引擎而不是播放器指针——没有引擎，
@@ -261,24 +271,40 @@ func (a *App) detachMedia() {
 	if e == nil {
 		return
 	}
-	e.SetVideoEnabled(false)
+	e.SetPresenting(false)
 	m.background = true
 	m.detachedAt = time.Now()
-	// 画面不产出了，缓冲胶囊和停帧看门狗都失去意义：它们的判据是「画面有没有
-	// 在动」，而这时候画面本来就不动。基准拨到现在，回来时不会立刻误判成卡死。
+	// 后台只剩 160×90 的小帧、没人看，缓冲胶囊和停帧看门狗的判据（「画面有没有
+	// 在动」）失去意义。基准拨到现在，回来时不会立刻误判成卡死。
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 	m.stillPos, m.stillAt = 0, time.Time{}
-	logStage(m.id, m.start, "detach", "quality", m.upstream.Label)
+	// 已经飞出去的那批属于离开前的时刻；弹幕时钟在后台不走，留着回来会看到
+	// 一屏定格的旧弹幕。清掉，回来只接新的。轨道占用与时钟基准一起重置。
+	a.Danmu = nil
+	a.danmuLanes = nil
+	a.danmuPos = 0
+	a.danmuLast = time.Time{}
+	hwdec := ""
+	if m.player != nil {
+		if eng, ok := m.player.Engine().(*playback.Engine); ok {
+			hwdec = eng.Debug().HWDec
+		}
+	}
+	logStage(m.id, m.start, "detach", "quality", m.upstream.Label, "hwdec", hwdec)
 }
 
-// attachMedia 从后台收听回到播放页：整路重新起播，而不是重新打开视频轨。
+// attachMedia 从后台收听回到播放页：接上现有这一路，只恢复全尺寸呈现。
 //
-// 视频轨在后台是关的，直接 vid=auto 要等 mpv 走回下一个关键帧——实测 1.5–7 秒
-// （640×360 的一条流等了 7.2 秒），快慢全看流的 GOP。重新取流 + 开新播放器
-// 反而更快（0.4–1 秒），而且顺带把可能过期的地址换掉。
+// 后台期间解码、demuxer、音频输出、地址续期全都活着，回来不需要取流、不需要
+// 重新选轨，也没有 refresh seek。引擎把渲染目标从 160×90 恢复成视频原始尺寸，
+// 并立刻用当前帧重渲染一次：实测 4ms 出全尺寸画面，音频停走 21ms（就是
+// audio-pts 的事件粒度），声音一秒没断。
 //
-// 代价是声音断一下：旧引擎在 beginSession 里关掉，新引擎起播后再出声。
-// loading 层由 beginSession 置上，用户看到的就是一次正常起播。
+// 之前的做法是后台 vid=no：省 CPU（1.6%），但回来要等 live 边缘的下一个关键帧
+// （0.08–5.2 秒）。取舍与数据见 decisions/0009。
+//
+// 没有引擎时只能退回整路起播：detach 的前提是有引擎，这条分支理论上走不到，
+// 但走不到不等于可以黑屏。
 //
 // 判据必须带上路由：转场期间 Router 会把上一页（播放页）再构建一次，而那时
 // 已经在别的页面上了。只看 background 的话，PlayerPage 的 attach 和 Shell 的
@@ -294,26 +320,36 @@ func (a *App) attachMedia() {
 	}
 	m.background = false
 	m.detachedAt = time.Time{}
+	e := m.engine()
 	logStage(m.id, m.start, "attach", "quality", m.upstream.Label)
-	// 保留弹幕：回来还是同一间房，聊天不该断。
-	a.startStream(true)
+	if e == nil {
+		a.startStream(true)
+		return
+	}
+	// 后台那段时间没人看画面，看门狗的基准还停在离开前；拨到现在，回来不会
+	// 立刻把「画面没动」判成卡死。
+	m.lastPos, m.lastPosAt = 0, time.Time{}
+	m.stillPos, m.stillAt = 0, time.Time{}
+	e.SetPresenting(true)
+	// 弹幕不动：回来还是同一间房，聊天不该断。
 }
 
-// videoTrack 是后台收听要的那一小块引擎能力：开关画面呈现。
+// videoTrack 是后台收听要的那一小块引擎能力：开关全尺寸呈现。
 //
-// 名字是历史遗留（以前真是开关 mpv 的 vid），现在的实现是「解码不停、只停
-// 上屏与重绘」，见 playback.Engine.SetVideoEnabled。
+// 关只把渲染目标收到 160×90，视频轨照常解码——不碰 vid、不碰 demuxer、
+// 不碰 AO。回来时画面只差一帧，声音一秒不断。代价是后台单核 6.4–8.9%
+// （硬解、1080p60；软件解码 22.9–33.4%），见 decisions/0009。
 //
 // 只声明用得到的一个方法，而不是整个 *playback.Engine：测试里没有 libmpv，
 // 造不出真引擎，但这一段状态机该被验到。
 type videoTrack interface {
-	SetVideoEnabled(on bool)
+	SetPresenting(on bool)
 }
 
 // engineOf 从播放器取出它的引擎。生产实现是类型断言；测试里换成假的。
 //
 // 播放器底下不是我们的引擎（比如将来换成别的实现）时返回 nil，
-// 后台收听自然不成立——没有可关的视频轨，也就不该假装在听。
+// 后台收听自然不成立——没有可关的呈现，也就不该假装在听。
 var engineOf = func(p *ui.VideoPlayer) videoTrack {
 	if p == nil {
 		return nil
@@ -327,8 +363,8 @@ var engineOf = func(p *ui.VideoPlayer) videoTrack {
 
 // engine 取出当前播放器底下的引擎。
 //
-// ui.VideoPlayer 把引擎藏在内部，只在这一处需要摸到它——视频轨的开关是
-// mpv 的选项，不是播放器接口的一部分。
+// ui.VideoPlayer 把引擎藏在内部，只在这一处需要摸到它——呈现的开关是
+// 渲染尺寸，不是播放器接口的一部分。
 func (m *playerMedia) engine() videoTrack { return engineOf(m.player) }
 
 // CloseMedia 在窗口关闭前取消取流与房间会话，并异步释放连接及转封装资源。
@@ -644,7 +680,7 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 		a.media.pauseStarted = a.media.openedAt
 		p.Pause()
 	}
-	a.adoptBackgroundVideoOff()
+	a.adoptBackgroundPresentingOff()
 	logStage(sess.id, sess.start, "open", "mode", "native", "quality", upstream.Label,
 		"ready", p.Ready(), "declared_width", upstream.Width, "declared_height", upstream.Height)
 	// 小窗可能正开着而主窗口藏着：这一路是在主窗口的 Update 里接上的，
@@ -652,7 +688,7 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 	a.invalidateWindows()
 }
 
-// adoptBackgroundVideoOff 把人不在播放页时开出来的这一路按后台收听处理。
+// adoptBackgroundPresentingOff 把人不在播放页时开出来的这一路按后台收听处理（关全尺寸呈现）。
 //
 // 会走到这里的典型是「后台收听时登录成功、要求重取流」：beginSession 里的
 // stopPlayback 清掉了 background（那一刻确实没有引擎），新引擎于是带着
@@ -660,7 +696,7 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 // 而从「正在收听」掉回默认态。
 //
 // 判据用路由而不是 background：background 在这一刻还没被置上。
-func (a *App) adoptBackgroundVideoOff() {
+func (a *App) adoptBackgroundPresentingOff() {
 	if a.Router != nil && a.Router.Path() == routePlayer {
 		return
 	}
@@ -668,7 +704,7 @@ func (a *App) adoptBackgroundVideoOff() {
 	if e == nil {
 		return
 	}
-	e.SetVideoEnabled(false)
+	e.SetPresenting(false)
 	a.media.background = true
 	a.media.detachedAt = time.Now()
 }
@@ -692,7 +728,7 @@ type swapRequest struct {
 	roomID   string
 	line     string
 	quality  string
-	// background 说明派这次换地址时正在后台收听：视频轨是关的，等不了画面。
+	// background 说明派这次换地址时正在后台收听：没人看画面，判据换成音频时钟。
 	background bool
 }
 
@@ -771,9 +807,8 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 	}
 	// 等到第一帧（音频门也在里面）：没有画面就换上去等于黑屏。
 	//
-	// 后台收听时这条判据不成立——视频轨是关着的，Frame 永远不给画面。这时候
-	// 改用音频时钟：time-pos 走起来就说明这一路真的在出声，比画面更贴近
-	// 后台态真正要保证的那件事。
+	// 后台收听时没人看画面，等音频时钟更贴近真正要保证的那件事：time-pos
+	// 走起来就说明这一路真的在出声，换上去之后再把它切回小尺寸呈现。
 	deadline := time.Now().Add(8 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
@@ -820,7 +855,7 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 	// 后台收听时换上去的是一路新引擎：新引擎的呈现闸门默认是开的，不补
 	// 这一下，换完地址它会在后台一直唤醒窗口，后台收听就名存实亡了。
 	if a.media.background {
-		e.SetVideoEnabled(false)
+		e.SetPresenting(false)
 	}
 	volume := float64(a.Volume)
 	p.SetVolume(volume)
@@ -852,6 +887,11 @@ func (m *playerMedia) stopPlayback() {
 	m.background = false
 	m.detachedAt = time.Time{}
 	m.tickPending = false
+	m.buffering = false
+	m.bufferingSince = time.Time{}
+	m.diagAt = time.Time{}
+	m.diagPos, m.diagAudio = 0, 0
+	m.audioStalled = false
 }
 
 // failPlayback 把这一轮落到可重试的终态。
@@ -869,6 +909,48 @@ func (a *App) failPlayback(class, msg string) {
 	a.invalidateWindows()
 }
 
+// trackContinuity 记连续性事件：缓冲起止与音频停走。
+//
+// 每帧调用，只在状态翻转时写一条日志——正常播放一条都不写。属性来自
+// playback.Engine.Debug()，都是 mpv 自己报的：cache 空了是上游断供，
+// 音频时钟停了而时间轴还在走才是音频这一侧的问题。两者分开，才不会把
+// 上游的锅记到我们头上。
+func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
+	e, _ := p.Engine().(*playback.Engine)
+	if e == nil {
+		return
+	}
+	d := e.Debug()
+	m := &a.media
+	if d.Buffering != m.buffering {
+		args := []any{"pos", d.Position.Milliseconds(), "audio", d.AudioPTS.Milliseconds(),
+			"cache_ms", d.CacheDuration.Milliseconds(), "cache_pct", d.CacheBuffering,
+			"decoder_drops", d.DecoderDrops, "mistimed", d.Mistimed, "avsync", d.AVSync}
+		if d.Buffering {
+			m.bufferingSince = now
+			logStage(m.id, m.start, "缓冲开始", args...)
+		} else {
+			args = append(args, "stalled_ms", now.Sub(m.bufferingSince).Milliseconds())
+			logStage(m.id, m.start, "缓冲结束", args...)
+		}
+		m.buffering = d.Buffering
+	}
+	// 音频停走：一秒采一次。缓冲期内不算——上游没数据，声音当然停。
+	if now.Sub(m.diagAt) < time.Second {
+		return
+	}
+	if !m.diagAt.IsZero() && !d.Buffering && d.AudioPTS == m.diagAudio && d.Position > m.diagPos {
+		if !m.audioStalled {
+			m.audioStalled = true
+			logStage(m.id, m.start, "音频停走", "pos", d.Position.Milliseconds(),
+				"audio", d.AudioPTS.Milliseconds(), "avsync", d.AVSync)
+		}
+	} else if d.AudioPTS > m.diagAudio {
+		m.audioStalled = false
+	}
+	m.diagAt, m.diagPos, m.diagAudio = now, d.Position, d.AudioPTS
+}
+
 // trackFirstFrame 记录首帧，并在超时和播放器报错时落到可重试终态。
 //
 // 每帧调用。Ready 只说明解码器交出了第一帧，不等于它在屏幕上呈现的时刻；
@@ -880,6 +962,7 @@ func (a *App) trackFirstFrame() {
 		return
 	}
 	now := time.Now()
+	a.trackContinuity(p, now)
 	if !m.firstFrame {
 		m.observeStartupPause(a.Playing, now)
 	}
@@ -892,9 +975,9 @@ func (a *App) trackFirstFrame() {
 		a.failPlayback("playback-failed", "播放失败，请重试或切换线路")
 		return
 	}
-	// 后台收听：视频轨关着，Ready / Position 的含义都变了。
+	// 后台收听：全尺寸呈现关着、没人看画面，Ready / Position 的含义都变了。
 	//
-	// 这里不能再走首帧那一套——画面本来就不该有，首帧预算会一路走到超时，
+	// 这里不能再走首帧那一套——后台没人看画面，首帧预算会一路走到超时，
 	// 把正在出声的一路判成失败。判据换成「音频时钟还在不在走」：它停了才是
 	// 真的断了，那时候才换地址。
 	if m.background {
@@ -905,7 +988,11 @@ func (a *App) trackFirstFrame() {
 		if !m.firstFrame {
 			m.firstFrame = true
 			w, h := p.Size()
-			logStage(m.id, m.start, "首帧可用", "mode", m.mode(), "upstream_codec", m.upstream.Codec,
+			hwdec := ""
+			if e, ok := p.Engine().(*playback.Engine); ok {
+				hwdec = e.Debug().HWDec
+			}
+			logStage(m.id, m.start, "首帧可用", "mode", m.mode(), "hwdec", hwdec, "upstream_codec", m.upstream.Codec,
 				"declared_width", m.upstream.Width, "declared_height", m.upstream.Height,
 				"declared_bitrate", m.upstream.Bitrate, "declared_fps", m.upstream.FrameRate,
 				"decoded_width", w, "decoded_height", h, "buffering", p.Buffering())
@@ -1289,12 +1376,9 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 		Color:      d.Color,
 		Price:      d.Price,
 		Background: d.Background,
-		Born:       time.Now(),
+		Born:       a.danmuTime(),
 		Dur:        a.DanmuDur,
 	}
-	// 真实平台不用 Track 固定也能接受：飞行层只按 Track 取模排轨道
-	line.Track = a.danmuSeq % 14
-	a.danmuSeq++
 
 	// 历史：收到就留，和飞行无关
 	a.DanmuLog = append(a.DanmuLog, line)
@@ -1309,6 +1393,8 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 	if len(a.Danmu) >= danmuFlyMax {
 		return
 	}
+	// 轨道在真正上屏时才分配：日志不需要，而且分配要看当前窗口的轨道数。
+	line.Track = a.takeDanmuTrack(a.danmuTime(), danmuWidthEstimate(line, a.DanmuFont))
 	a.Danmu = append(a.Danmu, line)
 }
 

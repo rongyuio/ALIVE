@@ -65,7 +65,7 @@ ry 的判断在这件事上是对的：**Go 不好做的、或者有更成熟更
 | 默认渲染 1280×720，`resize` 再按上限等比压 | 永远拿不到原画 | 按 `dwidth/dheight` 属性事件渲染，上限 4K |
 | 每帧 `make([]byte, stride*h)` RGB | 1080p 8.3MB/帧，60fps = 500MB/s 分配 | 三缓冲轮换复用 |
 | 逐像素纯 Go 写 alpha | 1080p 每帧 200 万次写 | 删掉（alpha 在转换时统一给 255） |
-| `{"hwdec", "no"}` 写死 | 硬解全关 | `auto-safe` |
+| `{"hwdec", "no"}` 写死 | 硬解全关 | 保持 `no`（2026-11-21 更正：提交信息曾写 `auto-safe`，代码里一直是 `no`；1080p60 HEVC 实测 33–35% 单核，未测 `auto-safe`） |
 | `renderUpdate()` 返回值丢弃 | 没有新画面也照拿输出缓冲 → 拿到未写过的空内存 | 只看 `MPV_RENDER_UPDATE_FRAME` |
 
 另外两处是实测出来的，不是读代码看出来的：

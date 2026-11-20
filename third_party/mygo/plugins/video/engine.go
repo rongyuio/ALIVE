@@ -30,7 +30,7 @@ type backend interface {
 	next() (event, bool)
 	// render 返回这一帧与它是否是新画出来的。mpv 没有新画面时不会写输出缓冲，
 	// 这时候必须复用上一帧，否则拿到的是还没被写过的空内存。
-	render(int, int) (*Frame, bool, error)
+	render(int, int, bool) (*Frame, bool, error)
 	close()
 }
 type logMessage struct {
@@ -208,11 +208,14 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 	// 调优选项：设不上就算了。mpv 的选项组随 VO 和构建版本变化，写死一个名字
 	// 在别的版本上会让整个播放起不来——这个代价太大。
 	//
-	// hwdec：SW 渲染下解出的帧还要下到内存再转 RGB，但解码本身硬解仍然快得多。
+	// hwdec：SW 渲染下解出的帧要下到内存再转 RGB。后台收听现在保留解码、
+	// 只把渲染目标收小，硬解把后台单核从 22.9–33.4% 降到 7.0–9.8%（1080p60）；
+	// 前台 22.6–23.3%，与软件解码的 23.2–49.5% 持平或更好，丢帧/失时都是 0
+	// （2026-11-21，B 站 545068）。auto-safe 在驱动不支持时退回软件，不会起不来。
 	// scale/dscale：SW 渲染是单线程 CPU 做缩放，默认 bicubic 在 1080p 上把帧率
 	// 压到 40fps 上下；bilinear 便宜一个数量级，直播这个码率下看不出区别。
 	// sws-fast：让 swscale 走快速路径（构建支持才有效）。
-	for _, o := range [][2]string{{"hwdec", "no"}, {"scale", "bilinear"}, {"dscale", "bilinear"}, {"sws-fast", "yes"}} {
+	for _, o := range [][2]string{{"hwdec", "auto-safe"}, {"scale", "bilinear"}, {"dscale", "bilinear"}, {"sws-fast", "yes"}} {
 		_ = e.option(n.handle, o[0], o[1])
 	} // 直播流几乎都要回源请求头（B站/虎牙/斗鱼的 Referer、抖音的 UA）。mpv 自己
 	// 不会编这些，必须由调用方给。http-header-fields 是逗号分隔的列表，每个
@@ -250,6 +253,32 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 		if err = e.err(e.observe(n.handle, uint64(i+1), o.name, o.format)); err != nil {
 			return fail(err)
 		}
+	}
+	// ALIVE 本地补丁：连续性诊断。上游只关心「有没有画面」，这十来个属性是
+	// 为了把「上游断供 / 音频断流 / 呈现抖动」分开——只靠 time-pos 和
+	// paused-for-cache，音频停了、帧被丢了都看不出来。
+	//
+	// 和上面的调优选项一样：设不上就跳过，不能因为别的 mpv 构建少一个属性
+	// 就让整路播不起来。
+	for i, o := range []struct {
+		name   string
+		format int32
+	}{
+		{"audio-pts", 5},                // 音频时钟，判断「有没有声音」的唯一可靠来源
+		{"hwdec-current", 1},            // 实际启用的硬解（auto-safe 可能退回软件）
+		{"demuxer-cache-duration", 5},   // 读前缓存秒数
+		{"demuxer-cache-time", 5},       // 缓存读头位置
+		{"cache-buffering-state", 4},    // 0–100
+		{"demuxer-cache-idle", 3},       // 读前缓存空、在等数据
+		{"decoder-frame-drop-count", 4}, // 解码器丢帧
+		{"mistimed-frame-count", 4},     // 迟到的帧
+		{"display-fps", 5},              // 呈现端刷新率
+		{"estimated-vf-fps", 5},         // 实际视频帧率
+		{"video-speed-correction", 5},   // 视频时钟校正倍率
+		{"audio-speed-correction", 5},   // 音频时钟校正倍率
+		{"total-avsync-change", 5},      // 音画偏差
+	} {
+		_ = e.observe(n.handle, uint64(100+i), o.name, o.format)
 	}
 	n.wakeID = route(wake)
 	n.renderID = route(renderWake)
@@ -299,6 +328,10 @@ func (n *native) next() (event, bool) {
 			ev.name = contentlib.CString(p.name)
 			if p.data != nil {
 				switch p.format {
+				case 1:
+					if str := *(*unsafe.Pointer)(p.data); str != nil {
+						ev.text = contentlib.CString(str)
+					}
 				case 3:
 					ev.flag = *(*int32)(p.data) != 0
 				case 4:
@@ -313,13 +346,17 @@ func (n *native) next() (event, bool) {
 	}
 	return ev, true
 }
-func (n *native) render(w, h int) (*Frame, bool, error) {
+func (n *native) render(w, h int, force bool) (*Frame, bool, error) {
 	// mpv_render_context_update 返回位标志：带 MPV_RENDER_UPDATE_FRAME（1）才
 	// 表示有新画面。这一点必须看——没有新画面时 mpv 不会写输出缓冲，照拿就会
 	// 把一块还没画过的空内存当成一帧交出去。预览截图、抓帧这类「在某一刻额外
 	// 要一帧」的路径最容易撞上，屏幕上看起来就是突然全黑。
-	if n.e.renderUpdate(n.renderer)&1 == 0 && n.last != nil {
-		return n.last, false, nil
+	update := n.e.renderUpdate(n.renderer)
+	if update&1 == 0 && (!force || n.last == nil) {
+		if n.last != nil {
+			return n.last, false, nil
+		}
+		return nil, false, nil
 	}
 
 	// SW 渲染只接受 RGB 格式（"bgr0" 之类），不接受 nv12：render.h 里写明了
