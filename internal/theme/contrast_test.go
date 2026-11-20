@@ -117,10 +117,10 @@ func audit(t *testing.T, p *Palette, primaryMin, secondaryMin, calmMin, lineMin 
 		check(s.name, s.c, "TextTertiary", p.TextTertiary, calmMin)
 		check(s.name, s.c, "TextMeta", p.TextMeta, calmMin)
 	}
-	// 强调色当字用（AccentInk）、强调色上的字（AccentText）。
+	// 强调色当字用（AccentInk）。强调填充上的字由 TestAccentTextPolarity 管：
+	// 那里有逐主题覆盖和普通模式的 2.5/3.0 例外，不混进这张通用表。
 	check("BgPrimary", p.BgPrimary, "AccentInk", p.AccentInk, textMin)
 	check("BgSecondary", p.BgSecondary, "AccentInk", p.AccentInk, textMin)
-	check("Accent", p.Accent, "AccentText", p.AccentText, textMin)
 	// 强调色当线条用（描边、指示器、滑块）是图形。
 	check("BgPrimary", p.BgPrimary, "AccentLine", p.AccentLine, lineMin)
 	check("BgSecondary", p.BgSecondary, "AccentLine", p.AccentLine, lineMin)

@@ -1,7 +1,8 @@
 // Package theme 是全部视觉令牌的唯一来源：颜色、字号、圆角、间距、动效。
 //
 // 视觉语言一句话：平涂表面 + 色阶分层，只给真正需要边界的浮层加 1px 描边；
-// 石墨黑底 + 暖白字 + 信号青柠（chartreuse），青柠只出现在主操作、激活态和 LIVE。
+// 六族身份（墨白、幕红、屏青、灯暖、科技蓝、应援粉）各有日夜两曝光，
+// 强调色只出现在主操作、激活态、LIVE 和当前项。
 package theme
 
 import (
@@ -31,14 +32,24 @@ var (
 	AccentSoft, AccentSofter, AccentGlow          ui.Color
 	// AccentOnInk 是强调色压在灵动岛的墨底上那一版。
 	//
-	// 前两支都对 BgPrimary 推导：浅色主题里它们被压深去当字/当线，压到墨底上
+	// 前两支都对 FillSecondary 推导：浅色主题里它们被压深去当字/当线，压到墨底上
 	// 就什么都不剩。环要像光，就得有一支只对墨底负责的颜色。
 	AccentOnInk ui.Color
 
-	// 描边与分隔
-	Border, BorderStrong, Separator ui.Color
+	// 描边与分隔。BorderFunctional 是可点控件的形状边界，对卡片 ≥3:1；
+	// 公共 Border 只管分隔和浮层，不承担"这里能点"。
+	Border, BorderStrong, BorderFunctional, Separator ui.Color
+)
 
-	// 离线态的点（在线点所有配色共用一个绿，见下面的常量）
+// 状态色三支：fill 用于点、底色和低透明度叠加；ink 用于文字和图标；
+// line 用于边框、指示器。由 Apply 按当前配色写入——色相是语义，明度跟着
+// 日夜和配色推导，浅色主题不再出现 1.3:1 的绿点。
+var (
+	StatusOnline, StatusOnlineInk, StatusOnlineLine ui.Color
+	Success, SuccessInk, SuccessLine                ui.Color
+	Danger, DangerInk, DangerLine                   ui.Color
+
+	// 离线态的点：无彩色，明度跟着文字元数据走。
 	StatusOffline ui.Color
 )
 
@@ -46,14 +57,8 @@ func init() { Apply(Palettes[0].ID) }
 
 // ---------------------------------------------------------------- 固定色
 
-// 这几支不随配色变：状态色是语义，白色是压在画面上的墨。
+// 这几支不随配色变：白色是压在画面上的墨，岛底是恒定的暗面。
 var (
-	// 关注面板头像右下角的在线点：所有配色都是同一个绿
-	StatusOnline = ui.Hex("#22c55e")
-	Success      = ui.Hex("#7bdc8a")
-	Warning      = ui.Hex("#f5b544")
-	Danger       = ui.Hex("#ff5c6c")
-
 	// 封面上的人数胶囊：rgba(8,9,11,.78)
 	OverlayInk = ui.RGBA(8, 9, 11, 0.78)
 	// IslandInk 是灵动岛的底：纯黑，不跟配色走。
@@ -81,7 +86,7 @@ var (
 	// 面板底：rgba(17,20,28,.88)，减少透明时的实色退路
 	MediaPanel = ui.RGBA(17, 20, 28, 0.88)
 	// 玻璃面板的 tint：比实色轻一档，模糊才看得见
-	MediaPanelTint = ui.RGBA(17, 20, 28, 0.72)
+	MediaPanelTint = ui.RGBA(17, 20, 28, 0.76)
 	// 面板里的一行：0.05 底 + 0.08 描边
 	MediaRow     = ui.RGBA(255, 255, 255, 0.05)
 	MediaRowLine = ui.RGBA(255, 255, 255, 0.08)

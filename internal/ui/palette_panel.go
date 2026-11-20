@@ -86,6 +86,8 @@ func (a *App) syncThemeMode(systemDark bool) {
 		}
 		return
 	}
+	// 旧版落盘的 ID 在这里归一成新 ID；下一次保存写的才是新值。
+	a.PaletteID = cur.ID
 	if cur.Dark != want {
 		a.PaletteID = theme.Counterpart(cur.ID)
 	}
@@ -189,7 +191,7 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 	}
 
 	item.Children(func() {
-		// 三色预览带：背景 / 表面 / 强调色，等分
+		// 三色预览带：地 / 文字 / 强调色，等分
 		swatch := ui.Row(c).Height(30).Radius(7)
 		swatch.ClipInset(0, 0, 0, 0, 7)
 		swatch.Children(func() {

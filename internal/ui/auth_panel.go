@@ -174,7 +174,7 @@ func (a *App) authScanPanel(c *ui.Context, auth live.Authenticator, st live.Auth
 		// 但也不能任它把面板撑得老高。
 		switch {
 		case st.Err != "":
-			ui.Text(c, st.Err).FontSize(theme.TextXS).TextColor(theme.Danger).
+			ui.Text(c, st.Err).FontSize(theme.TextXS).TextColor(theme.DangerInk).
 				TextAlign(ui.Center).MaxLines(2)
 			a.authRetry(c, auth)
 		case st.Status != "":

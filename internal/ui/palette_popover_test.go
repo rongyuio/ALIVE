@@ -35,17 +35,17 @@ func TestPalettePopoverAnchorsToButton(t *testing.T) {
 func TestThemeModeKeepsPaletteFamily(t *testing.T) {
 	app := NewMockApp()
 	app.ThemeMode = themeModeLight
-	app.PaletteID = "signal" // 青柠 · 夜
+	app.PaletteID = "signal" // 旧 ID，迁移到屏青·夜
 	app.syncThemeMode(true)
-	if app.PaletteID != "daylight" {
-		t.Fatalf("切到日间后配色 = %q，期望 daylight", app.PaletteID)
+	if app.PaletteID != "phosphor-day" {
+		t.Fatalf("切到日间后配色 = %q，期望 phosphor-day", app.PaletteID)
 	}
 
 	app.ThemeMode = themeModeDark
-	app.PaletteID = "paper" // 黑白灰 · 日
+	app.PaletteID = "paper" // 旧 ID，迁移到墨白·日
 	app.syncThemeMode(false)
-	if app.PaletteID != "mono" {
-		t.Fatalf("切到夜间后配色 = %q，期望 mono", app.PaletteID)
+	if app.PaletteID != "inkwhite-night" {
+		t.Fatalf("切到夜间后配色 = %q，期望 inkwhite-night", app.PaletteID)
 	}
 
 	// 跟随系统：系统深色用深色侧，系统浅色用浅色侧。
@@ -73,7 +73,7 @@ func TestPalettePanelShowsOneSide(t *testing.T) {
 	if tt.HasText("套 · 当前") {
 		t.Fatal("旧的「N 套 · 当前 …」文案还在")
 	}
-	if !tt.HasText("青柠·夜") || tt.HasText("青柠·日") {
+	if !tt.HasText("墨白·夜") || !tt.HasText("应援粉·夜") || tt.HasText("墨白·日") {
 		t.Fatalf("夜间面板列出的配色不对：%v", tt.Texts())
 	}
 	// 只有一个圆形按钮，状态写在无障碍名里：夜 → 跟随系统 → 日。
@@ -107,7 +107,7 @@ func TestPalettePanelShowsOneSide(t *testing.T) {
 	if cur := theme.Find(app.PaletteID); cur == nil || cur.Dark {
 		t.Fatalf("切到日间后配色 = %q", app.PaletteID)
 	}
-	if !tt.HasText("青柠·日") || tt.HasText("青柠·夜") {
+	if !tt.HasText("墨白·日") || !tt.HasText("应援粉·日") || tt.HasText("墨白·夜") {
 		t.Fatalf("切到日间后面板仍是：%v", tt.Texts())
 	}
 }

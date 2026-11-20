@@ -32,6 +32,7 @@
 | [0005-no-launch-screen.md](decisions/0005-no-launch-screen.md) | 冷启动删掉启动层：为什么它撒谎、锁输入、不可测；换成了首帧即应用 + 静止占位 | 想加回启动画面 / 加载遮罩之前 |
 | [0006-palette-ladder.md](decisions/0006-palette-ladder.md) | 配色由六个参数生成，对比度写成测试；强调色拆成填充/当字/当线 | 加配色、改主题令牌、讨论毛玻璃之前 |
 | [0007-douyin-search.md](decisions/0007-douyin-search.md) | 抖音为什么只收直播间号：登录只解开 2483，搜索仍要浏览器指纹，且网页搜索召回的是账号不是直播间 | 想给抖音加关键词搜索、或又想把浏览器登录接回来之前 |
+| [0008-palette-system.md](decisions/0008-palette-system.md) | 配色的定位、舒适契约、六套主题、旧六套审计、负参考与状态色（**2026-11-20 已落地**） | 改配色、强调色、状态色、表面阶梯之前 |
 
 ### reference
 
@@ -40,6 +41,7 @@
 | [measurements.md](reference/measurements.md) | 所有实测：首帧成本模型、路径对照、验证矩阵、编码扫描 | 声称"变快了 / 变慢了"之前，先看基准数 |
 | [acceptance.md](reference/acceptance.md) | 驱动真实窗口做验收：mygo-automation 的命令、这个项目踩过的坑、怎么收尾 | 要验真实渲染 / 播放 / 内存，或改完 UI 要截图之前 |
 | [palette-ladder.md](reference/palette-ladder.md) | 表面三档（地 / 托盘 / 卡片）的 hex、L\*、台阶，以及"静态表面不描边"的规则 | 改顶栏、卡片、面板的底色或描边之前 |
+| [palette-briefs.md](reference/palette-briefs.md) | 六套新配色的身份、由来、参照、LCH 输入与取舍（**2026-11-20 已落地**） | 写配色 spec、改主题命名或强调关系之前 |
 | [mygo.md](reference/mygo.md) | MyGo 版本演进、生命周期约束、已知限制 | 写 UI、升 MyGo 版本、怀疑是框架问题时 |
 
 ## 必读映射

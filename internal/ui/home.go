@@ -161,6 +161,12 @@ type App struct {
 	PaletteID   string
 	PaletteOpen bool
 	ThemeMode   string
+	// 主题切换的中间状态：themeFrom 是当前显示（可能是混合后）的调色板；
+	// themeMixKey 每换一次目标 +1，根元素的 AnimateTo 用这个 key 从 0 走到 1。
+	themeFrom     *theme.Palette
+	themeTargetID string
+	themeHC       bool
+	themeActive   bool
 	// systemDark 是最近一帧读到的系统外观，供「跟随系统」按钮当场使用，
 	// 不用等下一帧重新读窗口主题。
 	systemDark bool
@@ -324,7 +330,7 @@ func newApp() *App {
 		// 0 在图片缓存里表示「按原图解码」。
 		gridCardW: theme.CardMinWidth,
 		Router:    ui.NewRouter(routeHome),
-		PaletteID: "signal",
+		PaletteID: theme.Palettes[0].ID,
 		ThemeMode: themeModeSystem,
 		Volume:    0.6,
 		Playing:   true,
@@ -462,10 +468,10 @@ func (a *App) Shell(c *ui.Context) {
 	// 系统外观要在 SetTheme 之前读：SetTheme 之后 Context 返回的是我们这套
 	// 配色，就再也看不到系统是深色还是浅色了。
 	a.syncThemeMode(c.Theme().Dark)
-	// 系统要更高的对比度时，自绘的颜色得跟着走——否则这个开关对我们无效。
-	theme.SetHighContrast(c.Preferences().HighContrast)
-	// 每帧开头按当前配色重写包级颜色，之后所有绘制读到的就是这套色
-	theme.Apply(a.PaletteID)
+	// 根元素先建出来：主题切换的进度挂在它身上，0→1 的 AnimateTo 会
+	// 替我们请求帧。颜色在 applyTheme 里按进度混合，再给根和内容用。
+	root := ui.Box(c).Fill()
+	a.applyTheme(c, root)
 	c.SetTheme(theme.Theme())
 
 	// 各平台登录头像提前进缓存：切平台换头像时才不会先画灰人再跳图。
@@ -494,7 +500,7 @@ func (a *App) Shell(c *ui.Context) {
 	// 窗口全屏是我们自己的状态，原生全屏是系统状态，两者都算。
 	fullscreen := a.playerFullscreen()
 
-	ui.Box(c).Fill().Background(theme.BgPrimary).Children(func() {
+	root.Background(theme.BgPrimary).Children(func() {
 		ui.Column(c).Fill().Children(func() {
 			if !fullscreen {
 				a.Navbar(c)
@@ -644,9 +650,9 @@ func (a *App) errorBar(c *ui.Context) {
 				}
 			}
 			retry.Children(func() {
-				ui.Icon(c, iconSync).FontSize(12).TextColor(theme.Danger)
+				ui.Icon(c, iconSync).FontSize(12).TextColor(theme.DangerInk)
 				ui.Text(c, "重试").FontSize(theme.TextXS).FontWeight(600).
-					TextColor(theme.Danger)
+					TextColor(theme.DangerInk)
 			})
 		})
 }
@@ -999,9 +1005,9 @@ func toastIcon(tone string) *ui.SVG {
 func toastIconColor(tone string) ui.Color {
 	switch tone {
 	case toastSuccess:
-		return theme.Success
+		return theme.SuccessInk
 	case toastError:
-		return theme.Danger
+		return theme.DangerInk
 	}
 	return theme.TextTertiary
 }

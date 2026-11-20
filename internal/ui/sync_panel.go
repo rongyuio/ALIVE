@@ -168,8 +168,8 @@ func (a *App) syncImportBody(c *ui.Context) {
 func (a *App) syncFeedback(c *ui.Context) {
 	if a.SyncError != "" {
 		ui.Row(c).Gap(6).AlignItems(ui.Start).Children(func() {
-			ui.Icon(c, iconAlert).FontSize(14).TextColor(theme.Danger)
-			ui.Text(c, a.SyncError).FontSize(theme.TextXS).TextColor(theme.Danger).Grow(1)
+			ui.Icon(c, iconAlert).FontSize(14).TextColor(theme.DangerInk)
+			ui.Text(c, a.SyncError).FontSize(theme.TextXS).TextColor(theme.DangerInk).Grow(1)
 		})
 		return
 	}

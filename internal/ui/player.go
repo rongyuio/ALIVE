@@ -15,9 +15,9 @@ import (
 // 播放页里常用的半透明底色。控制条和顶栏胶囊都是
 // 「深色半透明 + 1px 白色 12% 描边」，叠在画面上才压得住。
 var (
-	playerBarBg     = ui.RGBA(9, 10, 12, 0.55)
+	playerBarBg     = ui.RGBA(9, 10, 12, 0.62)
 	playerBarBorder = theme.MediaHair
-	playerIcon      = theme.MediaTextDim
+	playerIcon      = theme.MediaTextBody
 	playerIconOn    = ui.Hex("#ffffff")
 )
 
@@ -68,18 +68,11 @@ func (a *App) PlayerPage(c *ui.Context) {
 		pad = 0
 	}
 	ui.Box(c).Grow(1).Padding(0, pad, 0, pad).Children(func() {
-		// container: allow 播放器外壳的 1px 描边参与圆角裁剪（Clip 裁 padding box），
-		// 不是静态容器的装饰边；换掉要先重做那圈圆角。
-		shell := ui.Column(c).Fill().
-			Border(1, theme.Border).Background(theme.BgSecondary)
-		if full {
-			// .shellFull { border: none; border-radius: 0 }
-			shell.Border(0, ui.Transparent)
-		} else {
-			// Clip 而不是 ClipInset：ClipInset 是 clip-path: inset()，会把 1px
-			// 描边一起裁掉，而它的圆角正好落在描边中线上——弧线上覆盖度被
-			// 乘两次，四个角的线条就没了。Clip 是 overflow: hidden，裁的是
-			// padding box（圆角自动减掉边框宽），描边在裁剪后补画一遍。
+		// 外壳不描边：和设备页、卡片一样，边界交给地→画面的色阶和圆角。
+		// 以前那 1px 是为了遮住「描边压在圆角裁剪线上」的接缝，不画描边就没有
+		// 这条接缝——Clip 直接把舞台裁成圆角。
+		shell := ui.Column(c).Fill().Background(theme.BgSecondary)
+		if !full {
 			shell.Radius(theme.RadiusXL).Clip()
 		}
 

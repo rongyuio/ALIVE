@@ -5,12 +5,17 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+
+	"alive/internal/theme"
 )
 
-// isAccentPixel 判断一个像素是不是主题强调色（signal 下是青柠）。
-// 白色机身的 B 通道接近 255，不会混进来。
+// isAccentPixel 判断一个像素是不是当前配色的强调色。
+// 不写死某个色相：主题换了，判据跟着 theme.Accent 走。
 func isAccentPixel(r, g, b uint32) bool {
-	return g > 140 && b < 120 && r > 80 && g > r
+	a := theme.Accent
+	return absInt(int(r)-int(a.R)) < 40 &&
+		absInt(int(g)-int(a.G)) < 40 &&
+		absInt(int(b)-int(a.B)) < 40
 }
 
 // countAccent 数一块区域里有多少强调色像素，坐标是设备像素。
@@ -33,6 +38,9 @@ func countAccent(img *image.RGBA, x0, y0, x1, y1 int) int {
 // 就说明又退回去了。关闭态的勾位是禁止符，整颗图标都不该有 accent。
 func TestDanmuToggleOnlyCheckIsAccent(t *testing.T) {
 	app := NewMockApp()
+	// 钉住一套强调色明确的深色配色，别让本机 state.json 决定。
+	app.PaletteID = "curtain-night"
+	app.ThemeMode = themeModeDark
 	app.Player = app.Streamers[0]
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
@@ -161,6 +169,9 @@ func TestDanmuTVIconAligned(t *testing.T) {
 	labels := make([]string, 0, 3)
 	for _, tc := range cases {
 		app := NewMockApp()
+		// 图标墨迹的判据按当前强调色扫；钉住配色，别让本机 state.json 决定。
+		app.PaletteID = "curtain-night"
+		app.ThemeMode = themeModeDark
 		app.Player = app.Streamers[0]
 		app.Router.Push(routePlayer)
 		app.DanmuOn = tc.on
@@ -175,6 +186,9 @@ func TestDanmuTVIconAligned(t *testing.T) {
 
 	// 设置入口是另一颗按钮，单独量一次。
 	app := NewMockApp()
+	// 钉住一套强调色明确的深色配色，别让本机 state.json 决定。
+	app.PaletteID = "curtain-night"
+	app.ThemeMode = themeModeDark
 	app.Player = app.Streamers[0]
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, 1440, 900)

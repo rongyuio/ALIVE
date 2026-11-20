@@ -663,7 +663,7 @@ func (a *App) subscribeButton(c *ui.Context) {
 	if subscribed {
 		btn.Background(theme.Accent).Border(1, ui.Transparent)
 	} else {
-		btn.Border(1, theme.Border)
+		btn.Border(1, theme.BorderFunctional)
 		if btn.Hovered() {
 			btn.Background(theme.AccentSoft).BorderColor(theme.AccentInk)
 		}

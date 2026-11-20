@@ -12,6 +12,7 @@ import (
 // 右侧弹幕面板按默认宽度 196 展开，且必须和舞台分列。
 func TestDanmuPanelWidth(t *testing.T) {
 	app := NewMockApp()
+	app.DanmuPanelOn = true
 	app.Player = app.Streamers[0]
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -32,6 +33,7 @@ func TestDanmuPanelWidth(t *testing.T) {
 // 两个等级不是同一个数，各占一个胶囊。
 func TestDanmuPanelShowsMedalAndLevel(t *testing.T) {
 	app := NewMockApp()
+	app.DanmuPanelOn = true
 	app.Player = app.Streamers[0]
 	app.Router.Push(routePlayer)
 	app.DanmuLog = []danmuLine{{
@@ -56,6 +58,7 @@ func TestDanmuPanelShowsMedalAndLevel(t *testing.T) {
 // 正文里的 [表情名] 要换成图；换不了的时候原文必须还在。
 func TestDanmuPanelReplacesEmotePlaceholder(t *testing.T) {
 	app := NewMockApp()
+	app.DanmuPanelOn = true
 	app.Player = app.Streamers[0]
 	app.Router.Push(routePlayer)
 	app.DanmuLog = []danmuLine{
@@ -77,6 +80,7 @@ func TestDanmuPanelReplacesEmotePlaceholder(t *testing.T) {
 // 列表定在原地不动。
 func TestDanmuPanelFollowsAfterFullscreenToggle(t *testing.T) {
 	app := NewMockApp()
+	app.DanmuPanelOn = true
 	app.Player = app.Streamers[0]
 	app.Router.Push(routePlayer)
 	app.DanmuPanelOn = true

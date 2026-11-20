@@ -2,13 +2,13 @@ package ui
 
 import (
 	"image"
+	"image/color"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/live"
-	"alive/internal/theme"
 )
 
 // 控制条的三档尺寸：
@@ -315,84 +315,114 @@ func TestWheelVolumeAccumulatesPreciseScroll(t *testing.T) {
 	}
 }
 
-// 播放页外壳的圆角描边必须连着。
+// 播放页外壳不描边，圆角照旧。
 //
-// 外壳是「圆角 16 + 1px 描边」的大容器，以前用 ClipInset(0,0,0,0,16) 切内容。
-// ClipInset 是 CSS 的 clip-path: inset()，它连边框一起裁，而且裁剪的圆角
-// 正好落在描边中线上：直边处像素中心落在裁剪内、描边完整，弧线上覆盖度被
-// 乘了两次，只剩四分之一，肉眼就是「四个角的线条没了」。
-// Clip() 才是 overflow:hidden：裁 padding box（圆角自动减掉边框宽），
-// 描边在裁剪之后补画一遍，弧线完整。
+// 外壳曾经是全项目唯一一个静态表面带 1px 描边的例外：那圈线参与圆角裁剪
+// （ClipInset 会把描边一起裁掉，四个角的弧线断成空白），于是用 Clip() 绕过，
+// 并在 container_test.go 里挂了 allow。边框删掉之后接缝这个前提消失了，
+// 约束只剩一条——舞台仍然要按 16 的圆角裁开。
 //
-// 断言方式：沿左上角弧线逐行取最亮的像素，每行都得亮过阈值。直边不受影响，
-// 所以只查弧线覆盖的那一段——那里整段暗下去才是这个 bug。
-func TestPlayerShellCornerBorderIsContinuous(t *testing.T) {
+// 两条都靠像素断言：
+//   - 直边处从地往里的第一个像素就是画面（纯黑），中间不许有一层过渡色；
+//     以前那圈 theme.Border 会在这里被第一个抓到。
+//   - 左上角逐行找画面入点，越往下越靠左且不能有断行；角要是被切方了，
+//     首行入点会直接贴到左边。
+func TestPlayerShellEdgeHasNoStroke(t *testing.T) {
 	const radius = 16
-	// theme.Border #24272e 的 RGB 和是 121，窗口底 #0a0b0d 是 34，画面纯黑是 0。
-	// 弧线是斜的，1px 宽在像素上覆盖不满，45° 处峰值掉到 89；而被裁坏的
-	// 弧线整段只剩 27。取 60 分得开。
-	const lit = 60
 	sum := func(img *image.RGBA, x, y int) int {
 		p := img.RGBAAt(x, y)
 		return int(p.R) + int(p.G) + int(p.B)
 	}
+	same := func(a, b color.RGBA) bool {
+		return a.R == b.R && a.G == b.G && a.B == b.B
+	}
 
-	for _, scale := range []float32{1, 2} {
-		app := NewMockApp()
-		// 下面按 signal 夜色的描边取值扫描，主题不能跟着本机 state.json 走。
-		app.PaletteID = "signal"
-		app.ThemeMode = themeModeDark
-		tt := ui.NewTester(app.Shell, 1440, 900)
-		tt.SetScale(scale)
-		if err := tt.Click("旭旭宝宝"); err != nil {
-			t.Fatal(err)
-		}
-		// 播放页从右侧滑进来，动画走完再截图
-		tt.Advance(1500 * time.Millisecond)
-		img := tt.Image()
+	for _, tc := range []struct {
+		name    string
+		palette string
+		mode    string
+		scale   float32
+	}{
+		{"signal 夜 100%", "signal", themeModeDark, 1},
+		{"signal 夜 200%", "signal", themeModeDark, 2},
+		{"daylight 日 200%", "daylight", themeModeLight, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := NewMockApp()
+			// 主题不能跟着本机 state.json 走。
+			app.PaletteID = tc.palette
+			app.ThemeMode = tc.mode
+			tt := ui.NewTester(app.Shell, 1440, 900)
+			tt.SetScale(tc.scale)
+			if err := tt.Click("旭旭宝宝"); err != nil {
+				t.Fatal(err)
+			}
+			// 播放页从右侧滑进来，动画走完再截图
+			tt.Advance(1500 * time.Millisecond)
+			img := tt.Image()
 
-		// 描边的亮度区间跟着主题走，不写死：配色换了，这里不该跟着红。
-		borderRow := int(theme.Border.R) + int(theme.Border.G) + int(theme.Border.B)
-		lo, hi := borderRow-14, borderRow+14
+			ground := img.RGBAAt(0, img.Bounds().Dy()/2)
+			midY := img.Bounds().Dy() / 2
 
-		// 顶边：第一行横贯大半幅画面的描边
-		top, left := -1, -1
-		for y := 0; y < img.Bounds().Dy() && top < 0; y++ {
-			n := 0
+			// 直边：地之后第一个像素必须是画面。任何过渡色都说明又画了一条线。
+			left := -1
 			for x := 0; x < img.Bounds().Dx(); x++ {
-				if sum(img, x, y) >= lo && sum(img, x, y) <= hi {
-					n++
+				if !same(img.RGBAAt(x, midY), ground) {
+					left = x
+					break
 				}
 			}
-			if n > img.Bounds().Dx()/2 {
-				top = y
+			if left < 0 {
+				t.Fatal("找不到外壳的左边")
 			}
-		}
-		if top < 0 {
-			t.Fatalf("scale %v：找不到外壳的顶边", scale)
-		}
-		// 左边：顶边往下走满一个圆角之后，第一条竖着的描边
-		for x := 0; x < img.Bounds().Dx(); x++ {
-			if sum(img, x, top+int(radius*scale)+2) >= lo {
-				left = x
-				break
+			if got := sum(img, left, midY); got > 24 {
+				t.Fatalf("外壳左边第一个像素 RGB 和是 %d，不是纯黑画面——描边又回来了", got)
 			}
-		}
-		if left < 0 {
-			t.Fatalf("scale %v：找不到外壳的左边", scale)
-		}
 
-		// 逐行扫弧线：top 这一行是顶边本身，往下 radius 行都该有亮像素
-		for y := top + 1; y < top+int(radius*scale); y++ {
-			peak := 0
-			for x := left; x < left+int(radius*scale) && x < img.Bounds().Dx(); x++ {
-				peak = max(peak, sum(img, x, y))
+			// 弧线：在直边往里一个圆角的位置找顶边。
+			probeX := left + int(radius*tc.scale)
+			top := -1
+			for y := 0; y < img.Bounds().Dy(); y++ {
+				if !same(img.RGBAAt(probeX, y), ground) {
+					top = y
+					break
+				}
 			}
-			if peak < lit {
-				t.Fatalf("scale %v：外壳左上角第 %d 行（角顶下 %d px）最亮只有 %d，圆角弧线断了",
-					scale, y, y-top, peak)
+			if top < 0 {
+				t.Fatal("找不到外壳的顶边")
 			}
-		}
+
+			// 圆角还在：顶边那一行，画面得从右边一个圆角处才开始。
+			firstAtTop := -1
+			for x := 0; x < img.Bounds().Dx(); x++ {
+				if !same(img.RGBAAt(x, top), ground) {
+					firstAtTop = x
+					break
+				}
+			}
+			if want := left + int(radius*tc.scale) - 2; firstAtTop < want {
+				t.Fatalf("顶边第一行从 x=%d 就开始有画面（应在 %d 附近），圆角被切方了", firstAtTop, want)
+			}
+
+			// 弧线不许断：每行都要能扫到画面入点，且入点只往左走。
+			prev := firstAtTop
+			for y := top + 1; y < top+int(radius*tc.scale); y++ {
+				edge := -1
+				for x := 0; x < img.Bounds().Dx(); x++ {
+					if !same(img.RGBAAt(x, y), ground) {
+						edge = x
+						break
+					}
+				}
+				if edge < 0 {
+					t.Fatalf("第 %d 行（顶边下 %d px）整行都是地色，弧线断了", y, y-top)
+				}
+				if edge > prev {
+					t.Fatalf("第 %d 行画面入点 x=%d 比上一行 %d 还靠右，弧线不是单调的圆角", y, edge, prev)
+				}
+				prev = edge
+			}
+		})
 	}
 }
 

@@ -332,17 +332,20 @@ func TestListeningShrinkDoesNotJitter(t *testing.T) {
 // 被 body 的圆角裁掉大半，剩一小截弧挂在圆的右下角——那不是「绿点被收进
 // 去」，那是一颗没擦干净的脏点。
 //
-// 判据用像素：绿点是 #22c55e，扫整条岛。展开态必须找得到，收起态必须一颗
-// 都没有——中间不许出现「半颗」，那正是残弧的形状。
+// 判据用像素：绿点取当前配色的 StatusOnline（状态色现在按配色推导），
+// 扫整条岛。展开态必须找得到，收起态必须一颗都没有——中间不许出现
+// 「半颗」，那正是残弧的形状。
 func TestListeningHidesLiveDot(t *testing.T) {
 	count := func(tt *ui.Tester) int {
+		want := theme.StatusOnline
 		img := tt.Image()
 		n := 0
 		for y := 0; y < 60; y++ {
 			for x := 600; x < 840; x++ {
 				r, g, b, _ := img.At(x, y).RGBA()
-				if absInt(int(r>>8)-34) < 26 && absInt(int(g>>8)-197) < 26 &&
-					absInt(int(b>>8)-94) < 26 {
+				if absInt(int(r>>8)-int(want.R)) < 26 &&
+					absInt(int(g>>8)-int(want.G)) < 26 &&
+					absInt(int(b>>8)-int(want.B)) < 26 {
 					n++
 				}
 			}
@@ -351,6 +354,8 @@ func TestListeningHidesLiveDot(t *testing.T) {
 	}
 
 	app := NewMockApp()
+	app.PaletteID = "inkwhite-night"
+	app.ThemeMode = themeModeDark
 	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, 1440, 900)

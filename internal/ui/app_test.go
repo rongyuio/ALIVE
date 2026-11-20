@@ -27,7 +27,7 @@ func TestHomeOpensPlayer(t *testing.T) {
 func TestPaletteSwitch(t *testing.T) {
 	app := NewMockApp()
 	app.PaletteOpen = true
-	// 面板只列当前这一侧的配色（深色三套 / 浅色三套），所以要显式选日间，
+	// 面板只列当前这一侧的配色（深色六套 / 浅色六套），所以要显式选日间，
 	// 不能依赖 Tester 的默认外观——那个默认值会随 MyGo 版本变。
 	app.ThemeMode = "light"
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -35,11 +35,11 @@ func TestPaletteSwitch(t *testing.T) {
 	if !tt.HasText("主题配色") {
 		t.Fatalf("配色面板没有展开，texts=%q", tt.Texts())
 	}
-	if err := tt.Click("书页·日"); err != nil {
+	if err := tt.Click("科技蓝·日"); err != nil {
 		t.Fatal(err)
 	}
-	if app.PaletteID != "parchment" {
-		t.Fatalf("选中的配色为 %q，期望 parchment", app.PaletteID)
+	if app.PaletteID != "tech-day" {
+		t.Fatalf("选中的配色为 %q，期望 tech-day", app.PaletteID)
 	}
 	if app.PaletteOpen {
 		t.Fatal("选中配色后面板应该收起")

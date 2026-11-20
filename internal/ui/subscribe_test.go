@@ -10,6 +10,10 @@ import (
 // subsApp 造一份订阅页：同一分区挂在多家平台上。
 func subsApp() (*App, *ui.Tester) {
 	app := NewMockApp()
+	// 钉住一套深色配色：NewMockApp 会 restore 本机 state.json，
+	// 胶囊的像素判据不能跟着用户选的主题变。
+	app.PaletteID = "tech-night"
+	app.ThemeMode = themeModeDark
 	app.Subs = []Subscription{
 		{PlatformID: "huya", Platform: "虎牙", Group: "热门", Name: "英雄联盟", CategoryID: "1"},
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "热门", Name: "英雄联盟", CategoryID: "1"},
@@ -259,15 +263,16 @@ func TestPlatformTagGrowsOnHover(t *testing.T) {
 	if !ok {
 		t.Fatal("找不到胶囊")
 	}
-	y := int(tag.Y + tag.H/2)
-
-	// 斗鱼是当前平台，实底压在青柠滑块上，像素对比足够清楚
-	before := darkPixels(tt, y, int(tag.X)-24, int(tag.X+tag.W)+24)
+	// 斗鱼是当前平台；选中胶囊是反相底（AccentText 当底），在 tech-night 里
+	// 这块底是深色，压在浅蓝强调上。数整块而不是一行：放大是二维的。
+	x0, y0 := int(tag.X)-12, int(tag.Y)-8
+	x1, y1 := int(tag.X+tag.W)+12, int(tag.Y+tag.H)+8
+	before := darkPixels(tt, x0, y0, x1, y1)
 
 	tt.Move(tag.X+tag.W/2, tag.Y+tag.H/2)
 	tt.Advance(600 * time.Millisecond)
 
-	after := darkPixels(tt, y, int(tag.X)-24, int(tag.X+tag.W)+24)
+	after := darkPixels(tt, x0, y0, x1, y1)
 	if after <= before {
 		t.Fatalf("悬停后胶囊没有放大：按 %d 个像素 → %d 个", before, after)
 	}
@@ -278,20 +283,19 @@ func TestPlatformTagGrowsOnHover(t *testing.T) {
 	}
 }
 
-// darkPixels 数一行里接近墨色的像素：胶囊实底是 AccentText，压在青柠上。
-func darkPixels(tt *ui.Tester, y, x0, x1 int) int {
+// darkPixels 数一块区域里接近墨色的像素：选中胶囊的底是 AccentText。
+// tech-night 的卡片底 #20252e 的蓝通道 46，不会被 <40 的阈值算进来。
+func darkPixels(tt *ui.Tester, x0, y0, x1, y1 int) int {
 	im := tt.Image()
-	if x0 < 0 {
-		x0 = 0
-	}
-	if x1 > im.Bounds().Dx() {
-		x1 = im.Bounds().Dx()
-	}
+	x0, y0 = max(0, x0), max(0, y0)
+	x1, y1 = min(im.Bounds().Dx(), x1), min(im.Bounds().Dy(), y1)
 	n := 0
-	for x := x0; x < x1; x++ {
-		r, g, b, _ := im.At(x, y).RGBA()
-		if r>>8 < 40 && g>>8 < 40 && b>>8 < 40 {
-			n++
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			r, g, b, _ := im.At(x, y).RGBA()
+			if r>>8 < 40 && g>>8 < 40 && b>>8 < 40 {
+				n++
+			}
 		}
 	}
 	return n

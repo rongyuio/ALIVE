@@ -491,7 +491,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 	}
 	col := theme.MediaText
 	if followed {
-		col = theme.StatusOnline
+		col = theme.StatusOnlineInk
 	}
 	btn.Children(func() {
 		ico := iconStar

@@ -7,18 +7,26 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Palette 是一套完整配色：不是只换强调色，而是六套成对（同色系日夜各一套）的完整配色。
+// Palette 是一族配色的一个曝光（日或夜）。六族身份、十二套配色：
+// 墨白、幕红、屏青、灯暖、科技蓝、应援粉，每族日夜各一套。
 //
-// 这些值不再是手写的十六进制。每套配色只声明六个输入（地、四档文字、强调色），
-// 其余由 build 推导：表面沿一条明度阶梯抬升，文字沿另一条收敛，强调色按对比度
-// 自动算出"当字用"和"当线用"两个版本。手写二十个十六进制的问题是它一定会走样
-// ——六套里有四套的卡片色是从 signal 复制过来的，ember 暖黑的地配了冷蓝黑的卡。
+// 每套只声明六个输入（地、四档文字、强调色），其余由 build 推导：
+// 表面沿明度阶梯抬升，文字沿另一条收敛，强调色按对比度算出"当字用"
+// 和"当线用"两个版本，状态色拆成 fill / ink / line 三支。
+//
+// 两个容易踩的点：
+//   - AccentInk / AccentLine 对 FillSecondary 推导，不对地。FillSecondary 是
+//     深色主题里最亮的平静表面、浅色主题里最暗的那个；在它上面过线，其余
+//     平静表面都过。旧版只对地/卡片推，浅色主题在 FillSecondary 上掉到 3.86–3.98。
+//   - 状态色不再写死。语义色相固定，明度按当前配色和模式推导，所以浅色主题
+//     不会出现 1.3:1 的绿点。
 type Palette struct {
 	ID          string
 	Name        string
 	Description string
 	Dark        bool
-	// Swatch 是配色面板里的三色预览：背景 / 表面 / 强调色
+	textMode    accentTextMode
+	// Swatch 是配色面板里的三色预览：地 / 文字 / 强调色。
 	Swatch [3]string
 
 	BgPrimary, BgSecondary, BgTertiary, BgElevated ui.Color
@@ -26,27 +34,64 @@ type Palette struct {
 	// SurfaceChrome 是顶栏托盘：地和卡片的明度中点，由阶梯推导，不手写。
 	SurfaceChrome ui.Color
 
-	FillQuaternary, FillTertiary, FillSecondary   ui.Color
-	HoverBg                                       ui.Color
-	TextPrimary, TextSecondary, TextTertiary      ui.Color
-	TextMeta                                      ui.Color
-	Accent, AccentHover, AccentActive, AccentText ui.Color
+	FillQuaternary, FillTertiary, FillSecondary ui.Color
+	HoverBg                                     ui.Color
+	TextPrimary, TextSecondary, TextTertiary    ui.Color
+	TextMeta                                    ui.Color
+	Accent, AccentHover, AccentActive           ui.Color
+	AccentText                                  ui.Color
 	// AccentInk 是强调色当文字用（≥4.5:1），AccentLine 是当线条用（≥3:1）。
-	// 浅色主题里青柠压在白底上只有 1.1:1，这两个版本是同一支色的两种用途。
-	AccentInk    ui.Color
-	AccentLine   ui.Color
-	AccentOnInk  ui.Color
-	AccentSoft   ui.Color
-	AccentSofter ui.Color
-	AccentGlow   ui.Color
-	Border       ui.Color
-	BorderStrong ui.Color
-	Separator    ui.Color
+	// 两者都对 FillSecondary 推导，不用 BgPrimary。
+	AccentInk        ui.Color
+	AccentLine       ui.Color
+	AccentOnInk      ui.Color
+	AccentSoft       ui.Color
+	AccentSofter     ui.Color
+	AccentGlow       ui.Color
+	Border           ui.Color
+	BorderStrong     ui.Color
+	BorderFunctional ui.Color
+	Separator        ui.Color
 	// StatusOffline 是离线态的点：无彩色，明度跟着文字元数据走。
 	StatusOffline ui.Color
+
+	// 状态色三支：fill 用于点、底色和低透明度叠加；ink 用于文字和图标；
+	// line 用于边框、指示器。ink ≥4.5，line/fill ≥3。
+	StatusOnline     ui.Color
+	StatusOnlineInk  ui.Color
+	StatusOnlineLine ui.Color
+	Success          ui.Color
+	SuccessInk       ui.Color
+	SuccessLine      ui.Color
+	Danger           ui.Color
+	DangerInk        ui.Color
+	DangerLine       ui.Color
+
 	// TopLight 是平涂表面顶部那 1px 受光边；深色主题是白，浅色主题是极淡的墨色。
 	TopLight ui.Color
+
+	// 阴影阶梯也属于调色板；主题过渡时和颜色一起混合。
+	ShadowPanel, ShadowModal, ShadowContact ui.Color
 }
+
+// accentFillLightL 是强调填充"浅到可以配深墨"的 L* 门槛。
+//
+// 低于它的填充按中/深填充处理，配纯白。普通模式的白字下限是 3.0，不是
+// 正文的 4.5——强调填充观感优先，低视力用户走高对比模式（HC 取最高对比，
+// 正文 7:1）。62 不是对比度的数学交点（约 49），而是"填充看起来像浅色表面"的位置。
+const accentFillLightL = 62.0
+
+// accentTextMode 是强调填充的字色策略。
+//
+// Auto 按填充 L* 走；AlwaysLight/AlwaysDark 是逐主题的显式覆盖，写在 spec 里。
+// HC 永远忽略覆盖，取对比度最高的那支。
+type accentTextMode uint8
+
+const (
+	accentTextAuto accentTextMode = iota
+	accentTextAlwaysLight
+	accentTextAlwaysDark
+)
 
 // islandRingMin 是流光热段对岛面的最低对比度。
 //
@@ -70,6 +115,7 @@ type spec struct {
 	InkC, InkH                float32
 
 	AccentL, AccentC, AccentH float32
+	TextMode                  accentTextMode
 }
 
 // 表面阶梯：相对地的明度抬升。深色靠提亮分层，浅色靠压暗分层。
@@ -95,49 +141,93 @@ const (
 	lightSeparator float32 = -0.042
 )
 
-// specs 按「同色系日夜一行」排列，和配色面板的格子顺序一致。
+// specs 按「同族日夜一行」排列，和配色面板的格子顺序一致。
 var specs = []spec{
 	{
-		ID: "signal", Name: "青柠·夜", Description: "石墨黑 + 信号青柠，默认夜间配色",
+		ID: "inkwhite-night", Name: "墨白·夜", Description: "关灯后的屏幕：冷石墨底、冷白字，画面之外只剩字形",
 		Dark:    true,
-		GroundL: 0.150, GroundC: 0.004, GroundH: 255,
-		Ink: 0.97, Sub: 0.82, Tert: 0.73, Meta: 0.665, InkC: 0.006, InkH: 95,
-		AccentL: 0.955, AccentC: 0.208, AccentH: 123,
+		GroundL: 0.203, GroundC: 0.006, GroundH: 250,
+		Ink: 0.955, Sub: 0.850, Tert: 0.760, Meta: 0.700, InkC: 0.010, InkH: 240,
+		AccentL: 0.995, AccentC: 0, AccentH: 0,
 	},
 	{
-		ID: "daylight", Name: "青柠·日", Description: "4.x 原版浅色 + 信号青柠",
+		ID: "inkwhite-day", Name: "墨白·日", Description: "冷月白底、墨字；不靠色相分层",
 		Dark:    false,
-		GroundL: 0.940, GroundC: 0.003, GroundH: 255,
-		Ink: 0.22, Sub: 0.34, Tert: 0.415, Meta: 0.47, InkC: 0.006, InkH: 255,
-		AccentL: 0.955, AccentC: 0.208, AccentH: 123,
+		GroundL: 0.948, GroundC: 0.006, GroundH: 245,
+		Ink: 0.290, Sub: 0.390, Tert: 0.455, Meta: 0.490, InkC: 0.012, InkH: 250,
+		AccentL: 0, AccentC: 0, AccentH: 0,
 	},
 	{
-		ID: "mono", Name: "黑白灰·夜", Description: "纯灰黑 + 白色强调，极简无彩色",
+		ID: "curtain-night", Name: "幕红·夜", Description: "开播前的幕布：深酒红底、幕布红强调",
 		Dark:    true,
-		GroundL: 0.145, GroundC: 0, GroundH: 0,
-		Ink: 0.97, Sub: 0.82, Tert: 0.73, Meta: 0.665, InkC: 0, InkH: 0,
-		AccentL: 0.915, AccentC: 0, AccentH: 0,
+		GroundL: 0.200, GroundC: 0.019, GroundH: 15,
+		Ink: 0.955, Sub: 0.845, Tert: 0.755, Meta: 0.695, InkC: 0.008, InkH: 40,
+		AccentL: 0.650, AccentC: 0.160, AccentH: 22,
+		TextMode: accentTextAlwaysDark,
 	},
 	{
-		ID: "paper", Name: "黑白灰·日", Description: "纸白 + 墨黑强调，极简无彩色",
+		ID: "curtain-day", Name: "幕红·日", Description: "浅玫瑰底、深暖字、幕布红强调",
 		Dark:    false,
-		GroundL: 0.940, GroundC: 0, GroundH: 0,
-		Ink: 0.22, Sub: 0.34, Tert: 0.415, Meta: 0.47, InkC: 0, InkH: 0,
-		AccentL: 0.210, AccentC: 0.006, AccentH: 278,
+		GroundL: 0.930, GroundC: 0.016, GroundH: 15,
+		Ink: 0.290, Sub: 0.390, Tert: 0.455, Meta: 0.490, InkC: 0.010, InkH: 30,
+		AccentL: 0.550, AccentC: 0.160, AccentH: 22,
 	},
 	{
-		ID: "ember", Name: "琥珀·夜", Description: "暖炭黑 + 琥珀橙",
+		ID: "phosphor-night", Name: "屏青·夜", Description: "监视器的荧光余辉：深青底、冰青字",
 		Dark:    true,
-		GroundL: 0.155, GroundC: 0.012, GroundH: 62,
-		Ink: 0.97, Sub: 0.82, Tert: 0.73, Meta: 0.665, InkC: 0.010, InkH: 70,
-		AccentL: 0.830, AccentC: 0.158, AccentH: 56,
+		GroundL: 0.160, GroundC: 0.018, GroundH: 195,
+		Ink: 0.955, Sub: 0.845, Tert: 0.755, Meta: 0.695, InkC: 0.008, InkH: 190,
+		AccentL: 0.880, AccentC: 0.100, AccentH: 190,
 	},
 	{
-		ID: "parchment", Name: "书页·日", Description: "米纸底 + 赭石橙，书本纸张质感",
+		ID: "phosphor-day", Name: "屏青·日", Description: "浅薄荷底、深青字、同色系青",
 		Dark:    false,
-		GroundL: 0.932, GroundC: 0.022, GroundH: 78,
-		Ink: 0.26, Sub: 0.37, Tert: 0.44, Meta: 0.49, InkC: 0.012, InkH: 60,
-		AccentL: 0.550, AccentC: 0.130, AccentH: 50,
+		GroundL: 0.930, GroundC: 0.012, GroundH: 190,
+		Ink: 0.290, Sub: 0.390, Tert: 0.455, Meta: 0.490, InkC: 0.010, InkH: 195,
+		AccentL: 0.470, AccentC: 0.075, AccentH: 190,
+	},
+	{
+		ID: "lamp-night", Name: "灯暖·夜", Description: "环形补光灯：暖灰底、灯丝光",
+		Dark:    true,
+		GroundL: 0.200, GroundC: 0.008, GroundH: 70,
+		Ink: 0.955, Sub: 0.845, Tert: 0.755, Meta: 0.695, InkC: 0.010, InkH: 70,
+		AccentL: 0.870, AccentC: 0.065, AccentH: 60,
+	},
+	{
+		ID: "lamp-day", Name: "灯暖·日", Description: "奶油底、暖褐字、浅金强调",
+		Dark:    false,
+		GroundL: 0.945, GroundC: 0.006, GroundH: 85,
+		Ink: 0.300, Sub: 0.395, Tert: 0.460, Meta: 0.495, InkC: 0.010, InkH: 70,
+		AccentL: 0.700, AccentC: 0.090, AccentH: 75,
+		TextMode: accentTextAlwaysLight,
+	},
+	{
+		ID: "tech-night", Name: "科技蓝·夜", Description: "屏幕冷光：深海军蓝底、科技蓝强调",
+		Dark:    true,
+		GroundL: 0.205, GroundC: 0.020, GroundH: 260,
+		Ink: 0.960, Sub: 0.850, Tert: 0.760, Meta: 0.700, InkC: 0.006, InkH: 250,
+		AccentL: 0.760, AccentC: 0.120, AccentH: 250,
+	},
+	{
+		ID: "tech-day", Name: "科技蓝·日", Description: "浅冰蓝底、深海军蓝字、科技蓝强调",
+		Dark:    false,
+		GroundL: 0.930, GroundC: 0.012, GroundH: 245,
+		Ink: 0.290, Sub: 0.390, Tert: 0.455, Meta: 0.490, InkC: 0.012, InkH: 260,
+		AccentL: 0.666, AccentC: 0.158, AccentH: 247,
+	},
+	{
+		ID: "fanlight-night", Name: "应援粉·夜", Description: "观众席灯牌：冷灰底、珊瑚粉高亮",
+		Dark:    true,
+		GroundL: 0.160, GroundC: 0.006, GroundH: 300,
+		Ink: 0.955, Sub: 0.845, Tert: 0.755, Meta: 0.695, InkC: 0.006, InkH: 20,
+		AccentL: 0.735, AccentC: 0.165, AccentH: 8,
+	},
+	{
+		ID: "fanlight-day", Name: "应援粉·日", Description: "浅粉底、深灰字、珊瑚粉强调",
+		Dark:    false,
+		GroundL: 0.940, GroundC: 0.008, GroundH: 355,
+		Ink: 0.290, Sub: 0.390, Tert: 0.455, Meta: 0.490, InkC: 0.008, InkH: 350,
+		AccentL: 0.680, AccentC: 0.187, AccentH: 6.3,
 	},
 }
 
@@ -159,7 +249,6 @@ func buildAll(hc bool) []Palette {
 	return out
 }
 
-// build 把六个输入展开成二十个令牌。
 // ladder 是一套主题模式下表面与文字的阶梯参数。
 //
 // 普通模式和高对比模式用同一份结构、不同的数：高对比把文字往正文收、
@@ -169,6 +258,7 @@ type ladder struct {
 	border, borderStrong, separator                  float32
 	sub, tert, meta                                  float32
 	accentInkMin, accentLineMin                      float64
+	hc                                               bool
 }
 
 func (s spec) ladder(hc bool) ladder {
@@ -194,9 +284,12 @@ func (s spec) ladder(hc bool) ladder {
 		return l
 	}
 	// 高对比：次级往正文靠一半，三级升到原来的次级，元数据只比它再退一点。
+	l.hc = true
 	l.sub = (s.Sub + s.Ink) / 2
 	l.tert = s.Sub
-	l.meta = s.Sub + (s.Meta-s.Sub)*0.5
+	// 元数据往 Sub 挪到 1/4，而不是 1/2：HC 的 11px 小字需要再亮/再深一档。
+	// APCA 读数从 57–59 提到 60 以上；普通配色不动。
+	l.meta = s.Sub + (s.Meta-s.Sub)*0.25
 	// 描边整体升一档，分隔线跟描边对齐。
 	l.separator = l.border
 	l.border = l.borderStrong
@@ -225,9 +318,9 @@ func (s spec) buildWith(l ladder) Palette {
 
 	// 托盘取地和卡片的 L* 中点。OKLCH 的 L 不是等距的，直接除以二会让
 	// 深色主题的两段差出一倍；L* 才是等分的那把尺子。
-	chromeL := midpointL(s.GroundL, clamp01(surfaceL), s.GroundC*0.9, s.GroundH)
+	chromeL := midpointL(s.GroundL, clamp01(surfaceL), s.GroundC, s.GroundC*0.9, s.GroundH)
 	p := Palette{
-		ID: s.ID, Name: s.Name, Description: s.Description, Dark: s.Dark,
+		ID: s.ID, Name: s.Name, Description: s.Description, Dark: s.Dark, textMode: s.TextMode,
 
 		BgPrimary:      oklch(s.GroundL, s.GroundC, s.GroundH),
 		BgSecondary:    oklch(surfaceL, s.GroundC*0.9, s.GroundH),
@@ -251,32 +344,58 @@ func (s spec) buildWith(l ladder) Palette {
 		SurfaceChrome: oklch(chromeL, s.GroundC*0.9, s.GroundH),
 	}
 
+	// 功能性边界：中性灰，对卡片推导。按钮坐在卡片上，卡片是相邻面；
+	// 公共 Border 保持"分隔"语义，不跟着提亮。
+	base := float32(0.85)
+	if s.Dark {
+		base = 0.15
+	}
+	p.BorderFunctional = withContrast(base, 0, 0, p.BgSecondary, l.accentLineMin, s.Dark)
+
 	p.Accent = oklch(s.AccentL, s.AccentC, s.AccentH)
 
-	// 强调色上的字：亮底配深墨，暗底配近白。
+	// 强调色上的字：按填充明度定极性，不按"谁对比度高"选。
+	//
+	// 旧规则只比 WCAG：中明度的饱和填充上黑字数值上赢一点，就被选中。
+	// 结果就是蓝底黑字、红底黑字——读到的是"脏"，不是"可读"。
+	// 现在：浅填充（L*≥62）配深墨；中/深填充配纯白。普通模式白字下限 3.0，
+	// 高对比模式不跟随极性、取对比度最高的那支。TestAccentTextPolarity 兜底。
 	tint := s.AccentC * 0.15
 	if tint > 0.02 {
 		tint = 0.02
 	}
 	dark := oklch(0.16, tint, s.AccentH)
-	light := oklch(0.985, tint*0.5, s.AccentH)
-	// 哪个对比度高用哪个，不按 L 猜：parchment 的赭石正好卡在中间，
-	// 猜错的代价是一段读不出来的字。
-	if wcag(light, p.Accent) > wcag(dark, p.Accent) {
+	light := oklch(1, 0, 0)
+	switch {
+	case l.hc:
+		// 高对比不跟随观感极性：取对比度最高的那支，保证可读。
+		if wcag(light, p.Accent) > wcag(dark, p.Accent) {
+			p.AccentText = light
+		} else {
+			p.AccentText = dark
+		}
+	case s.TextMode == accentTextAlwaysLight:
 		p.AccentText = light
-	} else {
+	case s.TextMode == accentTextAlwaysDark:
 		p.AccentText = dark
+	case labL(p.Accent) >= accentFillLightL:
+		p.AccentText = dark
+	default:
+		// 中/深填充配纯白。普通模式下限 3.0——明确标出的例外：
+		// 强调填充是品牌面，观感优先；低视力走高对比。
+		p.AccentText = light
 	}
 
 	p.AccentHover = oklch(clamp01(s.AccentL+0.02), s.AccentC, s.AccentH)
 	p.AccentActive = oklch(clamp01(s.AccentL-0.035), s.AccentC, s.AccentH)
 
 	// 同一支色的两个"可用"版本：当字和当线。
-	p.AccentInk = withContrast(s.AccentL, s.AccentC, s.AccentH, p.BgPrimary, l.accentInkMin, s.Dark)
-	p.AccentLine = withContrast(s.AccentL, s.AccentC, s.AccentH, p.BgPrimary, l.accentLineMin, s.Dark)
+	// 目标表面取 FillSecondary：深色主题里它是最亮的平静面，浅色主题里最暗。
+	p.AccentInk = withContrast(s.AccentL, s.AccentC, s.AccentH, p.FillSecondary, l.accentInkMin, s.Dark)
+	p.AccentLine = withContrast(s.AccentL, s.AccentC, s.AccentH, p.FillSecondary, l.accentLineMin, s.Dark)
 	// 第三支：压在灵动岛的墨底上。
 	//
-	// 前两支都是对 BgPrimary 推导的：浅色主题里它们被压深过去当字/当线，
+	// 前两支都是对 FillSecondary 推导的：浅色主题里它们被压深过去当字/当线，
 	// 压到 #060709 上等于消失——环不是「颜色不够亮」，是根本没有光。
 	// 墨底是恒定的暗面，所以这一支永远往亮里走；深色主题里品牌色本来就
 	// 够亮，withContrast 会原样返回它。
@@ -293,16 +412,129 @@ func (s spec) buildWith(l ladder) Palette {
 	p.AccentSofter = withAlpha(p.Accent, 0.07)
 	p.AccentGlow = withAlpha(p.Accent, 0.20)
 
+	// 状态色三支。色相是语义，明度跟着当前配色的最坏表面走。
+	p.StatusOnline, p.StatusOnlineInk, p.StatusOnlineLine = buildStatus(statusOnline, s.Dark, l, p.FillSecondary)
+	p.Success, p.SuccessInk, p.SuccessLine = buildStatus(statusSuccess, s.Dark, l, p.FillSecondary)
+	p.Danger, p.DangerInk, p.DangerLine = buildStatus(statusDanger, s.Dark, l, p.FillSecondary)
+
 	if s.Dark {
 		p.TopLight = ui.RGBA(255, 255, 255, 0.04)
+		p.ShadowPanel = ui.RGBA(0, 0, 0, 0.80)
+		p.ShadowModal = ui.RGBA(0, 0, 0, 0.85)
+		p.ShadowContact = ui.RGBA(0, 0, 0, 0.45)
 	} else {
 		p.TopLight = ui.RGBA(24, 24, 27, 0.03)
+		// 浅色主题用蓝黑而不是纯黑：纯黑在白底上会压出一圈脏灰。
+		p.ShadowPanel = ui.RGBA(24, 24, 27, 0.18)
+		p.ShadowModal = ui.RGBA(24, 24, 27, 0.22)
+		p.ShadowContact = ui.RGBA(24, 24, 27, 0.10)
 	}
 
 	// 预览带是「地 / 字 / 强调」：两块白挨在一起看不出差别，
 	// 换成字色才知道这套配色的对比关系。
 	p.Swatch = [3]string{hexOf(p.BgPrimary), hexOf(p.TextPrimary), hexOf(p.Accent)}
 	return p
+}
+
+// 状态色：色相与彩度是语义，明度按模式和配色推导。
+//
+// 危险色从 H25 移到 H35：幕红的品牌红在 H22，两者相差不到 5 度时
+// 在浅色主题里会读成同一种红。H35 仍是错误色，和品牌红能拉开。
+type statusSpec struct {
+	hue                          float32
+	darkL, darkC, lightL, lightC float32
+}
+
+var (
+	statusOnline  = statusSpec{hue: 150, darkL: 0.72, darkC: 0.160, lightL: 0.58, lightC: 0.150}
+	statusSuccess = statusSpec{hue: 145, darkL: 0.72, darkC: 0.150, lightL: 0.58, lightC: 0.140}
+	statusDanger  = statusSpec{hue: 35, darkL: 0.62, darkC: 0.180, lightL: 0.52, lightC: 0.180}
+)
+
+// buildStatus 返回 fill / ink / line。fill 和 line 都以"在 FillSecondary 上
+// 看得见"为底线；ink 按正文那一档推，保证当文字时够读。
+func buildStatus(st statusSpec, dark bool, l ladder, worst ui.Color) (fill, ink, line ui.Color) {
+	L, C := st.lightL, st.lightC
+	if dark {
+		L, C = st.darkL, st.darkC
+	}
+	fill = withContrast(L, C, st.hue, worst, 3.0, dark)
+	ink = statusInk(L, C, st.hue, worst, l.accentInkMin, dark)
+	line = withContrast(L, C, st.hue, worst, l.accentLineMin, dark)
+	return
+}
+
+// statusInk 在正常对比达标之后，再查三型色觉模拟。
+//
+// 红/绿在 protanopia 下会掉 0.2–0.5 个对比度：正常视觉 4.5，模拟后
+// 只剩 3.96–4.49。状态色不能只对正常视觉成立，所以不够就继续往同方向
+// 推 L，直到两头都过。
+func statusInk(l, c, h float32, worst ui.Color, min float64, dark bool) ui.Color {
+	step := float32(0.01)
+	if !dark {
+		step = -step
+	}
+	for i := 0; i < 90; i++ {
+		col := oklch(l, c, h)
+		if wcag(col, worst) >= min {
+			ok := true
+			for k := 0; k < 3; k++ {
+				if wcag(cvdSim(col, k), cvdSim(worst, k)) < 4.5 {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return col
+			}
+		}
+		l = clamp01(l + step)
+		if l <= 0 || l >= 1 {
+			return col
+		}
+	}
+	return oklch(l, c, h)
+}
+
+// cvdSim 是 Machado 2009 severity 1.0 的三型模拟，线性 sRGB 上乘矩阵。
+func cvdSim(c ui.Color, kind int) ui.Color {
+	mats := [3][3][3]float64{
+		{
+			{0.152286, 1.052583, -0.204868},
+			{0.114503, 0.786281, 0.099216},
+			{-0.003882, -0.048116, 1.051998},
+		},
+		{
+			{0.367322, 0.860646, -0.227968},
+			{0.280085, 0.672501, 0.047413},
+			{-0.011820, 0.042940, 0.968881},
+		},
+		{
+			{1.255528, -0.076749, -0.178779},
+			{-0.078411, 0.930809, 0.147602},
+			{0.004733, 0.691367, 0.303900},
+		},
+	}
+	lin := func(v uint8) float64 {
+		x := float64(v) / 255
+		if x <= 0.04045 {
+			return x / 12.92
+		}
+		return math.Pow((x+0.055)/1.055, 2.4)
+	}
+	enc := func(v float64) uint8 {
+		v = math.Max(0, math.Min(1, v))
+		if v <= 0.0031308 {
+			return uint8(math.Round(v * 12.92 * 255))
+		}
+		return uint8(math.Round((1.055*math.Pow(v, 1/2.4) - 0.055) * 255))
+	}
+	m := mats[kind]
+	r, g, b := lin(c.R), lin(c.G), lin(c.B)
+	return ui.RGB(
+		enc(m[0][0]*r+m[0][1]*g+m[0][2]*b),
+		enc(m[1][0]*r+m[1][1]*g+m[1][2]*b),
+		enc(m[2][0]*r+m[2][1]*g+m[2][2]*b))
 }
 
 func oklch(l, c, h float32) ui.Color {
@@ -327,13 +559,16 @@ func labL(c ui.Color) float64 {
 }
 
 // midpointL 返回一个 OKLCH 明度，使它的 L* 正好落在地和卡片的中间。
+//
+// 地、卡片、托盘三者的彩度不一样（托盘取地的 0.9 倍），所以不能拿同一个
+// 彩度去量三块的 L*。屏青和灯暖的地彩度稍高，旧算法会让托盘偏下 0.9 个 L*。
 // 二分 24 次，init 时跑一遍，代价可以忽略。
-func midpointL(ground, card, c, h float32) float32 {
-	want := (labL(oklch(ground, c, h)) + labL(oklch(card, c, h))) / 2
+func midpointL(ground, card, groundC, cardC, h float32) float32 {
+	want := (labL(oklch(ground, groundC, h)) + labL(oklch(card, cardC, h))) / 2
 	lo, hi := ground, card
 	for i := 0; i < 24; i++ {
 		mid := (lo + hi) / 2
-		if labL(oklch(mid, c, h)) < want {
+		if labL(oklch(mid, cardC, h)) < want {
 			lo = mid
 		} else {
 			hi = mid
@@ -412,14 +647,35 @@ var highContrast bool
 // SetHighContrast 开关高对比配色。只在主线程调用。
 func SetHighContrast(on bool) { highContrast = on }
 
-// current 是当前生效的配色；零值时按 signal 处理。
+// current 是当前生效的配色；零值时按墨白·夜处理。
 var current = &Palettes[0]
 
 // Current 返回当前配色。
 func Current() *Palette { return current }
 
-// Find 按 ID 找配色，找不到返回 nil。
+// legacyIDs 把旧版落盘的配色 ID 迁到新族。
+//
+// 按色系就近迁移：绿 → 屏青，黑白 → 墨白，暖 → 灯暖。
+// 迁移只在读取时发生，下一次落盘写的是新 ID。
+var legacyIDs = map[string]string{
+	"signal":    "phosphor-night",
+	"daylight":  "phosphor-day",
+	"mono":      "inkwhite-night",
+	"paper":     "inkwhite-day",
+	"ember":     "lamp-night",
+	"parchment": "lamp-day",
+}
+
+func resolveID(id string) string {
+	if v, ok := legacyIDs[id]; ok {
+		return v
+	}
+	return id
+}
+
+// Find 按 ID 找配色，找不到返回 nil。旧 ID 会先迁移。
 func Find(id string) *Palette {
+	id = resolveID(id)
 	for i := range Palettes {
 		if Palettes[i].ID == id {
 			return &Palettes[i]
@@ -430,6 +686,7 @@ func Find(id string) *Palette {
 
 // FindHC 按 ID 找高对比版本的配色，找不到返回 nil。
 func FindHC(id string) *Palette {
+	id = resolveID(id)
 	for i := range hcPalettes {
 		if hcPalettes[i].ID == id {
 			return &hcPalettes[i]
@@ -438,10 +695,11 @@ func FindHC(id string) *Palette {
 	return nil
 }
 
-// Palettes 里同色系日夜成对、相邻排列（signal/daylight、mono/paper、
-// ember/parchment），所以「换到另一边」就是把下标异或 1。
+// Palettes 里同族日夜成对、相邻排列（墨白、幕红、屏青、灯暖、科技蓝、应援粉），
+// 所以「换到另一边」就是把下标异或 1。
 // Counterpart 返回 id 的日夜对应配色；找不到时返回原 id。
 func Counterpart(id string) string {
+	id = resolveID(id)
 	for i := range Palettes {
 		if Palettes[i].ID != id {
 			continue
@@ -451,7 +709,7 @@ func Counterpart(id string) string {
 	return id
 }
 
-// Side 返回某一侧（深色 / 浅色）的配色，保持同色系顺序。
+// Side 返回某一侧（深色 / 浅色）的配色，保持同族顺序。
 func Side(dark bool) []*Palette {
 	out := make([]*Palette, 0, len(Palettes)/2)
 	for i := range Palettes {
@@ -476,6 +734,14 @@ func Apply(id string) {
 			p = h
 		}
 	}
+	Show(p)
+}
+
+// Show 把一套已展开的调色板写进包级令牌。
+//
+// Apply 用它；主题过渡的中间帧也用它——中间帧的 Palette 由 Blend 生成，
+// 不在 Palettes 里。只在主线程调用。
+func Show(p *Palette) {
 	current = p
 
 	BgPrimary, BgSecondary, BgTertiary = p.BgPrimary, p.BgSecondary, p.BgTertiary
@@ -491,18 +757,73 @@ func Apply(id string) {
 	AccentOnInk = p.AccentOnInk
 	AccentSoft, AccentSofter, AccentGlow = p.AccentSoft, p.AccentSofter, p.AccentGlow
 	Border, BorderStrong, Separator = p.Border, p.BorderStrong, p.Separator
+	BorderFunctional = p.BorderFunctional
 	StatusOffline = p.StatusOffline
+	StatusOnline, StatusOnlineInk, StatusOnlineLine = p.StatusOnline, p.StatusOnlineInk, p.StatusOnlineLine
+	Success, SuccessInk, SuccessLine = p.Success, p.SuccessInk, p.SuccessLine
+	Danger, DangerInk, DangerLine = p.Danger, p.DangerInk, p.DangerLine
 	TopLight = p.TopLight
+	ShadowPanel, ShadowModal, ShadowContact = p.ShadowPanel, p.ShadowModal, p.ShadowContact
+}
 
-	// 阴影按明暗分成两套；浅色主题用蓝黑而不是纯黑。
-	if p.Dark {
-		ShadowPanel = ui.RGBA(0, 0, 0, 0.80)
-		ShadowModal = ui.RGBA(0, 0, 0, 0.85)
-		ShadowContact = ui.RGBA(0, 0, 0, 0.45)
-	} else {
-		// 浅色主题用蓝黑而不是纯黑：纯黑在白底上会压出一圈脏灰。
-		ShadowPanel = ui.RGBA(24, 24, 27, 0.18)
-		ShadowModal = ui.RGBA(24, 24, 27, 0.22)
-		ShadowContact = ui.RGBA(24, 24, 27, 0.10)
+// Blend 返回 from 到 to 之间 t 处的调色板，颜色都在 Oklab 里混。
+//
+// 主题切换用它。t<=0 返回 from，t>=1 返回 to；中间帧的元数据取 to 的。
+// 阴影和强调色、状态色一起混，所以切主题时不会只有地面在动。
+func Blend(from, to *Palette, t float32) *Palette {
+	if t >= 1 {
+		return to
 	}
+	// 颜色取两端之间；元数据（ID/Dark/名字）始终取目标。
+	// t=0 时颜色还是 from，但面板按 Dark 换边的判断已经看到目标——
+	// 否则日夜切换的头一帧，面板会继续列旧的一侧。
+	mix := func(a, b ui.Color) ui.Color {
+		if t <= 0 {
+			return a
+		}
+		return a.MixOklab(b, t)
+	}
+	p := *to
+	p.BgPrimary = mix(from.BgPrimary, to.BgPrimary)
+	p.BgSecondary = mix(from.BgSecondary, to.BgSecondary)
+	p.BgTertiary = mix(from.BgTertiary, to.BgTertiary)
+	p.BgElevated = mix(from.BgElevated, to.BgElevated)
+	p.SurfaceChrome = mix(from.SurfaceChrome, to.SurfaceChrome)
+	p.FillQuaternary = mix(from.FillQuaternary, to.FillQuaternary)
+	p.FillTertiary = mix(from.FillTertiary, to.FillTertiary)
+	p.FillSecondary = mix(from.FillSecondary, to.FillSecondary)
+	p.HoverBg = mix(from.HoverBg, to.HoverBg)
+	p.TextPrimary = mix(from.TextPrimary, to.TextPrimary)
+	p.TextSecondary = mix(from.TextSecondary, to.TextSecondary)
+	p.TextTertiary = mix(from.TextTertiary, to.TextTertiary)
+	p.TextMeta = mix(from.TextMeta, to.TextMeta)
+	p.Accent = mix(from.Accent, to.Accent)
+	p.AccentHover = mix(from.AccentHover, to.AccentHover)
+	p.AccentActive = mix(from.AccentActive, to.AccentActive)
+	p.AccentText = mix(from.AccentText, to.AccentText)
+	p.AccentInk = mix(from.AccentInk, to.AccentInk)
+	p.AccentLine = mix(from.AccentLine, to.AccentLine)
+	p.AccentOnInk = mix(from.AccentOnInk, to.AccentOnInk)
+	p.AccentSoft = mix(from.AccentSoft, to.AccentSoft)
+	p.AccentSofter = mix(from.AccentSofter, to.AccentSofter)
+	p.AccentGlow = mix(from.AccentGlow, to.AccentGlow)
+	p.Border = mix(from.Border, to.Border)
+	p.BorderStrong = mix(from.BorderStrong, to.BorderStrong)
+	p.BorderFunctional = mix(from.BorderFunctional, to.BorderFunctional)
+	p.Separator = mix(from.Separator, to.Separator)
+	p.StatusOffline = mix(from.StatusOffline, to.StatusOffline)
+	p.StatusOnline = mix(from.StatusOnline, to.StatusOnline)
+	p.StatusOnlineInk = mix(from.StatusOnlineInk, to.StatusOnlineInk)
+	p.StatusOnlineLine = mix(from.StatusOnlineLine, to.StatusOnlineLine)
+	p.Success = mix(from.Success, to.Success)
+	p.SuccessInk = mix(from.SuccessInk, to.SuccessInk)
+	p.SuccessLine = mix(from.SuccessLine, to.SuccessLine)
+	p.Danger = mix(from.Danger, to.Danger)
+	p.DangerInk = mix(from.DangerInk, to.DangerInk)
+	p.DangerLine = mix(from.DangerLine, to.DangerLine)
+	p.TopLight = mix(from.TopLight, to.TopLight)
+	p.ShadowPanel = mix(from.ShadowPanel, to.ShadowPanel)
+	p.ShadowModal = mix(from.ShadowModal, to.ShadowModal)
+	p.ShadowContact = mix(from.ShadowContact, to.ShadowContact)
+	return &p
 }
