@@ -26,14 +26,14 @@ func (a *App) FollowsPage(c *ui.Context) {
 	pad := a.bodyPadX(c)
 	ui.Column(c).Grow(1).Padding(0, pad, 0, pad).Gap(12).Children(func() {
 		a.followsPanel(c)
-		// 换分区就是换了一份列表，和首页换分区同一个语法：旧的一屏按方向
-		// 退出，新的从同一侧进来。分区面板留在原地，它是这一屏的边框。
+		// 换分区就是换了一份列表，和首页换分区同一个语法：换代换 key，
+		// 新旧内容直接交换。分区面板留在原地，它是这一屏的边框。
 		//
 		// key 里带上当前一级分区：两级分区共用一份代次，序号在各层
 		// 各自从 0 起，只按代次换 key 的话，从「关注主播」的平台 0 切到
 		// 「订阅分区」的分区 0 会被当成同一块内容，不播进出。
 		feed := ui.Column(c).Key(navKey(followsFeedKind(a.FollowsSection), a.followsSeq)).
-			Grow(1).Transition(feedTransition(c, a.navDir))
+			Grow(1)
 		feed.Children(func() {
 			if a.FollowsSection == followsSectionSubs {
 				a.subscribeFeed(c)
@@ -58,8 +58,82 @@ func followsFeedKind(section int) string {
 	return "follows"
 }
 
-// followsSectionNames 是一级分区的两个选项，顺序和常量的取值一致。
+// followsSectionNames 是一级分区的名字，下标和常量的取值一致。
+// 显示顺序不在这里——那由 FollowsSectionOrder 决定，用户拖一次就变。
 var followsSectionNames = []string{"关注主播", "订阅分区"}
+
+// 一级分区在顺序表里的身份。
+//
+// 用字符串而不是常量序号：顺序要落盘，文件里写 ["subs","streamers"]
+// 比 [1,0] 更难读错，也不会因为以后加第三个分区而整体错位。
+const (
+	sectionIDStreamers = "streamers"
+	sectionIDSubs      = "subs"
+)
+
+// defaultFollowsSectionOrder 是第一次启动时的分区顺序。
+var defaultFollowsSectionOrder = []string{sectionIDStreamers, sectionIDSubs}
+
+// followsSectionOf 把顺序表里的身份换回分区常量；认不出来就退到关注主播。
+func followsSectionOf(id string) int {
+	if id == sectionIDSubs {
+		return followsSectionSubs
+	}
+	return followsSectionStreamers
+}
+
+// followsSectionOrder 是当前一级分区的显示顺序。
+//
+// 每帧现算而不缓存：顺序表只在拖动和读盘时写入，normalize 的代价是
+// 两个元素的切片，不值得为它维护第二份状态。
+func (a *App) followsSectionOrder() []string {
+	return normalizeFollowsSectionOrder(a.FollowsSectionOrder)
+}
+
+// normalizeFollowsSectionOrder 把任意顺序整理成「两个分区各一次，缺的补在后面」。
+func normalizeFollowsSectionOrder(in []string) []string {
+	seen := make(map[string]bool, len(defaultFollowsSectionOrder))
+	out := make([]string, 0, len(defaultFollowsSectionOrder))
+	for _, id := range in {
+		if (id == sectionIDStreamers || id == sectionIDSubs) && !seen[id] {
+			out = append(out, id)
+			seen[id] = true
+		}
+	}
+	for _, id := range defaultFollowsSectionOrder {
+		if !seen[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// moveFollowsSection 把拖起来的一级分区放到目标分区的位置。
+//
+// 和 movePlatform 同一套落位规则：先摘掉拖拽项，再插到目标原来的索引上。
+// 左右只有两格时它等价于交换，但公式不为两格特判——以后加第三个分区
+// 就不用再改一次。
+func (a *App) moveFollowsSection(dragID, targetID string) {
+	order := a.followsSectionOrder()
+	from, to := -1, -1
+	for i, id := range order {
+		switch id {
+		case dragID:
+			from = i
+		case targetID:
+			to = i
+		}
+	}
+	if from < 0 || to < 0 || from == to {
+		return
+	}
+	order = append(order[:from], order[from+1:]...)
+	order = append(order, "")
+	copy(order[to+1:], order[to:])
+	order[to] = dragID
+	a.FollowsSectionOrder = order
+	a.markDirty()
+}
 
 // followsPanel 是关注页顶部的分区面板：一级分区 + 当前分区的二级分级。
 //
@@ -83,18 +157,31 @@ func (a *App) followsPanel(c *ui.Context) {
 
 // followsSectionRow 是一级分区行：左边两枚 tab，右边是当前分区自己的工具。
 //
+// tab 的左右顺序读 FollowsSectionOrder，可以拖动换位；选中项跟着分区身份
+// 走，不跟格子序号走——把「订阅分区」拖到前面，正在看的那一屏不会跟着变。
+//
 // 搜索和刷新只属于「关注主播」：订阅分区那一屏是某个分区自己的房间列表，
 // 关注刷新不会改它，摆着只会让人以为按了会变。
 func (a *App) followsSectionRow(c *ui.Context) {
-	box := measureRow(c, followsSectionNames, groupFont, labelWeight, groupTabPadH, groupGap, 0)
+	order := a.followsSectionOrder()
+	names := make([]string, len(order))
+	selected := 0
+	for i, id := range order {
+		section := followsSectionOf(id)
+		names[i] = followsSectionNames[section]
+		if section == a.FollowsSection {
+			selected = i
+		}
+	}
+	box := measureRow(c, names, groupFont, labelWeight, groupTabPadH, groupGap, 0)
 	a.followsSectionBox = box
 
 	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
 		ui.Row(c).Gap(groupGap).Children(func() {
-			slider(c, "follows-section-slide", box, a.FollowsSection,
+			slider(c, "follows-section-slide", box, selected,
 				groupTabH, theme.RadiusMD, theme.AccentSoft)
-			for i, name := range followsSectionNames {
-				a.followsSectionTab(c, i, name, box.w[i])
+			for _, id := range order {
+				a.followsSectionTab(c, id)
 			}
 		})
 
@@ -107,8 +194,13 @@ func (a *App) followsSectionRow(c *ui.Context) {
 }
 
 // followsSectionTab 是一级分区的一枚 tab。选中态的底色由滑块画。
-func (a *App) followsSectionTab(c *ui.Context, i int, name string, w float32) {
-	selected := i == a.FollowsSection
+//
+// 拖动重排和顶栏平台 tab 同一套语言：拖起来的那枚降到 0.35，
+// 指针经过的目标描一圈 accent 内阴影；松手时一次落位。
+func (a *App) followsSectionTab(c *ui.Context, id string) {
+	section := followsSectionOf(id)
+	name := followsSectionNames[section]
+	selected := section == a.FollowsSection
 	tab := ui.Box(c).Height(groupTabH).
 		Padding(0, groupTabPadH, 0, groupTabPadH).
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).
@@ -117,7 +209,17 @@ func (a *App) followsSectionTab(c *ui.Context, i int, name string, w float32) {
 		tab.Background(theme.FillQuaternary)
 	}
 	if tab.Clicked() {
-		a.selectFollowsSection(i)
+		a.selectFollowsSection(section)
+	}
+	tab.Drag(id)
+	if _, over := ui.DragOver[string](tab); over {
+		tab.InsetShadow(0, 0, 0, 1, theme.Accent.Mix(ui.Transparent, 0.35))
+	}
+	if dragged, dropped := ui.Drop[string](tab); dropped && dragged != id {
+		a.moveFollowsSection(dragged, id)
+	}
+	if tab.Dragging() {
+		tab.Opacity(0.35)
 	}
 	tab.Children(func() {
 		txt := ui.Text(c, name).FontSize(groupFont)
@@ -135,12 +237,12 @@ func (a *App) followsSectionTab(c *ui.Context, i int, name string, w float32) {
 	})
 }
 
-// selectFollowsSection 切一级分区：内容层换代，方向按两枚 tab 的序号差算。
+// selectFollowsSection 切一级分区：内容层换代。
 func (a *App) selectFollowsSection(i int) {
 	if i == a.FollowsSection {
 		return
 	}
-	a.navFlip(&a.followsSeq, a.FollowsSection, i)
+	a.navFlip(&a.followsSeq)
 	a.FollowsSection = i
 }
 
@@ -516,7 +618,7 @@ func (a *App) followsPlatformChip(c *ui.Context, idx int, id, label string, w fl
 		chip.Background(theme.FillTertiary)
 	}
 	if chip.Clicked() {
-		a.navFlip(&a.followsSeq, a.followsPlatformIndex(), idx)
+		a.navFlip(&a.followsSeq)
 		a.FollowsPlatform = id
 	}
 	chip.Children(func() {
@@ -534,19 +636,6 @@ func (a *App) followsPlatformChip(c *ui.Context, idx int, id, label string, w fl
 			txt.FontWeight(500)
 		}
 	})
-}
-
-// followsPlatformIndex 是筛选条上当前选中项的序号：「全部」占第 0 格。
-func (a *App) followsPlatformIndex() int {
-	if a.FollowsPlatform == "" {
-		return 0
-	}
-	for i, id := range a.followsPlatforms() {
-		if id == a.FollowsPlatform {
-			return i + 1
-		}
-	}
-	return 0
 }
 
 // followsChipTip 是一枚筛选项的悬停提示：这组筛选下有多少主播、多少在播。

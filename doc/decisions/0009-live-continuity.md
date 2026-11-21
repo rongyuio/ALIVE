@@ -62,10 +62,13 @@
 
 改动（`internal/ui/danmu.go`、`player_media.go`）：
 
-- 弹幕时钟只在画面真的前进时累加：有播放器时按 `time-pos` 增量，暂停/缓冲时位置
-  不动，弹幕也不动；seek/换路的前跳只补墙钟那一段，不瞬移。无播放器时才退回墙钟。
-  位置**每帧**重算，不再只在 33ms 的 tick 里推进——30Hz 的位置更新配 60fps 的画面
-  看起来就是掉帧。
+- 弹幕时钟只在画面真的前进时才走，但**步长取墙钟**：`time-pos` 只按视频帧率更新
+  （实测 30fps 流上约 30 次/秒、每次整跳 33.33ms，间隔 20–40ms 抖动，见
+  [measurements](../reference/measurements.md)），拿它的增量当步长，60fps 的界面
+  会一半的帧不动、动的帧只走被夹短的一小截，肉眼看就是「顿」。位置没变时先容忍
+  250ms（`danmuStallGrace`，覆盖采样间隔），超过才认定暂停/缓冲/卡死并冻结；用户
+  按暂停则当场停住。seek/换路只更新基准，不补时长，不瞬移。无播放器时才直接看
+  播放态。位置**每帧**重算，不再只在 33ms 的 tick 里推进。
 - 轨道分配用上一帧算出的真实轨道数，并做**追尾预测**：每条轨道记住最后一条的出生
   时刻与宽度；新弹幕能进该轨，当且仅当「前一条已完全进入」且「不会在前一条离场前
   追上」。当前速度模型是 `v = (S+w)/D`（宽弹幕更快，与 B 站系一致），第二条判据化
@@ -79,12 +82,15 @@
 测试（先红后绿）：`internal/ui/danmu_clock_test.go`
 
 - `TestDanmuClockFollowsPicture`：播放前进、暂停停住、恢复不补跳；
+- `TestDanmuClockStepsEvenlyAcrossSampleGaps`：按 30Hz 采样、60fps 推帧，
+  每帧步长必须一致（旧实现是 `16.7 / 0 / 16.7 / 0…`，先红后绿）；
 - `TestDanmuMovesEveryFrame`：不推 tick、只推一帧，位置也必须动；
 - `TestDanmuTracksFitActualLaneCount`：8 条轨道时 Track 不得越过 7；
 - `TestDanmuSharesLaneWhenSafe`：同速/更慢的后一条可以接力同轨；
 - `TestDanmuSkipsCatchUpLane`：更宽（更快）的后一条必须换轨；
 - `TestDanmuReusesFirstSafeLane`：上面那条放得下就继续用，不硬往下排；
-- `TestDanmuAdvanceRules`：位置停/前跳/回退/无播放器四种规则的表格测试。
+- `TestDanmuAdvanceRules`：前进 / 采样间隙 / 超宽限冻结 / 用户暂停 / seek 前跳 /
+  回退 / 无播放器 / 时间没走的表格测试。
 
 验证：`make check` 全绿（含 `TestEveryClickableHasLabel`）；`make e2e` 构建通过。
 **真实窗口验收（`mygo-automation` 截图 + 暂停前后对比）没有跑**——位置不变量由

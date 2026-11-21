@@ -98,28 +98,60 @@ func TestDanmuTracksFitActualLaneCount(t *testing.T) {
 	}
 }
 
-// 时钟推进规则：位置停就不走，跳变只补墙钟那一段。
+// 时钟推进规则：画面前进时按墙钟走，采样间隙照走，真停顿才冻结，
+// 位置跳变只更新基准。
 func TestDanmuAdvanceRules(t *testing.T) {
-	const dt = 33 * time.Millisecond
+	const dt = 16 * time.Millisecond
+	const grace = danmuStallGrace
 	for _, tc := range []struct {
-		name    string
-		has     bool
-		playing bool
-		pos     time.Duration
-		last    time.Duration
-		wantAdd time.Duration
-		wantPos time.Duration
+		name      string
+		step      time.Duration
+		has       bool
+		playing   bool
+		pos       time.Duration
+		last      time.Duration
+		still     time.Duration
+		wantAdd   time.Duration
+		wantStill time.Duration
 	}{
-		{"播放器前进 16ms", true, true, 1016 * time.Millisecond, 1000 * time.Millisecond, 16 * time.Millisecond, 1016 * time.Millisecond},
-		{"播放器停住（缓冲）", true, true, 1000 * time.Millisecond, 1000 * time.Millisecond, 0, 1000 * time.Millisecond},
-		{"换路/seek 前跳 10s", true, true, 11000 * time.Millisecond, 1000 * time.Millisecond, dt, 11000 * time.Millisecond},
-		{"换路后位置变小", true, true, 200 * time.Millisecond, 9000 * time.Millisecond, 0, 200 * time.Millisecond},
-		{"无播放器、暂停", false, false, 0, 0, 0, 0},
-		{"无播放器、播放", false, true, 0, 0, dt, 0},
+		{"画面前进 16ms，按墙钟走 16ms", dt, true, true, 1016 * time.Millisecond, 1000 * time.Millisecond, 0, dt, 0},
+		{"采样间隙内位置没变，照样走", dt, true, true, 1000 * time.Millisecond, 1000 * time.Millisecond, 30 * time.Millisecond, dt, 46 * time.Millisecond},
+		{"停顿超过宽限，冻结", dt, true, true, 1000 * time.Millisecond, 1000 * time.Millisecond, grace, 0, grace + dt},
+		{"用户暂停，不等宽限当场停住", dt, true, false, 1000 * time.Millisecond, 1000 * time.Millisecond, 30 * time.Millisecond, 0, 0},
+		{"换路/seek 前跳 10s，只走墙钟", dt, true, true, 11000 * time.Millisecond, 1000 * time.Millisecond, grace, dt, 0},
+		{"换路后位置变小，只更新基准", dt, true, true, 200 * time.Millisecond, 9000 * time.Millisecond, grace, dt, 0},
+		{"无播放器、暂停", dt, false, false, 0, 0, 0, 0, 0},
+		{"无播放器、播放", dt, false, true, 0, 0, 0, dt, 0},
+		{"时间没走", 0, true, true, 1000 * time.Millisecond, 1000 * time.Millisecond, 0, 0, 0},
 	} {
-		add, pos := danmuAdvance(dt, tc.has, tc.playing, tc.pos, tc.last)
-		if add != tc.wantAdd || pos != tc.wantPos {
-			t.Errorf("%s: add=%v pos=%v，期望 %v / %v", tc.name, add, pos, tc.wantAdd, tc.wantPos)
+		add, still := danmuAdvance(tc.step, tc.has, tc.playing, tc.pos, tc.last, tc.still)
+		if add != tc.wantAdd || still != tc.wantStill {
+			t.Errorf("%s: add=%v still=%v，期望 %v / %v", tc.name, add, still, tc.wantAdd, tc.wantStill)
+		}
+	}
+}
+
+// time-pos 的采样间隙不能变成步伐。
+//
+// mpv 按视频帧更新 time-pos：30fps 流上每两帧界面才看到一次位置变化。
+// 拿位置增量当步长，60fps 的界面就会「停一帧、走一帧」——弹幕看起来是
+// 30Hz 的位移，就是「顿」。这里喂进真实的采样节奏，要求每帧步长一致。
+func TestDanmuClockStepsEvenlyAcrossSampleGaps(t *testing.T) {
+	const frame = time.Second / 60
+	const sample = 2 * frame // 30fps 视频的 time-pos 更新间隔
+	pos, last, still := time.Duration(0), time.Duration(0), time.Duration(0)
+	var adds []time.Duration
+	for i := 0; i < 60; i++ {
+		if i%2 == 0 {
+			pos += sample
+		}
+		add, newStill := danmuAdvance(frame, true, true, pos, last, still)
+		last, still = pos, newStill
+		adds = append(adds, add)
+	}
+	for i, add := range adds {
+		if add != frame {
+			t.Fatalf("第 %d 帧走了 %v，期望每帧 %v；步长序列 %v", i, add, frame, adds)
 		}
 	}
 }

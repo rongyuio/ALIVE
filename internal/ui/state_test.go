@@ -29,6 +29,33 @@ func TestMovePlatform(t *testing.T) {
 	}
 }
 
+// 一级分区拖动换位：把拖起来的分区放到目标原来的索引上。
+//
+// 只有两格时结果就是交换，但落位规则和 movePlatform 同一套——以后加第三个
+// 分区不用重写。认不出来的身份不改变顺序。
+func TestMoveFollowsSection(t *testing.T) {
+	app := NewMockApp()
+	app.FollowsSectionOrder = []string{sectionIDStreamers, sectionIDSubs}
+
+	app.moveFollowsSection(sectionIDStreamers, sectionIDSubs)
+	if got, want := app.FollowsSectionOrder, []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+		t.Fatalf("拖「关注主播」到「订阅分区」后顺序 %v，期望 %v", got, want)
+	}
+
+	// 状态表被改坏时：不认识的丢掉，缺的按默认补在后面
+	app.FollowsSectionOrder = []string{"unknown", sectionIDSubs}
+	if got, want := app.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+		t.Fatalf("坏数据整理后顺序 %v，期望 %v", got, want)
+	}
+
+	// 拖到自己身上不动
+	before := append([]string(nil), app.FollowsSectionOrder...)
+	app.moveFollowsSection(sectionIDSubs, sectionIDSubs)
+	if got := app.FollowsSectionOrder; !equalStrings(got, before) {
+		t.Fatalf("拖到自己身上改了顺序：%v → %v", before, got)
+	}
+}
+
 func TestStateRoundTrip(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
 
@@ -42,6 +69,7 @@ func TestStateRoundTrip(t *testing.T) {
 	app.Line = "线路3"
 	app.Volume = 0.25
 	app.PlatformOrder = normalizePlatformOrder([]string{"bilibili", "douyu"})
+	app.FollowsSectionOrder = []string{sectionIDSubs, sectionIDStreamers}
 	app.stateDirty = true
 	app.saveState()
 
@@ -79,6 +107,9 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	if len(restored.PlatformOrder) != 4 || restored.PlatformOrder[0] != "bilibili" {
 		t.Errorf("平台顺序 %v", restored.PlatformOrder)
+	}
+	if got, want := restored.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+		t.Errorf("一级分区顺序 %v，期望 %v", got, want)
 	}
 }
 

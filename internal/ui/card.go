@@ -12,17 +12,6 @@ import (
 	"alive/internal/theme"
 )
 
-// EnterAnim 是一张卡片的入场动画参数。
-//
-// 入场动画：260ms ease-out，opacity 0→1 + translateY 10px→0，
-// 前 6 张各错峰 20ms。MyGo 的 Animation 自带 Delay，默认曲线就是 ease-out；
-// Key 每代递增，切分区时从头播，而不是倒着播。
-type EnterAnim struct {
-	Key   string
-	To    float32
-	Delay time.Duration
-}
-
 // Streamer 是首页一张卡片需要的数据。协议层接上之前先用假数据。
 type Streamer struct {
 	Platform string
@@ -39,36 +28,43 @@ type Streamer struct {
 	AvatarURL string
 }
 
+// cardLineHeight 是 MyGo 文本的默认行高：字号 × 4/3。
+//
+// 13 → 17.33、12 → 16：两行加 3 的行距正好撑起 64.33 的信息条。
+// 骨架按同一个数撑高，数据到达换屏时整行才不会矮一截。
+func cardLineHeight(size float32) float32 { return size * 4 / 3 }
+
+// cardMetaHeight 是信息条的固定高度：上下 padding + 两行文字 + 行距。
+//
+// 13 + 15 + 17.33 + 3 + 16 = 64.33。骨架和真卡都用这一条公式撑高，
+// theme.CardMetaH（60）只是名义值，比真实高度矮 4.33——它撑不住两行字。
+func cardMetaHeight() float32 {
+	return 13 + 15 + cardLineHeight(theme.TextSM) + 3 + cardLineHeight(theme.TextXS)
+}
+
 // CardHeight 返回给定列宽下卡片的总高度。
 //
-// 封面严格 16:9（`aspect-ratio: 16/9`），信息条固定高度，
-// 这样 GridView 的 rowHeight 才能和实际布局一致。
+// 封面严格 16:9，信息条高度由 cardMetaHeight 给出，和真实布局一致。
 func CardHeight(w float32) float32 {
-	return w*9/16 + theme.CardMetaH
+	return w*9/16 + cardMetaHeight()
 }
 
 // Card 构建一张主播卡片。
 //
 // 结构是封面（16:9，悬停放大 1.02）+
-// 信息条（头像 32、昵称 13/600、标题 12、分类胶囊）。
+// 信息条（头像 32、昵称 13/600、标题 12）。
 // hover 时表面亮一档、播放按钮与关注按钮淡入。
-func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onOpen, onToggleFollow func()) ui.Element {
+//
+// 卡片本身没有任何进出场动画：切换平台 / 分区时它要么还在（旧一屏），
+// 要么已经在新位置上（新一屏），中间没有「淡入」「上浮」这一档。
+// 之前这里带 opacity 0→1 + translateY 10→0，量出来整屏下落 10 DIP、
+// 行内最多错开 6.6 DIP，而封面还在加载——这就是「切换后画面一直在抖」。
+func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleFollow func()) ui.Element {
 	coverH := w * 9 / 16
 
 	card := ui.Column(c).Width(w).Radius(theme.RadiusMD)
 	// inset 0 1px 0 rgba(255,255,255,.04)：顶部受光边，让平涂表面有厚度
 	card.InsetShadow(0, 1, 0, 0, theme.TopLight)
-
-	// 入场：透明度与位移共用同一个进度。opacity 不标 NonMotion——
-	// reduced motion 下整段动画关掉，卡片直接出现。
-	if in.Key != "" {
-		o := card.AnimateTo(in.Key, in.To, ui.Animation{
-			Duration: 260 * time.Millisecond,
-			Delay:    in.Delay,
-		})
-		card.Opacity(o)
-		card.Translate(0, 10*(1-o))
-	}
 
 	hovered := card.Hovered()
 	card.Cursor(ui.CursorPointer)
@@ -104,16 +100,12 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, in EnterAnim, onO
 				// 真封面优先；还没下载完就先用静止的占位撑住版式，加载完成后
 				// 图片缓存会触发一次 Update，下一帧从这里换成真图。
 				//
-				// 换的那一下就是冷启动唯一的动效：从 1.5% 的缩放进场，
-				// 弹簧收住，不闪、不滑。Enter 只在父级上一帧已经在时播，
-				// 滚动带进来的卡片不会重播——那会变成一屏乱闪。
+				// 换的那一下没有动画：同一块 16:9 的几何，只把像素从占位色
+				// 换成图。这里曾经套过一层 Transition（Enter 缩放 0.985），
+				// 但占位和图片共用同一个元素身份，Enter 根本不会播——留着
+				// 只会在以后某次结构改动里突然开始播，所以直接去掉。
 				if bmp := media.Default.Bitmap(s.CoverURL, w); bmp != nil {
-					ui.Box(c).Fill().Transition(ui.ElementTransition{
-						Animation: &ui.Smooth,
-						Enter:     &ui.Motion{Scale: 0.985},
-					}).Children(func() {
-						ui.Image(c, bmp).Fill().Fit(ui.Cover)
-					})
+					ui.Image(c, bmp).Fill().Fit(ui.Cover)
 				} else {
 					coverArt(c, w, coverH)
 				}

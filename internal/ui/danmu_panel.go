@@ -383,10 +383,3 @@ func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 			TextColor(theme.TextPrimary)
 	})
 }
-
-func abs32(v float32) float32 {
-	if v < 0 {
-		return -v
-	}
-	return v
-}

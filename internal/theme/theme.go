@@ -153,7 +153,7 @@ const (
 	// 首页卡片网格
 	CardMinWidth float32 = 220
 	GridGap      float32 = 16
-	CardMetaH    float32 = 60 // 封面下方的信息条高度
+	CardMetaH    float32 = 60 // 信息条名义高度；真实高度由两行文字撑到 64.33（internal/ui/card.go）
 
 	// ScrollbarW 是 `::-webkit-scrollbar { width: 10px }`。
 	// 浏览器里滚动条常驻，占掉内容宽度；MyGo 的滚动条画在内容上不占位，

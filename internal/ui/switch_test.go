@@ -1,21 +1,23 @@
 package ui
 
 import (
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
-// 切到已有缓存的平台不该重播入场动画。
+// 切到已有缓存的平台：数据立刻在屏幕上，不摆骨架、不动列表。
 //
-// applyLiveGroups 曾经无条件 resetCards()：命中 feedCache 时房间数据已经在屏幕上
-// 等着了，整屏卡片却会从 opacity 0 再淡入一次（260ms），看起来就是「切平台闪一下」。
-// 现在只有真的从网络取回列表时才重置——那条路在 loadRooms 的响应回调里。
-func TestPlatformSwitchWarmCacheKeepsCards(t *testing.T) {
+// applyLiveGroups 曾经无条件 resetCards()：命中 feedCache 时房间数据已经在
+// 屏幕上等着了，整屏卡片却会从 opacity 0 再淡入一次，看起来就是「切平台闪
+// 一下」。入场动画现在已经整个去掉，这条测试守的是更底下的那件事：命中
+// 缓存就是即时可用。
+func TestPlatformSwitchWarmCacheRendersAtOnce(t *testing.T) {
 	a := NewMockApp()
 	a.LiveMode = true
 	a.Platform = "douyu"
-	a.CardsIn = true
-	before := a.EnterSeq
 
 	groups := []CategoryGroup{{
 		ID:          "1",
@@ -31,12 +33,6 @@ func TestPlatformSwitchWarmCacheKeepsCards(t *testing.T) {
 
 	a.applyLiveGroups("douyu", nil, groups)
 
-	if a.EnterSeq != before {
-		t.Fatalf("命中缓存却重播了入场动画：EnterSeq %d → %d", before, a.EnterSeq)
-	}
-	if !a.CardsIn {
-		t.Fatal("命中缓存把卡片置成了未入场，整屏会再淡入一次")
-	}
 	if len(a.Rooms) != 1 {
 		t.Fatalf("缓存没被用上：%d 个房间", len(a.Rooms))
 	}
@@ -45,11 +41,11 @@ func TestPlatformSwitchWarmCacheKeepsCards(t *testing.T) {
 	}
 }
 
-// 缓存过期后后台刷新完成时，不该让已经在屏幕上的列表再淡入一次。
+// 缓存过期时先把列表留在屏幕上，后台刷新不闪、不清空。
 //
-// 这条只在缓存超过 feedTTL 时触发，所以现象是「切分区偶尔闪一下」：
-// 列表明明已经显示着，网络回来后又整屏从 opacity 0 播一遍 260ms 的入场。
-func TestStaleCacheRefreshKeepsCards(t *testing.T) {
+// 这条只在缓存超过 feedTTL 时触发：如果渲染阶段把列表清掉再等网络，
+// 现象就是「切分区偶尔闪一下」。
+func TestStaleCacheRefreshKeepsListOnScreen(t *testing.T) {
 	a := NewMockApp()
 	a.LiveMode = true
 	a.Platform = "douyu"
@@ -57,8 +53,6 @@ func TestStaleCacheRefreshKeepsCards(t *testing.T) {
 		ID: "1", Name: "网游",
 		Categories: []string{"英雄联盟"}, CategoryIDs: []string{"86"},
 	}}
-	a.CardsIn = true
-	before := a.EnterSeq
 	// 一条过期的缓存：列表已经在屏幕上，但 TTL 过了要静默刷新。
 	a.feedCache["douyu|86|-1"] = feedEntry{
 		rooms: []Streamer{{Platform: "douyu", RoomID: "1", Name: "旧的"}},
@@ -69,10 +63,6 @@ func TestStaleCacheRefreshKeepsCards(t *testing.T) {
 	a.loadRooms()
 	if len(a.Rooms) != 1 || a.ListLoading {
 		t.Fatalf("过期缓存没先渲染：%d 个房间，loading=%v", len(a.Rooms), a.ListLoading)
-	}
-	// 只验「渲染阶段」的判定：刷新回调里的 resetCards 被 hit 挡住。
-	if a.EnterSeq != before || !a.CardsIn {
-		t.Fatalf("渲染过期缓存时重播了入场：EnterSeq %d → %d, CardsIn=%v", before, a.EnterSeq, a.CardsIn)
 	}
 }
 
@@ -106,4 +96,49 @@ func TestPlatformSwitchDoesNotWaitForCovers(t *testing.T) {
 	if a.Platform != "douyu" {
 		t.Fatalf("平台还是 %s，期望 douyu", a.Platform)
 	}
+}
+
+// 数据到达、卡片换上屏幕时，只能在原位直接出现，不能位移。
+//
+// 卡片曾经带 translateY 10→0、前 6 张再各错峰 20ms：同一行最左和最右在
+// 切换瞬间差出 6.6 DIP，整屏先下落 10 DIP 再上浮（Tester 逐帧量 bounds）。
+// 现在没有入场：第一帧就在最终位置，版式全程不动。
+func TestDataArrivalKeepsCardsInPlace(t *testing.T) {
+	a := NewMockApp()
+	a.LiveMode = true
+	// 测试里不发真实请求：预取闸门全部关掉。
+	for _, id := range a.PlatformOrder {
+		a.liveLoaded[id] = true
+	}
+	a.Groups = []CategoryGroup{{
+		ID: "1", Name: "网游",
+		Categories:  []string{"英雄联盟", "DOTA2"},
+		CategoryIDs: []string{"86", "87"},
+	}}
+	a.ListLoading = false
+	rooms := make([]Streamer, 24)
+	for i := range rooms {
+		rooms[i] = Streamer{
+			Platform: "douyu", RoomID: fmt.Sprint(i),
+			Name: fmt.Sprintf("主播%02d", i), Title: "标题",
+		}
+	}
+
+	tt := ui.NewTester(a.Shell, 1391, 845)
+	tt.Frame()
+
+	// 换分区：先回骨架，再让数据到达——和 loadRooms 的响应回调同序。
+	a.selectCategory(1)
+	a.Rooms = nil
+	a.ListLoading = true
+	tt.Frame()
+	a.Rooms = rooms
+	a.ListLoading = false
+	tt.Frame()
+
+	names := cardNames(rooms, 5)
+	p := newProbe(t, tt, contentRect(t, tt, names...), 16*time.Millisecond, names...)
+	p.Run(40)
+	p.RequireNoShift(0.01)
+	p.RequireAlwaysPresent()
 }

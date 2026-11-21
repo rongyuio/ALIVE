@@ -76,15 +76,17 @@ type portableSub struct {
 //
 // 单值偏好用指针，和 persisted 一样区分「文件里没有这一项」与「有，但是空值」。
 type configData struct {
-	Palette       string           `json:"palette,omitempty"`
-	PlatformOrder []string         `json:"platformOrder,omitempty"`
-	Follows       []portableFollow `json:"follows"`
-	Subs          []portableSub    `json:"subscriptions"`
-	Quality       string           `json:"quality,omitempty"`
-	Line          string           `json:"line,omitempty"`
-	Volume        *float32         `json:"volume,omitempty"`
-	DanmuOn       *bool            `json:"danmuOn,omitempty"`
-	Danmu         *danmuPrefs      `json:"danmu,omitempty"`
+	Palette       string   `json:"palette,omitempty"`
+	PlatformOrder []string `json:"platformOrder,omitempty"`
+	// FollowsSectionOrder 是关注页一级分区的显示顺序
+	FollowsSectionOrder []string         `json:"followsSectionOrder,omitempty"`
+	Follows             []portableFollow `json:"follows"`
+	Subs                []portableSub    `json:"subscriptions"`
+	Quality             string           `json:"quality,omitempty"`
+	Line                string           `json:"line,omitempty"`
+	Volume              *float32         `json:"volume,omitempty"`
+	DanmuOn             *bool            `json:"danmuOn,omitempty"`
+	Danmu               *danmuPrefs      `json:"danmu,omitempty"`
 }
 
 type configSource struct {
@@ -148,15 +150,16 @@ func (a *App) buildConfigPayload() configPayload {
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		Source:     configSource{Client: configClient},
 		Data: configData{
-			Palette:       a.PaletteID,
-			PlatformOrder: append([]string(nil), a.PlatformOrder...),
-			Follows:       follows,
-			Subs:          subs,
-			Quality:       a.Quality,
-			Line:          a.Line,
-			Volume:        &volume,
-			DanmuOn:       &danmuOn,
-			Danmu:         &danmu,
+			Palette:             a.PaletteID,
+			PlatformOrder:       append([]string(nil), a.PlatformOrder...),
+			FollowsSectionOrder: a.followsSectionOrder(),
+			Follows:             follows,
+			Subs:                subs,
+			Quality:             a.Quality,
+			Line:                a.Line,
+			Volume:              &volume,
+			DanmuOn:             &danmuOn,
+			Danmu:               &danmu,
 		},
 	}
 }
@@ -504,6 +507,9 @@ func (a *App) applyConfig(d configData) importSummary {
 	}
 	if len(d.PlatformOrder) > 0 {
 		a.PlatformOrder = normalizePlatformOrder(d.PlatformOrder)
+	}
+	if len(d.FollowsSectionOrder) > 0 {
+		a.FollowsSectionOrder = normalizeFollowsSectionOrder(d.FollowsSectionOrder)
 	}
 	if d.Quality != "" {
 		a.Quality = d.Quality

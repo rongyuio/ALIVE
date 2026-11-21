@@ -16,70 +16,26 @@ import (
 //     新的亮起来。位置关系是连续的，用户的眼睛跟着一枚东西走。
 //   - 滑块与标签着色用弹簧（theme.Slide），不是曲线：下一次点击要能从
 //     当前位置、当前速度接着走，而不是让上一次动完。
-//   - 内容层（卡片网格）按方向整块换：往右点，新的从右边来、旧的往左走。
-//     进来的和出去的是同一条路径，所以"我从哪来"是可读的。
 //
-// 方向从哪里来：点击项的索引差。不是从鼠标位置——键盘操作、拖拽重排、
-// 搜索跳转都没有一个"点了屏幕哪里"可言，但索引差始终存在。
-
-// navDir 是内容换向的方向：+1 目标在右，-1 目标在左，0 不播位移。
+// 内容层（卡片网格）不在这一套里：它不位移，也不整块淡入淡出。
 //
-// 它只在 navSeq 换代的这一次构建里有效：Enter/Exit 在元素出现的那一刻
-// 读它，之后的帧跟着自己的过渡走，不再回头看这个字段。
-type navDir int
+// 这里曾经按方向整块换：Enter 从 dir 那侧进、Exit 往 -dir 那侧出，各 16 DIP，
+// 用弹簧跑 500ms。两个问题叠在一起：MyGo 的 Motion 在不写 Opacity 时默认从
+// **全透明**进场，而 16 DIP 的位移让整块内容在切换瞬间和分区栏错开——量出来
+// 就是「画面不稳、有偏差」。方向这件事交给滑块就够了：它本来就在原地指出
+// 「你刚点了哪一格」。内容层现在只换代（换 key），新旧内容直接交换。
 
-const (
-	navStay  navDir = 0
-	navRight navDir = 1
-	navLeft  navDir = -1
-)
-
-// navTowards 记下从 from 到 to 的方向。
-func (a *App) navTowards(from, to int) {
-	switch {
-	case to > from:
-		a.navDir = navRight
-	case to < from:
-		a.navDir = navLeft
-	default:
-		a.navDir = navStay
-	}
-}
-
-// navFlip 让一块内容换代：方向按索引差算，代次加在 seq 指的那一个上。
+// navFlip 让一块内容换代：代次加在 seq 指的那一个上。
 //
 // 三个内容区各有自己的代次——首页、关注页、订阅分区。只切其中一个，
 // 别的区块的 key 不能跟着变：共用一份的话，在关注页切完平台回到首页，
-// 首页会凭空播一次进场，而它根本没有换内容。
-func (a *App) navFlip(seq *int, from, to int) {
-	a.navTowards(from, to)
+// 首页会凭空换代一次，而它根本没有换内容。
+func (a *App) navFlip(seq *int) {
 	*seq++
 }
 
-// navKey 是一块内容的身份：代次变了才换 key，换了 key 才有进出。
+// navKey 是一块内容的身份：代次变了才换 key，换掉的是一整棵子树。
 func navKey(kind string, seq int) string { return fmt.Sprintf("%s-%d", kind, seq) }
-
-// feedTransition 是内容层整块换的过渡。
-//
-// Enter 与 Exit 都用 16 DIP 的同一枚 Motion，方向由 navDir 决定：
-// Enter 从 dir 那一侧进来，Exit 往 -dir 那一侧出去。两个 Motion 是镜像的，
-// 所以新旧两屏沿着同一条路擦着换位，中间没有一段"两边都空"的空洞。
-//
-// 16 是刻意的短：再长就像翻页，这个应用是在同一页里换内容。
-func feedTransition(c *ui.Context, d navDir) ui.ElementTransition {
-	enter, exit := float32(0), float32(0)
-	if !c.Preferences().ReduceMotion {
-		enter, exit = 16*float32(d), -16*float32(d)
-	}
-	return ui.ElementTransition{
-		Animation: &animationSlide,
-		Enter:     &ui.Motion{X: enter},
-		Exit:      &ui.Motion{X: exit},
-	}
-}
-
-// animationSlide 是 transition 的 Animation 字段要的指针，所以取一份。
-var animationSlide = theme.Slide()
 
 // rowBox 是一排横放选项的几何：每一项的起点和宽度。
 //
@@ -180,16 +136,6 @@ func (a *App) tabIDs() []string {
 	return append(ids, a.PlatformOrder...)
 }
 
-// tabIndex 返回一个 tab 在顶栏里的序号，没有则 -1。
-func (a *App) tabIndex(id string) int {
-	for i, t := range a.tabIDs() {
-		if t == id {
-			return i
-		}
-	}
-	return -1
-}
-
-// navFeedKey 是首页内容层的身份：换代就换 key，旧的一屏才会按 Exit 走掉。
-// 它必须跟着 navSeq 走，不能跟着数据走——数据刷新不该播换向。
+// navFeedKey 是首页内容层的身份：换代就换 key，换到的是一棵全新的子树。
+// 它必须跟着 navSeq 走，不能跟着数据走——数据刷新不该换代。
 func (a *App) navFeedKey() string { return navKey("feed", a.navSeq) }

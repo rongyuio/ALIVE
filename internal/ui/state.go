@@ -34,20 +34,22 @@ func colorBytes(c ui.Color) [4]uint8 { return [4]uint8{c.R, c.G, c.B, c.A} }
 // 指针字段用来区分「没存过」和「存了一个空值」：用户可以把订阅和关注清空，
 // 重启后必须还是空的。
 type persisted struct {
-	Palette       string          `json:"palette,omitempty"`
-	ThemeMode     string          `json:"themeMode,omitempty"` // system / dark / light
-	PlatformOrder []string        `json:"platformOrder,omitempty"`
-	Follows       *[]string       `json:"follows,omitempty"`       // 旧格式：只有「平台|昵称」
-	FollowRecords *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
-	Subs          *[]Subscription `json:"subscriptions,omitempty"`
-	Quality       string          `json:"quality,omitempty"`
-	Line          string          `json:"line,omitempty"`
-	Volume        *float32        `json:"volume,omitempty"`
-	DanmuOn       *bool           `json:"danmuOn,omitempty"`
-	DanmuPanelW   *float32        `json:"danmuPanelW,omitempty"`
-	DanmuPanelOn  *bool           `json:"danmuPanelOn,omitempty"`
-	Danmu         *danmuPrefs     `json:"danmu,omitempty"`
-	DanmuFilters  *[]string       `json:"danmuFilters,omitempty"`
+	Palette       string   `json:"palette,omitempty"`
+	ThemeMode     string   `json:"themeMode,omitempty"` // system / dark / light
+	PlatformOrder []string `json:"platformOrder,omitempty"`
+	// FollowsSectionOrder 是关注页一级分区的显示顺序
+	FollowsSectionOrder []string        `json:"followsSectionOrder,omitempty"`
+	Follows             *[]string       `json:"follows,omitempty"`       // 旧格式：只有「平台|昵称」
+	FollowRecords       *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
+	Subs                *[]Subscription `json:"subscriptions,omitempty"`
+	Quality             string          `json:"quality,omitempty"`
+	Line                string          `json:"line,omitempty"`
+	Volume              *float32        `json:"volume,omitempty"`
+	DanmuOn             *bool           `json:"danmuOn,omitempty"`
+	DanmuPanelW         *float32        `json:"danmuPanelW,omitempty"`
+	DanmuPanelOn        *bool           `json:"danmuPanelOn,omitempty"`
+	Danmu               *danmuPrefs     `json:"danmu,omitempty"`
+	DanmuFilters        *[]string       `json:"danmuFilters,omitempty"`
 }
 
 // statePath 是状态文件的位置；拿不到用户配置目录时返回空串，调用方跳过落盘。
@@ -138,19 +140,20 @@ func (a *App) saveState() {
 	}
 
 	p := persisted{
-		Palette:       a.PaletteID,
-		ThemeMode:     a.ThemeMode,
-		PlatformOrder: a.PlatformOrder,
-		FollowRecords: &follows,
-		Subs:          &subs,
-		Quality:       a.Quality,
-		Line:          a.Line,
-		Volume:        &volume,
-		DanmuOn:       &danmuOn,
-		DanmuPanelW:   &panelW,
-		DanmuPanelOn:  &panelOn,
-		Danmu:         &danmu,
-		DanmuFilters:  &filters,
+		Palette:             a.PaletteID,
+		ThemeMode:           a.ThemeMode,
+		PlatformOrder:       a.PlatformOrder,
+		FollowsSectionOrder: a.followsSectionOrder(),
+		FollowRecords:       &follows,
+		Subs:                &subs,
+		Quality:             a.Quality,
+		Line:                a.Line,
+		Volume:              &volume,
+		DanmuOn:             &danmuOn,
+		DanmuPanelW:         &panelW,
+		DanmuPanelOn:        &panelOn,
+		Danmu:               &danmu,
+		DanmuFilters:        &filters,
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -174,6 +177,9 @@ func (a *App) restore() {
 	}
 	if len(p.PlatformOrder) > 0 {
 		a.PlatformOrder = normalizePlatformOrder(p.PlatformOrder)
+	}
+	if len(p.FollowsSectionOrder) > 0 {
+		a.FollowsSectionOrder = normalizeFollowsSectionOrder(p.FollowsSectionOrder)
 	}
 	switch {
 	case p.FollowRecords != nil:

@@ -122,12 +122,16 @@ type App struct {
 	//
 	// 墙钟在暂停、缓冲、换路时照走，弹幕于是继续从静止的画面上飘过去——
 	// 用户看到的是「画面停了，弹幕还在剧透」。这里把弹幕时间做成可停的钟：
-	// 有播放器时按位置增量累加，暂停/缓冲时位置不动，弹幕也就不动。
+	// 画面在前进时按墙钟均匀推进，位置停住超过 danmuStallGrace 才冻结。
+	// 步长取自墙钟而不是位置增量，因为 time-pos 只按视频帧率更新（实测
+	// 30fps 流上约 30 次/秒、间隔 20–40ms），拿它做步长就会一帧走一帧停。
 	// clock 可注入，测试直接推进它，不 sleep。
 	clock     func() time.Time
 	danmuNow  time.Time
 	danmuLast time.Time
 	danmuPos  time.Duration
+	// danmuStill 是画面连续没有前进的时长，用来区分「采样间隔」和真停顿。
+	danmuStill time.Duration
 	// danmuTracks 是上一帧算出来的实际轨道数；danmuLanes 记每条轨道最后
 	// 一条弹幕的出生时刻与估算宽度。分配必须用实际轨道数，不能拿 seq 取模
 	// 一个写死的 14；同轨能不能接力，要看后一条会不会追上前一条。
@@ -201,14 +205,12 @@ type App struct {
 	// 等图回来才成形——三次跳变叠在一起，就是用户说的「一大片闪」。
 	pendingSwitch string
 	pendingAt     time.Time
-	// navDir / navSeq 是内容层换向的代次：每次真的换了一份内容
-	// （平台、一级、二级、三级分区），序号 +1，方向按选项索引差算。
-	// 内容层以序号为 key，旧的一屏按当次方向退出，新的从同一侧进来。
-	navDir navDir
-	// navSeq / followsSeq 分别是首页、关注页内容的代次。
+	// navSeq / followsSeq 分别是首页、关注页内容的代次：每次真的换了一份
+	// 内容（平台、一级、二级、三级分区），序号 +1，内容层据此换 key。
+	// 只换代，不播位移——整块横滑会让内容在切换瞬间和分区栏错开。
+	navSeq int
 	// 关注页的两级分区（关注主播 / 订阅分区）共用 followsSeq：
 	// 换的是同一块内容区。
-	navSeq     int
 	followsSeq int
 	// navBox / followsBox / subsBox 是三条选项轨道量出来的格子。
 	//
@@ -264,10 +266,6 @@ type App struct {
 	// 上一帧真正构建了多少张卡片：虚拟化是否生效的回归指标（测试用）
 	builtCards int
 
-	// 卡片入场动画：切平台 / 分区时重置；EnterSeq 让动画 key 换代，从头重播
-	CardsIn  bool
-	EnterSeq int
-
 	// 最近一次网格布局：列数与卡片宽度。启动层判断「首屏封面是否到齐」要用
 	gridCols  int
 	gridCardW float32
@@ -294,6 +292,9 @@ type App struct {
 	chromePtrY    float32
 	chromePtrOver bool // 指针是否还停在画面上
 	chromeFull    bool // 上一帧是否处于全屏：进出全屏要先把 chrome 亮出来
+
+	// 关注页一级分区的显示顺序（可拖动换位，落盘）
+	FollowsSectionOrder []string
 
 	// 顶栏平台顺序（拖拽排序与持久化共用）
 	PlatformOrder []string
@@ -341,7 +342,9 @@ func newApp() *App {
 	a := &App{
 		Platform:      "douyu",
 		PlatformOrder: normalizePlatformOrder(nil),
-		Follows:       []FollowRecord{},
+		// 一级分区默认「关注主播 → 订阅分区」，用户拖过一次就按存下来的排
+		FollowsSectionOrder: normalizeFollowsSectionOrder(nil),
+		Follows:             []FollowRecord{},
 		// 首帧网格还没量过，先用最小卡片宽占位：预取封面时不能是 0，
 		// 0 在图片缓存里表示「按原图解码」。
 		gridCardW: theme.CardMinWidth,
@@ -607,10 +610,9 @@ func (a *App) Home(c *ui.Context) {
 		if a.ErrText != "" {
 			a.errorBar(c)
 		}
-		// 内容层单独换代：切平台 / 分区时旧的一屏按方向退出、新的从同一侧
-		// 进来。分区栏和错误条留在原地——它们是这一屏的边框，不是内容。
-		feed := ui.Column(c).Key(a.navFeedKey()).Grow(1).
-			Transition(feedTransition(c, a.navDir))
+		// 内容层单独换代：切平台 / 分区时换 key，新旧内容直接交换。
+		// 分区栏和错误条留在原地——它们是这一屏的边框，不是内容。
+		feed := ui.Column(c).Key(a.navFeedKey()).Grow(1)
 		feed.Children(func() {
 			a.grid(c, a.feed(), &a.HomeList, a.loadMoreRooms)
 		})
@@ -625,13 +627,6 @@ func (a *App) categoryBarSkeleton(c *ui.Context) {
 		ui.Text(c, "正在加载分区…").FontSize(theme.TextSM).
 			TextColor(theme.TextTertiary)
 	})
-}
-
-// resetCards 让列表的入场动画从头播一遍：
-// 切平台、切分区、切订阅都算换了一份新列表，卡片因此重新挂载。
-func (a *App) resetCards() {
-	a.CardsIn = false
-	a.EnterSeq++
 }
 
 // bodyPadX 是正文左右 padding：常态 14，1240 以下收到 10。
@@ -748,13 +743,6 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 		return
 	}
 
-	// 入场动画的代次：切平台 / 分区时 resetCards 会换代，这里重新从 0 播
-	enter := EnterAnim{Key: fmt.Sprintf("card-in-%d", a.EnterSeq), To: 1}
-	if !a.CardsIn {
-		a.CardsIn = true
-		enter.To = 0
-	}
-
 	rows := (len(list) + cols - 1) / cols
 
 	// 行数 + 1：最后一行是页脚（「正在加载更多…」/「继续下滑加载更多」/「已显示最近 N 条」），
@@ -774,16 +762,8 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 			for i := r * cols; i < min(len(list), (r+1)*cols); i++ {
 				i := i
 				st := list[i]
-				in := enter
-				// 错峰只给前 6 张；这里也只让首屏可见的卡参与入场，
-				// 一屏之外的行 List 根本不会构建。
-				if i >= 12 {
-					in = EnterAnim{}
-				} else if i > 0 && i < 6 {
-					in.Delay = time.Duration(i) * 20 * time.Millisecond
-				}
 				a.builtCards++
-				Card(c, st, cardW, a.isFollowed(st), in, func() {
+				Card(c, st, cardW, a.isFollowed(st), func() {
 					a.Player = st
 					a.Router.Push(routePlayer)
 				}, func() {
@@ -811,31 +791,29 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 
 }
 
-// skeletonGrid 是首屏骨架：12 张卡片，封面 16:9，信息条与真卡片同尺寸。
+// skeletonGrid 是首屏骨架：12 张卡片，封面 16:9，信息条与真卡片一模一样高。
+//
+// 骨架是静止的。它曾经挂一个 1.6s 的 Loop 让整块网格在 0.55↔1 之间呼吸：
+// 等待期间画面一直在变亮变暗，而且每张骨架每帧都在请求重绘——等待本身不该
+// 有动效（decisions/0005 的静止占位），数据到达时也不该先「停一下呼吸」。
+//
+// 几何必须和真卡逐像素对齐：信息条直接钉成 cardMetaHeight（= 真卡两行文字
+// 撑出来的 64.33），头像 32、两行用 cardLineHeight（MyGo 默认行高 = 字号
+// ×4/3）、行距 3。差 2 DIP，数据到达换屏时整行就会矮一截。
 func (a *App) skeletonGrid(c *ui.Context, avail float32, cols int, cardW float32) {
 	ui.Grid(c).Width(avail).Columns(cols).Gap(theme.GridGap).Children(func() {
 		for i := 0; i < 12; i++ {
 			sk := ui.Column(c).Width(cardW).Radius(theme.RadiusMD).
 				Background(theme.BgSecondary)
-			// 骨架的脉冲：1.6s ease-in-out 循环，opacity 0.55 ↔ 1；
-			// reduced motion 下 animation: none、固定 0.8。
-			if c.Preferences().ReduceMotion {
-				sk.Opacity(0.8)
-			} else {
-				// Loop 驱动三角波：0 → 1 → 0，两端套 ease-in-out。
-				p := sk.Loop("pulse", 1600*time.Millisecond, ui.EaseInOut)
-				k := 1 - abs32(2*p-1)
-				sk.Opacity(0.55 + 0.45*k)
-			}
 			sk.Children(func() {
 				ui.Box(c).Width(cardW).Height(cardW * 9 / 16).Background(theme.FillTertiary)
-				ui.Row(c).Padding(13, 12, 15, 12).Gap(10).Children(func() {
-					ui.Box(c).Size(34, 34).Radius(17).Background(theme.FillTertiary)
-					ui.Column(c).Grow(1).Gap(7).Children(func() {
-						ui.Box(c).Height(12).Width(cardW * 0.55).Radius(6).
-							Background(theme.FillTertiary)
-						ui.Box(c).Height(10).Width(cardW * 0.80).Radius(6).
-							Background(theme.FillTertiary)
+				ui.Row(c).Height(cardMetaHeight()).Padding(13, 12, 15, 12).Gap(10).Children(func() {
+					ui.Box(c).Size(32, 32).Radius(16).Background(theme.FillTertiary)
+					ui.Column(c).Grow(1).Gap(3).Children(func() {
+						ui.Box(c).Height(cardLineHeight(theme.TextSM)).Width(cardW * 0.55).
+							Radius(6).Background(theme.FillTertiary)
+						ui.Box(c).Height(cardLineHeight(theme.TextXS)).Width(cardW * 0.80).
+							Radius(6).Background(theme.FillTertiary)
 					})
 				})
 			})
@@ -1168,8 +1146,7 @@ func (a *App) tickPlatformSwitch() {
 
 // commitPlatformSwitch 执行真正的切换：换数据源、换显存、换路由。
 func (a *App) commitPlatformSwitch(id string) {
-	// 方向在换之前算：顶栏里往右点，内容就从右边来。
-	a.navFlip(&a.navSeq, a.tabIndex(a.Platform), a.tabIndex(id))
+	a.navFlip(&a.navSeq)
 	a.Platform = id
 	// 账号是分平台的，头像浮层里的内容会跟着换人；换 tab 就关掉，
 	// 别让上一家的二维码和昵称留在屏幕上。

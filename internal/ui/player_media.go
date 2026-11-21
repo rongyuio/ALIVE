@@ -283,6 +283,7 @@ func (a *App) detachMedia() {
 	a.Danmu = nil
 	a.danmuLanes = nil
 	a.danmuPos = 0
+	a.danmuStill = 0
 	a.danmuLast = time.Time{}
 	hwdec := ""
 	if m.player != nil {

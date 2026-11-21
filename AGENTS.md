@@ -190,6 +190,16 @@ Label 同时是**测试入口**：`tt.Click("弹幕设置")` 和 `mygo-automatio
 逐个回滚之后测试仍然全绿——那几条测试根本没在测它们。同一次还删掉了
 `TestCategorySwitchResetsScroll`：数据是 600→0→40，天然会重置，测试没有分辨力。
 
+### 界面「闪 / 不对」：先写探针，不先截图
+
+收到「切过去闪一下」「这块抖」「不对」这类报障，不要截图量像素。先把现象翻成四类
+不变量之一（位移 / 明暗 / 闪现 / 不静止），用 `internal/ui/frameprobe_test.go` 写一条
+逐帧断言，在改动前跑红，再改代码。截图只留给渲染结果本身（颜色、字形、图片解码）
+存疑的情况，并且要注明参照帧。
+
+分类、阈值、探针用法、真实窗口的极限，都在
+[doc/reference/ui-regressions.md](doc/reference/ui-regressions.md)。
+
 ### 驱动真实窗口做验收
 
 `ui.NewTester` 验不到真实渲染、滚动、图片加载、播放和内存。这些用 `make e2e` 起的带

@@ -295,8 +295,58 @@ func TestFollowsPageMergesSubscribeSection(t *testing.T) {
 	}
 }
 
-// 一级分区换的是同一块内容区：代次 +1，方向按两枚 tab 的序号差算。
-func TestFollowsSectionSwitchSetsDirection(t *testing.T) {
+// 一级分区的两枚 tab 可以拖动换位：落在哪一枚上就插到它的位置。
+//
+// 换的是格子顺序，不是当前看的分区——分区身份跟着 tab 走，
+// 「关注主播」被拖到右边之后，屏幕上还是它那一屏（搜索框还在）。
+func TestFollowsSectionTabsDragToReorder(t *testing.T) {
+	app := NewMockApp()
+	app.Subs = []Subscription{
+		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "鸣潮", CategoryID: "1"},
+	}
+	app.switchTab("follows")
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+
+	from, ok := tt.Find("关注主播")
+	if !ok {
+		t.Fatal("没有「关注主播」tab")
+	}
+	to, ok := tt.Find("订阅分区")
+	if !ok {
+		t.Fatal("没有「订阅分区」tab")
+	}
+	sx, sy := from.X+from.W/2, from.Y+from.H/2
+	tx, ty := to.X+to.W/2, to.Y+to.H/2
+
+	tt.Move(sx, sy)
+	tt.Press(sx, sy)
+	// 先越过 4 DIP 的拖动阈值，再移到目标上松手
+	tt.Move(sx+8, sy)
+	tt.Move(tx, ty)
+	tt.Release(tx, ty)
+	tt.Frame()
+
+	if got, want := app.FollowsSectionOrder, []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+		t.Fatalf("拖动后顺序 %v，期望 %v", got, want)
+	}
+	// 屏幕上的位置也换了：订阅分区到了左边
+	afterFrom, _ := tt.Find("关注主播")
+	afterTo, _ := tt.Find("订阅分区")
+	if afterTo.X >= afterFrom.X {
+		t.Fatalf("拖动后订阅分区仍在右边：X %.1f / %.1f", afterTo.X, afterFrom.X)
+	}
+	// 选中项按分区身份走：还在关注主播那一屏
+	if app.FollowsSection != followsSectionStreamers {
+		t.Errorf("拖动换了选中的分区：%d", app.FollowsSection)
+	}
+	if _, ok := tt.Find("搜索已关注的主播"); !ok {
+		t.Error("拖动之后关注主播这一屏的内容跟着换了")
+	}
+}
+
+// 一级分区换的是同一块内容区：代次 +1。
+func TestFollowsSectionSwitchAdvancesGeneration(t *testing.T) {
 	app := NewMockApp()
 	app.switchTab("follows")
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -306,18 +356,12 @@ func TestFollowsSectionSwitchSetsDirection(t *testing.T) {
 	if err := tt.Click("订阅分区"); err != nil {
 		t.Fatal(err)
 	}
-	if app.navDir != navRight {
-		t.Errorf("往右点，方向是 %v，期望 navRight", app.navDir)
-	}
 	if app.followsSeq != seq+1 {
 		t.Errorf("代次没动：%d → %d", seq, app.followsSeq)
 	}
 
 	if err := tt.Click("关注主播"); err != nil {
 		t.Fatal(err)
-	}
-	if app.navDir != navLeft {
-		t.Errorf("往左点，方向是 %v，期望 navLeft", app.navDir)
 	}
 }
 

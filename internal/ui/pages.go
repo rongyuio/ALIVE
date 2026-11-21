@@ -196,11 +196,10 @@ func (a *App) subscribeChip(c *ui.Context, idx int, chip subChip) ui.Element {
 	}
 	if el.Clicked() {
 		if idx != a.SubIndex {
-			a.resetCards()
 			// 换 chip 后列表回到顶部。换的是另一套行，
 			// 整份状态重置（只挪偏移会先用旧位置铺新数据，闪一下）。
 			a.SubList = ui.ListState{}
-			a.navFlip(&a.followsSeq, a.SubIndex, idx)
+			a.navFlip(&a.followsSeq)
 		}
 		a.SubIndex = idx
 	}
@@ -297,20 +296,14 @@ func (a *App) subPlatformTag(c *ui.Context, idx int, chip subChip, sub Subscript
 
 // activateSubChipPlatform 把某枚 chip 切到指定平台，并把它选为当前 chip。
 //
-// 点胶囊时两件事可能同时发生：换平台、换 chip。代次只加一次，
-// 方向只在真的换了 chip 时更新——只换平台是同一屏内容换人，原地淡入
-// 更合适，横向擦出去会让人以为换了个分区。
+// 点胶囊时两件事可能同时发生：换平台、换 chip。代次只加一次。
 func (a *App) activateSubChipPlatform(idx int, chip subChip, platformID string) {
 	key := subChipKey(chip.Name)
 	if idx == a.SubIndex && a.subActive[key] == platformID {
 		return
 	}
-	if idx != a.SubIndex {
-		a.navTowards(a.SubIndex, idx)
-	}
 	a.subActive[key] = platformID
 	a.SubIndex = idx
-	a.resetCards()
 	a.SubList = ui.ListState{}
 	a.followsSeq++
 }
@@ -338,7 +331,6 @@ func (a *App) removeSubPlatform(chip subChip, platformID string) {
 		delete(a.subActive, key)
 	}
 	a.clampSubIndex()
-	a.resetCards()
 	a.SubList = ui.ListState{}
 	a.markDirty()
 	a.toastTone("已取消订阅"+chip.Name, toastSuccess)

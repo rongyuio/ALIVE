@@ -26,6 +26,13 @@ const (
 	danmuFlyMax = 40
 	danmuLogMax = 300
 	danmuTick   = 33 * time.Millisecond
+
+	// danmuStallGrace 是「画面没前进」的容忍时间。
+	//
+	// time-pos 按视频帧更新，实测 30fps 流上相邻两次间隔 20–40ms。短于这个
+	// 宽限的「位置没变」只是采样间隔，弹幕照常按墙钟走；超过它才认定画面
+	// 真的停住（暂停、缓冲、卡死），弹幕跟着冻住。
+	danmuStallGrace = 250 * time.Millisecond
 )
 
 // danmuKind 是能上屏的两类弹幕。
@@ -150,30 +157,40 @@ func (a *App) danmuTime() time.Time {
 
 // danmuAdvance 决定这一拍弹幕时钟该走多少。
 //
-// 有播放器时只看 time-pos 的增量：位置不动（暂停、缓冲、卡死）就一步不走；
-// 位置一次跳得比墙钟还多（seek / 换路）只补墙钟那一段，弹幕不会瞬移。没有
-// 播放器时（还在取流）才退回墙钟，且只在播放态走。
-func danmuAdvance(dt time.Duration, hasPlayer, playing bool, pos, lastPos time.Duration) (add, newPos time.Duration) {
-	if hasPlayer {
-		delta := pos - lastPos
-		if delta <= 0 {
-			return 0, pos
-		}
-		if delta > dt {
-			delta = dt
-		}
-		return delta, pos
+// 画面在前进时一律按墙钟 dt 走。time-pos 只按视频帧率更新：实测 30fps 流上
+// 约 30 次/秒，相邻两次间隔 20–40ms 不等，每次整跳 33.33ms。拿它的增量当
+// 步长，60fps 的界面就会一半的帧不动、动的帧也只走被夹短的一小截——肉眼看到
+// 的「顿」就是这么来的。1x 播放时墙钟和播放时钟同速，用墙钟做步长既均匀，
+// 也不会累积漂移。
+//
+// 位置没变时先容忍：still 是画面连续没前进的累计时长，短于 danmuStallGrace
+// 只是采样间隔，继续按墙钟走；超过它才认定真停顿（暂停、缓冲、卡死）并冻结。
+// 用户自己按了暂停就不用等宽限，当场停住。位置前跳（seek / 换路）和后退都
+// 只更新基准，不补时长，弹幕不会瞬移。
+func danmuAdvance(dt time.Duration, hasPlayer, playing bool, pos, lastPos, still time.Duration) (add, newStill time.Duration) {
+	if dt <= 0 {
+		return 0, still
 	}
 	if !playing {
-		return 0, lastPos
+		return 0, 0
 	}
-	return dt, lastPos
+	if !hasPlayer {
+		return dt, 0
+	}
+	if pos != lastPos {
+		return dt, 0
+	}
+	still += dt
+	if still > danmuStallGrace {
+		return 0, still
+	}
+	return dt, still
 }
 
 // advanceDanmuClock 把弹幕时钟往前推。
 //
-// 判据是「画面有没有真的前进」，不是墙钟：有播放器时按 time-pos 的增量走，
-// 位置不动（暂停、缓冲、卡死）就一步都不走。没有播放器时才退回墙钟增量。
+// 判据是「画面有没有真的前进」，不是墙钟：位置不动（暂停、缓冲、卡死）时
+// 冻结，前进时按墙钟均匀推进。没有播放器时（还在取流）才直接看播放态。
 func (a *App) advanceDanmuClock() {
 	now := a.clock()
 	if a.danmuLast.IsZero() {
@@ -186,12 +203,13 @@ func (a *App) advanceDanmuClock() {
 		return
 	}
 	if p := a.media.player; p != nil {
-		add, pos := danmuAdvance(dt, true, true, p.Position(), a.danmuPos)
-		a.danmuPos = pos
+		pos := p.Position()
+		add, still := danmuAdvance(dt, true, a.Playing, pos, a.danmuPos, a.danmuStill)
+		a.danmuPos, a.danmuStill = pos, still
 		a.danmuNow = a.danmuNow.Add(add)
 		return
 	}
-	add, _ := danmuAdvance(dt, false, a.Playing, 0, 0)
+	add, _ := danmuAdvance(dt, false, a.Playing, 0, 0, 0)
 	a.danmuNow = a.danmuNow.Add(add)
 }
 

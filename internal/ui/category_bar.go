@@ -97,7 +97,7 @@ func (a *App) selectGroup(i int) {
 	if i < 0 || i >= len(a.Groups) {
 		return
 	}
-	a.navFlip(&a.navSeq, a.GroupIndex, i)
+	a.navFlip(&a.navSeq)
 	// 切一级分区时自动选中它的第一个二级分区，三级回到「全部」
 	a.GroupIndex = i
 	a.CategoryIndex = 0
@@ -107,7 +107,7 @@ func (a *App) selectGroup(i int) {
 }
 
 func (a *App) selectCategory(i int) {
-	a.navFlip(&a.navSeq, a.CategoryIndex, i)
+	a.navFlip(&a.navSeq)
 	a.CategoryIndex = i
 	a.SubCatIndex = -1
 	a.MoreOpen = false
@@ -422,12 +422,7 @@ func (a *App) categoryHits() []categoryHit {
 }
 
 func (a *App) pickCategoryHit(h categoryHit) {
-	// 从搜索里跳过去也要有方向：先看一级分区换没换，两级都没换才原地淡入。
-	if h.GroupIndex != a.GroupIndex {
-		a.navFlip(&a.navSeq, a.GroupIndex, h.GroupIndex)
-	} else {
-		a.navFlip(&a.navSeq, a.CategoryIndex, h.CategoryIndex)
-	}
+	a.navFlip(&a.navSeq)
 	a.GroupIndex = h.GroupIndex
 	a.CategoryIndex = h.CategoryIndex
 	a.SubCatIndex = -1
@@ -721,8 +716,8 @@ func (a *App) subChip(c *ui.Context, i int, name string, w float32) {
 	}
 	if chip.Clicked() {
 		if i != a.SubCatIndex {
-			// 三级也是换了一份内容，方向按格子差算：往右点就从右来。
-			a.navFlip(&a.navSeq, a.SubCatIndex+1, i+1)
+			// 三级也是换了一份内容，同样换代。
+			a.navFlip(&a.navSeq)
 			a.SubCatIndex = i
 			// 三级分区是列表的第三维，换了就要重新拉（feedKey 里带着它）
 			a.reloadRooms()

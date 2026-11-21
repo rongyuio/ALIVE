@@ -11,9 +11,11 @@ import (
 	"alive/internal/theme"
 )
 
-// 往右点就从右来，往左点就从左来。方向是内容进出的唯一依据，
-// 算反了整屏内容会朝反方向擦出去。
-func TestCategorySwitchSetsDirection(t *testing.T) {
+// 换二级分区就是换了一份内容：代次必须 +1。
+//
+// 这里以前还断言方向（navDir），内容层按方向整块横滑时它决定从哪侧进。
+// 横滑撤掉之后方向不再存在，代次仍然是换代换 key 的唯一依据。
+func TestCategorySwitchAdvancesFeedGeneration(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
@@ -30,16 +32,9 @@ func TestCategorySwitchSetsDirection(t *testing.T) {
 	if app.CategoryIndex != start+1 {
 		t.Fatalf("点了 %q 却没选中它：CategoryIndex=%d", cats[start+1], app.CategoryIndex)
 	}
-	if app.navDir != navRight {
-		t.Errorf("往右点，方向是 %v，期望 navRight", app.navDir)
-	}
-
 	seq := app.navSeq
 	if err := tt.Click("分类:" + cats[start]); err != nil {
 		t.Fatal(err)
-	}
-	if app.navDir != navLeft {
-		t.Errorf("往左点，方向是 %v，期望 navLeft", app.navDir)
 	}
 	if app.navSeq != seq+1 {
 		t.Errorf("换了一屏但代次没动：%d → %d", seq, app.navSeq)
@@ -67,11 +62,12 @@ func TestTabOrderMatchesRenderedOrder(t *testing.T) {
 	}
 }
 
-// 换了一屏，新的一屏是从侧面进来的——不是原地换掉。
+// 换一屏内容，位置不能动。
 //
-// 这条只能量「第一帧的位置」和「停稳后的位置」之差：Enter 的位移量就是
-// 方向的全部体现，它一旦是 0，切换就退化成了原地淡入。
-func TestCategorySwitchSlidesContentIn(t *testing.T) {
+// 内容层曾经按方向整块横滑 16 DIP：第一帧在最终位置的右边，再滑回来。
+// 整块内容和分区栏错开一个身位，用户看到的就是「有偏差」。现在只换 key、
+// 直接交换，第一帧就应该在最终位置上。
+func TestCategorySwitchKeepsContentInPlace(t *testing.T) {
 	app := NewMockApp()
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
@@ -89,28 +85,15 @@ func TestCategorySwitchSlidesContentIn(t *testing.T) {
 	if len(feed) == 0 {
 		t.Skip("这个分区没有卡片")
 	}
-	name := "直播间:" + feed[0].Name
-	entering, ok := tt.Find(name)
-	if !ok {
-		t.Fatalf("换代后的第一张卡片 %q 没出现", name)
-	}
-
-	tt.Advance(900 * time.Millisecond)
-	tt.Frame()
-	settled, ok := tt.Find(name)
-	if !ok {
-		t.Fatalf("第一张卡片 %q 不见了", name)
-	}
-
-	// 往右点：内容从右边进来，第一帧应该在最终位置的右边 16 DIP。
-	if d := entering.X - settled.X; d < 6 || d > 20 {
-		t.Errorf("进场位移是 %.1f DIP，期望约 16：内容没有从侧面进来", d)
-	}
+	names := cardNames(feed, 4)
+	p := newProbe(t, tt, contentRect(t, tt, names...), 16*time.Millisecond, names...)
+	p.Run(60) // 960ms：足够旧版 540ms 弹簧位移完整播完
+	p.RequireNoShift(0.01)
+	p.RequireAlwaysPresent()
 }
 
-// 三级分区（数据源给了才出现）走的是同一套方向逻辑：它在「全部」前面
-// 多一格，所以索引差要 +1 换算。
-func TestSubCategorySwitchSetsDirection(t *testing.T) {
+// 三级分区（数据源给了才出现）同样只换代次。
+func TestSubCategorySwitchAdvancesGeneration(t *testing.T) {
 	app := NewMockApp()
 	app.subCategories[app.currentCategory()] = []string{"排位", "娱乐"}
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -124,10 +107,6 @@ func TestSubCategorySwitchSetsDirection(t *testing.T) {
 	}
 	if app.SubCatIndex != 1 {
 		t.Fatalf("SubCatIndex=%d，期望 1", app.SubCatIndex)
-	}
-	// 「全部」是第 0 格，「娱乐」是第 2 格。
-	if app.navDir != navRight {
-		t.Errorf("方向是 %v，期望 navRight", app.navDir)
 	}
 }
 
@@ -170,8 +149,8 @@ func TestFollowsChipBoxMatchesLayout(t *testing.T) {
 	}
 }
 
-// 换筛选就是换了一份列表：代次 +1、方向按格子差算。
-func TestFollowsFilterSwitchSetsDirection(t *testing.T) {
+// 换筛选就是换了一份列表：代次 +1。
+func TestFollowsFilterSwitchAdvancesGeneration(t *testing.T) {
 	app := NewMockApp()
 	app.switchTab("follows")
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -189,18 +168,12 @@ func TestFollowsFilterSwitchSetsDirection(t *testing.T) {
 	if app.FollowsPlatform != ids[1] {
 		t.Fatalf("FollowsPlatform=%q，期望 %q", app.FollowsPlatform, ids[1])
 	}
-	if app.navDir != navRight {
-		t.Errorf("往右点，方向是 %v，期望 navRight", app.navDir)
-	}
 	if app.followsSeq != seq+1 {
 		t.Errorf("代次没动：%d → %d", seq, app.followsSeq)
 	}
 
 	if err := tt.Click("关注筛选:全部"); err != nil {
 		t.Fatal(err)
-	}
-	if app.navDir != navLeft {
-		t.Errorf("往左点，方向是 %v，期望 navLeft", app.navDir)
 	}
 }
 
@@ -212,7 +185,8 @@ func TestFollowsSectionBoxMatchesLayout(t *testing.T) {
 	tt.Frame()
 
 	box := app.followsSectionBox
-	for i, name := range followsSectionNames {
+	for i, id := range app.followsSectionOrder() {
+		name := followsSectionNames[followsSectionOf(id)]
 		r, ok := tt.Find(name)
 		if !ok {
 			t.Fatalf("一级分区 %q 没渲染出来", name)
@@ -270,8 +244,8 @@ func TestSubscribeChipBoxMatchesLayout(t *testing.T) {
 	}
 }
 
-// 换订阅项也要换代次和方向。
-func TestSubscribeSwitchSetsDirection(t *testing.T) {
+// 换订阅项也要换代次。
+func TestSubscribeSwitchAdvancesGeneration(t *testing.T) {
 	app := NewMockApp()
 	app.Subs = []Subscription{
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "英雄联盟", CategoryID: "1"},
@@ -286,9 +260,6 @@ func TestSubscribeSwitchSetsDirection(t *testing.T) {
 	clickSubChip(t, tt, "无畏契约")
 	if app.SubIndex != 1 {
 		t.Fatalf("SubIndex=%d，期望 1", app.SubIndex)
-	}
-	if app.navDir != navRight {
-		t.Errorf("方向是 %v，期望 navRight", app.navDir)
 	}
 	if app.followsSeq != seq+1 {
 		t.Errorf("代次没动：%d → %d", seq, app.followsSeq)
