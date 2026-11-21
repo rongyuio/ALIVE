@@ -241,7 +241,7 @@ func TestWatchAddCapAndDedupe(t *testing.T) {
 		t.Fatal("重复房间被加进去了")
 	}
 	if app.watchAdd(rooms[watch.MaxRooms]) {
-		t.Fatal("超过 9 间还加进去了")
+		t.Fatal("超过上限还加进去了")
 	}
 	if got := len(app.WatchRooms); got != watch.MaxRooms {
 		t.Fatalf("上限后 %d 间", got)
@@ -416,26 +416,6 @@ func TestWatchDragSwapsTiles(t *testing.T) {
 	}
 	if app.WatchActive != "" {
 		t.Fatalf("拖动不该激活格子，active=%q", app.WatchActive)
-	}
-}
-
-func TestWatchMoveBy(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := NewMockApp()
-	rooms := watchTestRooms(3)
-	app.WatchRooms = append([]Streamer(nil), rooms...)
-
-	app.watchMoveBy(rooms[2], -1)
-	if got := app.WatchRooms[1].RoomID; got != "1002" {
-		t.Fatalf("后移前移后第二间是 %s，顺序 %v", got, app.WatchRooms)
-	}
-	app.watchMoveBy(rooms[0], -1) // 已经在最前，不动
-	if got := app.WatchRooms[0].RoomID; got != "1000" {
-		t.Fatalf("越界前移改了顺序：%v", app.WatchRooms)
-	}
-	app.watchMoveBy(rooms[0], 1)
-	if got := app.WatchRooms[1].RoomID; got != "1000" {
-		t.Fatalf("前移后第二间是 %s，顺序 %v", got, app.WatchRooms)
 	}
 }
 
@@ -660,6 +640,36 @@ func TestWatchDragShowsDropZones(t *testing.T) {
 	for _, n := range []string{"第 1 格", "第 2 格", "第 3 格"} {
 		if _, ok := tt.Find(n); ok {
 			t.Fatalf("松手后「%s」还在", n)
+		}
+	}
+}
+
+// 墙上的格子没有右键菜单：前移 / 后移 / 移出三项已经删掉，重排靠拖动。
+func TestWatchTileHasNoContextMenu(t *testing.T) {
+	rooms := watchTestRooms(2)
+	app, tt := newWatchMock(t, rooms)
+	if err := tt.RightClick(watchTileLabel(rooms[0])); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if labels := tt.Menu(); len(labels) != 0 {
+		t.Fatalf("格子右键弹出了菜单：%v", labels)
+	}
+	if len(app.WatchRooms) != len(rooms) || app.Router.Path() != routeFollows {
+		t.Fatalf("右键改变了状态：rooms=%d route=%q", len(app.WatchRooms), app.Router.Path())
+	}
+}
+
+// 12 间是新的产品上限：第 10–12 间也必须上墙，不能还按 9 间截断。
+func TestWatchTwelveRoomsOnWall(t *testing.T) {
+	rooms := watchTestRooms(watch.MaxRooms)
+	_, tt := newWatchMock(t, rooms)
+	if watch.MaxRooms != 12 {
+		t.Fatalf("MaxRooms=%d，期望 12", watch.MaxRooms)
+	}
+	for i, room := range rooms {
+		if _, ok := tt.Find(watchTileLabel(room)); !ok {
+			t.Fatalf("第 %d 间没有上墙", i+1)
 		}
 	}
 }

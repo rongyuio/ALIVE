@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	biblib "github.com/rongyuio/bilibili"
 	bilibiliLive "github.com/rongyuio/bilibili/live"
@@ -78,9 +77,16 @@ type biliPlayURL struct {
 }
 
 // biliTier 是一个真实下发得到的清晰度档位。
+//
+// Width/Height/Bitrate/FrameRate 是 master 播放列表声明的规格，挂在档位上
+// 而不是地址上：菜单要显示它们，而地址按需解析、解析出来的候选不带这些值。
 type biliTier struct {
-	QN   int64
-	URLs []biliPlayURL
+	QN        int64
+	Width     int
+	Height    int
+	Bitrate   int64
+	FrameRate float64
+	URLs      []biliPlayURL
 }
 
 // biliPlayInfo 是一次取流的解析结果。
@@ -96,12 +102,83 @@ type biliPlayInfo struct {
 }
 
 // Stream 返回房间详情和平台真实可播的档位、线路。
+//
+// 菜单用：只拿档位骨架（名称、分辨率、线路链），**不解析任何地址**。
+// 真正要播哪一档由 StreamForPlayback 单独解析。
+//
+// 以前这里会把每个「档位 × 线路」都展开成媒体地址，一个房间十几个请求；
+// 观测墙同时开 10 格就是一百多个请求，全挤在同一个限流器后面，整墙卡在
+// 「正在拉取直播流」。地址对菜单没有意义，不该在列菜单时付这份钱。
 func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Stream, error) {
-	// 房间详情直接复用 RoomInfo：它已经处理了短号→真实 room_id 的两跳，
-	// 播放页和卡片上看到的也就是同一份数据。
+	out, info, err := p.biliStreamSkeleton(ctx, roomID)
+	if err != nil || info == nil {
+		return out, err
+	}
+	// 菜单保留全部档位，地址留空：切档时 StreamForPlayback 再解析。
+	for _, tier := range info.Tiers {
+		out.Variants = append(out.Variants, biliTierVariant(out.RoomID, tier, info.QNDesc, biliPlayURL{}))
+	}
+	return out, nil
+}
+
+// StreamForPlayback 只解析选中那一档的地址，供播放页和墙格起播。
+//
+// 这是播放路径唯一的取流入口。它只发一次 getRoomPlayInfo(qn=目标档)，
+// 拿到的就是这一档的 FLV/HLS 候选，不需要 master、不需要展开。
+//
+// quality 是菜单标签（"1080P 原画"），空值或未命中时取最高档——和进房间的
+// 默认选中一致。服务端降档时 selected 反映实际档位，不冒充请求的那档。
+func (p *bilibiliProvider) StreamForPlayback(ctx context.Context, roomID, line, quality string) (Stream, Variant, error) {
+	out, info, err := p.biliStreamSkeleton(ctx, roomID)
+	if err != nil || info == nil || !out.Live {
+		return out, Variant{}, err
+	}
+
+	// 菜单：全部档位、地址留空。
+	for _, tier := range info.Tiers {
+		out.Variants = append(out.Variants, biliTierVariant(out.RoomID, tier, info.QNDesc, biliPlayURL{}))
+	}
+
+	target := biliPickTierByLabel(info.Tiers, quality)
+	if target == nil {
+		return out, Variant{}, &UpstreamError{
+			Platform: Bilibili, Op: "取流",
+			Message: "平台没有返回可播放的清晰度",
+		}
+	}
+
+	realID, _ := strconv.ParseInt(out.RoomID, 10, 64)
+	urls, err := p.biliTierURLs(ctx, realID, target.QN)
+	if err != nil {
+		return out, Variant{}, err
+	}
+	// 选中线路上有候选就用它，没有就退回这一档最好的那条。
+	u, ok := biliPickByLine(urls, strings.TrimSpace(line))
+	if !ok {
+		return out, Variant{}, &UpstreamError{
+			Platform: Bilibili, Op: "取流",
+			Message: "这一档没有可播放的地址",
+		}
+	}
+	selected := biliTierVariant(out.RoomID, *target, info.QNDesc, u)
+
+	// 把解析出来的地址填回菜单对应项：调用方拿着 Stream 切档时不必再请求。
+	for i := range out.Variants {
+		if out.Variants[i].ID == selected.ID {
+			out.Variants[i] = selected
+		}
+	}
+	return out, selected, nil
+}
+
+// biliStreamSkeleton 取房间详情 + 档位骨架（无地址）。
+//
+// 返回的 info 里 Tiers 的 URLs 一律为空——master 那条路只用来拿档位名、
+// 分辨率和线路优先级链，地址一律由 StreamForPlayback 单独解析。
+func (p *bilibiliProvider) biliStreamSkeleton(ctx context.Context, roomID string) (Stream, *biliPlayInfo, error) {
 	room, err := p.RoomInfo(ctx, roomID)
 	if err != nil {
-		return Stream{}, err
+		return Stream{}, nil, err
 	}
 	out := Stream{
 		RoomID:   room.RoomID,
@@ -112,12 +189,12 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 		Live:     room.Live,
 	}
 	if !room.Live {
-		return out, nil
+		return out, nil, nil
 	}
 
 	realID, err := strconv.ParseInt(room.RoomID, 10, 64)
 	if err != nil || realID <= 0 {
-		return Stream{}, &UpstreamError{
+		return Stream{}, nil, &UpstreamError{
 			Platform: Bilibili, Op: "取流",
 			Message: fmt.Sprintf("真实房间号 %q 不合法", room.RoomID),
 		}
@@ -125,35 +202,30 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 
 	info, err := p.biliFetchPlayInfo(ctx, realID)
 	if err != nil {
-		return Stream{}, err
+		return Stream{}, nil, err
 	}
-	// 是否在播以取流接口为准，空档位交给播放层报告取流失败。
 	if !info.Live {
 		out.Live = false
-		return out, nil
+		return out, nil, nil
 	}
 
 	// 线路 = master 播放列表的 PATHWAY 优先级链，ID 已经归一成节点主机名。
 	//
 	// 节点数量和族由服务端实时决定（同一房间实测见过 4 个 204 族、2 个 208 族、
 	// 单个 209），所以只按返回顺序摆，不排序、不硬编码。第一个是主线。
-	//
-	// 回退路径没有 pathway 信息，只能从地址里收 HLS 节点——那收出来的是
-	// 协议族（ts / fmp4），不是网页端意义上的线路，保留作最后兜底。
-	if len(info.Pathways) > 0 {
-		for i, id := range info.Pathways {
-			label := "备线" + strconv.Itoa(i)
-			if i == 0 {
-				label = "主线"
-			}
-			out.Lines = append(out.Lines, Line{ID: id, Label: label})
+	for i, id := range info.Pathways {
+		label := "备线" + strconv.Itoa(i)
+		if i == 0 {
+			label = "主线"
 		}
-	} else {
+		out.Lines = append(out.Lines, Line{ID: id, Label: label})
+	}
+	if len(out.Lines) == 0 {
+		// 没有 pathway 链时只能从档位自带的节点收，去重后按平台顺序摆。
 		seen := map[string]bool{}
-		hosts := make([]string, 0, 8)
 		for _, tier := range info.Tiers {
 			for _, u := range tier.URLs {
-				if u.Host == "" || !biliIsHLS(u) {
+				if u.Host == "" {
 					continue
 				}
 				key := biliLineFamily(u.Host)
@@ -161,52 +233,60 @@ func (p *bilibiliProvider) Stream(ctx context.Context, roomID, line string) (Str
 					continue
 				}
 				seen[key] = true
-				hosts = append(hosts, u.Host)
+				label := "备线" + strconv.Itoa(len(out.Lines))
+				if len(out.Lines) == 0 {
+					label = "主线"
+				}
+				out.Lines = append(out.Lines, Line{ID: u.Host, Label: label})
 			}
 		}
-		for i, h := range hosts {
-			label := "备线" + strconv.Itoa(i)
-			if i == 0 {
-				label = "主线"
-			}
-			out.Lines = append(out.Lines, Line{ID: h, Label: label})
-		}
-	}
-
-	want := strings.TrimSpace(line)
-	for _, tier := range info.Tiers {
-		u, ok := biliPickByLine(tier.URLs, want)
-		if !ok {
-			continue
-		}
-		out.Variants = append(out.Variants, biliPlaybackVariant(room.RoomID, tier.QN, info.QNDesc, u))
 	}
 
 	// 不额外造「自动」档：网页端那一项是把服务端的默认档又列了一遍，
 	// 选它和选对应档位是同一路流。菜单按 qn 降序，第一档就是能拿到的
 	// 最高档，进房间默认选它。
-
-	return out, nil
+	return out, info, nil
 }
 
-// biliPlaybackVariant 把一个档位地址转成播放页的选项。
+// biliPickTierByLabel 按菜单标签找档位；空标签或没命中时取最高档。
+func biliPickTierByLabel(tiers []biliTier, quality string) *biliTier {
+	if len(tiers) == 0 {
+		return nil
+	}
+	want := strings.TrimSpace(quality)
+	if want != "" {
+		for i := range tiers {
+			if biliQNLabels[tiers[i].QN] == want {
+				return &tiers[i]
+			}
+		}
+	}
+	return &tiers[0]
+}
+
+// biliTierVariant 把一个档位转成播放页的选项。
 //
-// 分辨率、码率、帧率都来自 master 播放列表的 RESOLUTION / BANDWIDTH /
-// FRAME-RATE，是上游声明值；兜底路径没有这些数据时保持零值。
-func biliPlaybackVariant(roomID string, qn int64, desc map[int64]string, u biliPlayURL) Variant {
-	return Variant{
-		ID:        biliQNSlug(qn),
-		Label:     biliQualityLabel(qn, desc[qn]),
+// 规格（分辨率 / 码率 / 帧率）取自档位本身——它是 master 播放列表的
+// RESOLUTION / BANDWIDTH / FRAME-RATE，菜单要用；url 为空时就是「只有菜单
+// 项、还没解析地址」的状态。
+//
+// Codec 只有解析过地址才知道（同一个 qn 可能同时有 avc / hevc 分支），
+// 所以从 url 对应那条候选里读；没有地址就留空。
+func biliTierVariant(roomID string, tier biliTier, desc map[int64]string, u biliPlayURL) Variant {
+	v := Variant{
+		ID:        biliQNSlug(tier.QN),
+		Label:     biliQualityLabel(tier.QN, desc[tier.QN]),
 		URL:       u.URL,
-		Width:     u.Width,
-		Height:    u.Height,
-		Bitrate:   u.Bitrate,
-		FrameRate: u.FrameRate,
+		Width:     tier.Width,
+		Height:    tier.Height,
+		Bitrate:   tier.Bitrate,
+		FrameRate: tier.FrameRate,
+		Codec:     u.Codec,
 		// m3u8 本身不要 Referer，但里面的 .ts 分片会 403
 		Headers: biliStreamHeaders(roomID),
-		Codec:   u.Codec,
 		Expires: expiryFromQuery(u.URL, "expires"),
 	}
+	return v
 }
 
 // biliStreamHeaders 是回源要带的头。
@@ -226,23 +306,24 @@ func biliStreamHeaders(roomID string) []string {
 // web_location，而网页端会带这三个，带上之后响应里的档位才全。
 const biliPlayInfoURL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
 
-// biliVariantConcurrency 同时拉几档：再多容易把上游惹毛。
-const biliVariantConcurrency = 4
-
 // biliRequest 按网页端参数请求一次 getRoomPlayInfo。
 func (p *bilibiliProvider) biliRequest(ctx context.Context, realID, qn int64) (*bilibiliLive.GetRoomPlayInfoResult, error) {
-	release, err := p.lim.acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
 
 	return biblib.Execute[*bilibiliLive.GetRoomPlayInfoResult](ctx, p.api,
 		"GET", biliPlayInfoURL,
 		bilibiliLive.GetRoomPlayInfoParam{
-			RoomID:   realID,
+			RoomID: realID,
+			// Protocol 0 = http_stream（FLV），1 = http_hls。
 			Protocol: "0,1",
-			Format:   "0,1,2",
+			// Format 0 = flv，1 = ts，2 = fmp4。
+			//
+			// 三个都要：FLV 是首选（单连接，见 biliPickPlayable 的说明），
+			// HLS 两档留作兜底——有些房间只给 HLS，不能把路走死。
+			Format: "0,1,2",
+			// Codec 0 = avc，1 = hevc，2 = av1。
+			//
+			// 不能像参照实现那样只要 avc：B 站的 1080P 原画常常只有 HEVC
+			// 分支，只要 avc 会把最高档整档丢掉。
 			Codec:    "0,1,2",
 			Qn:       int(qn),
 			Platform: "web",
@@ -256,14 +337,16 @@ func (p *bilibiliProvider) biliRequest(ctx context.Context, realID, qn int64) (*
 	)
 }
 
-// biliFetchPlayInfo 取房间的全部档位。
+// biliFetchPlayInfo 取房间的档位骨架：档位名、分辨率、线路链。
 //
-// 主路径是 master 播放列表：一次请求拿回全部档位和线路，且不校验登录——
-// 未登录也能看到平台实际开放的最高档。网页端是播放器前端拦的，接口和
-// CDN 都不拦。详见 internal/live/README.md。
+// **不解析任何播放地址。** 地址由 StreamForPlayback 按需单独取，一次只解析
+// 用户真正要播的那一档。以前这里会把每个「档位 × 线路」都展开成媒体地址，
+// 一个房间十几个请求；观测墙同时开 10 格就是一百多个，全挤在同一个限流器
+// 后面，整墙卡在「正在拉取直播流」。列菜单不需要地址，这份钱不该付。
 //
-// master 不可用时回退到逐档请求。那条路在匿名会话下只能拿到一档
-// （服务端恒定按 250 下发），但总比什么都没有好。
+// master/url 一次就能给出全部档位和 PATHWAY 链，是骨架的唯一来源。它不可用
+// 时才退回 getRoomPlayInfo 的 accept_qn 列表——那份列表只有档位码，没有
+// 分辨率，够列出菜单。
 func (p *bilibiliProvider) biliFetchPlayInfo(ctx context.Context, realID int64) (*biliPlayInfo, error) {
 	probe, err := p.biliRequest(ctx, realID, 0)
 	if err != nil {
@@ -285,75 +368,67 @@ func (p *bilibiliProvider) biliFetchPlayInfo(ctx context.Context, realID int64) 
 	if name := biliStreamName(playurl); name != "" {
 		master, err := p.biliMasterPlayInfo(ctx, realID, name, out.QNDesc)
 		if err == nil && master != nil && len(master.Tiers) > 0 {
+			// 骨架不要地址：master 给的是 HLS，而播放走 FLV，留着只会误导。
+			for i := range master.Tiers {
+				master.Tiers[i].URLs = nil
+			}
 			return master, nil
 		}
-		slog.Debug("B 站 master 播放列表不可用，回退逐档请求", "stream", name, "error", err)
+		slog.Debug("B 站 master 播放列表不可用，回退档位表", "stream", name, "error", err)
 	}
 
-	return p.biliFetchTiersByQN(ctx, realID, playurl, out)
-}
-
-// biliFetchTiersByQN 是 master 接口失效时的兜底：逐档请求，只收服务端
-// 真的按这档下发的地址。
-//
-// 匿名会话下这个接口恒定按 250 下发——请求 15000 / 10000 / 400 回来的
-// current_qn 全是 250，外加一条 suffix=prohdr 的壳子（current_qn 写
-// 10000 但 expected_qn 仍是 250）。所以 5 次请求最后只会留下一档。
-func (p *bilibiliProvider) biliFetchTiersByQN(ctx context.Context, realID int64, playurl *bilibiliLive.GetRoomPlayInfoPlayURL, out *biliPlayInfo) (*biliPlayInfo, error) {
-	targets := biliAcceptQNs(playurl)
-	if len(targets) == 0 {
-		return out, nil
-	}
-
-	var (
-		mu    sync.Mutex
-		tiers = map[int64][]biliPlayURL{}
-		wg    sync.WaitGroup
-		sem   = make(chan struct{}, biliVariantConcurrency)
-	)
-	for _, qn := range targets {
-		wg.Add(1)
-		go func(q int64) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			urls, err := p.biliTierURLs(ctx, realID, q)
-			if err != nil {
-				slog.Debug("B 站单档请求失败", "qn", q, "error", err)
-				return
-			}
-			if len(urls) == 0 {
-				return
-			}
-			mu.Lock()
-			tiers[q] = urls
-			mu.Unlock()
-		}(qn)
-	}
-	wg.Wait()
-
-	qns := make([]int64, 0, len(tiers))
-	for qn := range tiers {
-		qns = append(qns, qn)
-	}
-	sort.Slice(qns, func(i, j int) bool { return qns[i] > qns[j] })
-	for _, qn := range qns {
-		out.Tiers = append(out.Tiers, biliTier{QN: qn, URLs: tiers[qn]})
+	// 兜底：从 accept_qn 拼出档位骨架，没有地址也没有分辨率。
+	for _, qn := range biliAcceptQNs(playurl) {
+		out.Tiers = append(out.Tiers, biliTier{QN: qn})
 	}
 	return out, nil
 }
 
+// biliStreamSuffixQN 从 base_url 的流名后缀推断真实档位。
+//
+// 逐档接口的 current_qn 不可靠：请求 10000 时服务端可能回 current_qn=250，
+// 但 base_url 里的流名后缀（_bluray / _2500 / _prohevc）是这条流真实的身份。
+// 用它判断档位，比信 current_qn 准——不信它，原画档会拿到蓝光的流。
+//
+// 认不出来返回 0，调用方保持原有判断。
+func biliStreamSuffixQN(url string) int64 {
+	lower := strings.ToLower(url)
+	if i := strings.IndexByte(lower, '?'); i >= 0 {
+		lower = lower[:i]
+	}
+	switch {
+	case strings.Contains(lower, "_dolby"):
+		return qnDolby
+	case strings.Contains(lower, "_uhd") || strings.Contains(lower, "_4k"):
+		return qn4K
+	case strings.Contains(lower, "_2k"):
+		return qn2K
+	case strings.Contains(lower, "_prohevc"), strings.Contains(lower, "_origin"):
+		return qnOrigin
+	case strings.Contains(lower, "_bluray"), strings.Contains(lower, "_4000"):
+		return qnBluray
+	case strings.Contains(lower, "_minihevc"), strings.Contains(lower, "_2500"):
+		return qnUltra
+	case strings.Contains(lower, "_1500"), strings.Contains(lower, "_high"):
+		return qnHigh
+	case strings.Contains(lower, "_1000"), strings.Contains(lower, "_smooth"):
+		return qnSmooth
+	}
+	return 0
+}
+
 // biliTierURLs 请求某一档，只收「服务端真的按这档下发」的地址。
 //
-// 判据是两个都要等于请求的 qn：
+// 判据是三者任一与请求的 qn 相符：
 //   - current_qn 是这条码流标称的档位；
-//   - expected_qn 是服务端准备下发的档位。
+//   - expected_qn 是服务端准备下发的档位；
+//   - base_url 的流名后缀（_bluray / _2500 / _prohevc）是这条流的真实身份。
 //
-// 匿名会话请求 1080P 时 current_qn 会写 10000，但地址里的 expected_qn
-// 是 250——实际播出来还是 720P。这种壳子必须丢掉，否则菜单写着 1080P、
-// 点进去画质不动。登录之后服务端对同一档的 expected_qn 会给到请求值，
-// 那一档自己就出现了，这边不需要判断登录态。
+// 只看 current_qn 不够：实测登录态请求 10000 时，服务端回的 current_qn 仍是
+// 250，而 base_url 是 _bluray（蓝光档）。结果原画档拿到了蓝光的流，菜单和
+// 实际画面对不上。后缀是唯一和实际内容绑定的字段。
+//
+// 后缀也认不出来时退回 current_qn 判断，保持原有行为。
 func (p *bilibiliProvider) biliTierURLs(ctx context.Context, realID, qn int64) ([]biliPlayURL, error) {
 	res, err := p.biliRequest(ctx, realID, qn)
 	if err != nil {
@@ -373,6 +448,11 @@ func (p *bilibiliProvider) biliTierURLs(ctx context.Context, realID, qn int64) (
 				for _, u := range codec.URLInfo {
 					full := biliJoinURL(u.Host, codec.BaseURL, u.Extra)
 					if full == "" {
+						continue
+					}
+					// 流名后缀能认出档位时，以它为准：current_qn 和
+					// expected_qn 都可能被服务端写成同一个值。
+					if suffix := biliStreamSuffixQN(full); suffix > 0 && suffix != qn {
 						continue
 					}
 					if expected := biliExpectedQN(full); expected > 0 && expected != qn {
@@ -516,8 +596,23 @@ func biliJoinURL(host, base, extra string) string {
 
 // biliPickPlayable 从一组地址里挑一个最可能直接能播的。
 //
-// 打分顺序：HLS 优先，其次是 avc（系统解码器一定有，hevc 要看有没有装
+// 打分顺序：**FLV 优先**，其次是 avc（系统解码器一定有，hevc 要看有没有装
 // HEVC 视频扩展），最后才是节点偏好。
+//
+// 为什么 FLV 优先而不是 HLS：libmpv 的嵌入式用法强制自定义 io_open，mpv
+// 因此主动关掉 hls 的连接复用（它自己的日志：
+// 「hls: Disabling http_persistent due to custom io_open」），于是每个 1 秒
+// 分片都要新建一条 TCP+TLS 连接，实测单片 380ms，而复用只要 40ms。分片
+// 取数追不上实时，playlist 滚过去就跳分片、丢关键帧、HEVC 参考链崩。
+//
+// FLV 是单条长连接：从头到尾一条 TCP，io_open 只发生一次，上述问题不存在。
+// 实测同一房间 1080P（B 站 263605，2026-11-21，各 60 秒）：
+//
+//	HLS(fMP4)  缓冲 4–23 秒，avsync 漂到 8 秒，首帧 7.7 秒
+//	FLV        缓冲 0 秒，avsync 0，首帧 1.4 秒
+//
+// 参照实现 dart_simple_live（同样是 media_kit/libmpv）也只用 format 0,2，
+// 明确排除 HLS。
 func biliPickPlayable(urls []biliPlayURL) (biliPlayURL, bool) {
 	if len(urls) == 0 {
 		return biliPlayURL{}, false
@@ -526,8 +621,9 @@ func biliPickPlayable(urls []biliPlayURL) (biliPlayURL, bool) {
 	bestScore := -1 << 30
 	for _, u := range urls {
 		score := 0
-		if biliIsHLS(u) {
-			score += 100
+		// FLV 单连接，是直播的首选形态。
+		if biliIsFLV(u) {
+			score += 200
 		}
 		if strings.EqualFold(u.Codec, "avc") {
 			score += 40
@@ -547,6 +643,14 @@ func biliPickPlayable(urls []biliPlayURL) (biliPlayURL, bool) {
 		return biliPlayURL{}, false
 	}
 	return best, true
+}
+
+// biliIsFLV 判断地址是不是 FLV 直播流。
+func biliIsFLV(u biliPlayURL) bool {
+	if strings.EqualFold(u.Format, "flv") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(u.URL), ".flv")
 }
 
 // biliIsHLS 判断地址是不是 m3u8。
@@ -584,3 +688,7 @@ func biliQNSlug(qn int64) string {
 
 // 编译期确认 B 站实现了取流接口。
 var _ Streamer = (*bilibiliProvider)(nil)
+
+// 播放路径走按需解析：列菜单不解析地址，只解析真正要播的那一档。
+// 完整档位解析（每档一次请求）会让观测墙同时开十几格时把限流器挤爆。
+var _ PlaybackStreamer = (*bilibiliProvider)(nil)

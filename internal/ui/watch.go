@@ -21,7 +21,7 @@ const (
 	watchLiveDotInset float32 = 12
 )
 
-// watchWall 是「悲鸣观测」的内容层：把观测盒里的房间按 1–9 间铺满这一屏。
+// watchWall 是「悲鸣观测」的内容层：把观测盒里的房间按 1–12 间铺满这一屏。
 //
 // 它不滚动，也不显示弹幕。每一格都是一个无弹幕的单直播间缩小版：全档取流、
 // 静音、按格子物理像素呈现；单击切音频焦点，双击或点岛进播放页。
@@ -111,18 +111,6 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 	if dragging {
 		tile.Opacity(0.35)
 	}
-	tile.ContextMenu(func(m *ui.Menu) {
-		if m.Item("前移").Chosen() {
-			a.watchMoveBy(room, -1)
-		}
-		if m.Item("后移").Chosen() {
-			a.watchMoveBy(room, 1)
-		}
-		if m.Item("移出悲鸣观测").Chosen() {
-			a.watchRemove(room)
-		}
-	})
-
 	player := a.watchPlayer(key)
 	sess := a.watch.sessions[key]
 	tile.Children(func() {
@@ -418,7 +406,9 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *wallSession, player
 		loading = true
 	case sess != nil && sess.offline:
 		msg = "主播暂时没有开播"
-	case sess != nil && sess.err != "" && player == nil:
+	case sess != nil && sess.err != "":
+		// 线路都试过仍不稳定时会保留最后一帧；这条提示必须压在画面上，
+		// 否则用户只看到一张冻住的图，不知道发生了什么。
 		msg = sess.err
 	case sess != nil && player == nil && sess.loading:
 		loading = true

@@ -190,3 +190,20 @@ func overlap(a, b Rect) float32 {
 	}
 	return w * h
 }
+
+// 12 间是产品上限：最后三间不能被截掉，仍是一张等大网格。
+func TestLayoutTwelveRooms(t *testing.T) {
+	rs := layoutN(12, DefaultAspect, 1440, 800, 16)
+	assertRects(t, rs, 12, DefaultAspect, 1440, 800)
+	// 12 间在 1440×800 下是 3 行 4 列，铺满没有空格。
+	for i, want := range []struct{ x, y float32 }{
+		{0, 0}, {1, 0}, {2, 0}, {3, 0},
+		{0, 1}, {1, 1}, {2, 1}, {3, 1},
+		{0, 2}, {1, 2}, {2, 2}, {3, 2},
+	} {
+		if math.Abs(float64(rs[i].X-rs[0].X-want.x*(rs[1].X-rs[0].X))) > 1 ||
+			math.Abs(float64(rs[i].Y-rs[0].Y-want.y*(rs[4].Y-rs[0].Y))) > 1 {
+			t.Fatalf("第 %d 格没落在 (%d,%d)：%+v", i, int(want.x), int(want.y), rs[i])
+		}
+	}
+}

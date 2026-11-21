@@ -71,7 +71,7 @@ func (f *douyuFakeTransport) playCount() int {
 
 func newDouyuTestProvider(f http.RoundTripper) *douyuProvider {
 	p := newDouyu()
-	p.lim = newLimiter(refreshConcurrency, 0)
+	p.lim = newLimiter(4, 0)
 	p.api.http = &http.Client{Transport: f}
 	return p
 }
@@ -319,7 +319,12 @@ func TestBiliPlaybackVariantCarriesMetadata(t *testing.T) {
 	if len(tiers) == 0 {
 		t.Fatal("fixture 没有解析出档位")
 	}
-	v := biliPlaybackVariant("123", tiers[0].QN, map[int64]string{tiers[0].QN: "4K"}, biliPlayURLFromTier(tiers[0]))
+	u := biliPlayURLFromTier(tiers[0])
+	tier := biliTier{
+		QN: tiers[0].QN, Width: u.Width, Height: u.Height,
+		Bitrate: u.Bitrate, FrameRate: u.FrameRate, URLs: []biliPlayURL{u},
+	}
+	v := biliTierVariant("123", tier, map[int64]string{tiers[0].QN: "4K"}, u)
 	if v.ID != "uhd" || v.Label != "4K 极清" {
 		t.Errorf("档位 = %q/%q", v.ID, v.Label)
 	}
@@ -328,6 +333,15 @@ func TestBiliPlaybackVariantCarriesMetadata(t *testing.T) {
 	}
 	if v.Codec != "avc" || v.URL == "" || len(v.Headers) == 0 {
 		t.Errorf("编码/地址/请求头 = %q/%q/%v", v.Codec, v.URL, v.Headers)
+	}
+
+	// 没有地址时是「只有菜单项」的状态：规格和标签仍在，地址与编码为空。
+	menu := biliTierVariant("123", tier, map[int64]string{tiers[0].QN: "4K"}, biliPlayURL{})
+	if menu.URL != "" || menu.Codec != "" {
+		t.Errorf("菜单项不该带地址/编码：%q/%q", menu.URL, menu.Codec)
+	}
+	if menu.Width != 3840 || menu.Label != "4K 极清" {
+		t.Errorf("菜单项丢了规格：%+v", menu)
 	}
 }
 

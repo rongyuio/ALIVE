@@ -25,8 +25,12 @@ const (
 	Closed  Phase = "closed"
 )
 
-// debugLog 让 mpv 的错误日志打到 stderr，排障时设 ALIVE_MPV_LOG=1。
+// debugLog 让 mpv 的日志额外打到 stderr，开发时设 ALIVE_MPV_LOG=1。
 var debugLog = os.Getenv("ALIVE_MPV_LOG") != ""
+
+// mpvLogCap 是保留的 mpv 日志条数。一场直播卡顿能刷出几百行 POC 报错，
+// 留最近 200 条够看清「从哪一行开始坏的」，也不至于把内存撑起来。
+const mpvLogCap = 200
 
 var ErrClosed = errors.New("video: player closed")
 var ErrLoading = errors.New("video: a source is still loading")
@@ -35,6 +39,10 @@ var ErrLoading = errors.New("video: a source is still loading")
 //
 // Zero MaxWidth/MaxHeight use 3840×2160: 直播最高就到 4K，再大没有实际来源，
 // 反而会让每一帧的内存和上传量翻倍。
+//
+// 这两个上限只是安全阀，**不参与选尺寸**。要多大画面用 SetPresentSize，
+// 它才是唯一的呈现旋钮。以前墙上靠上限收格子、播放页靠上限放开，两个旋钮
+// 各管一半，墙 → 播放页这条路上画面就永远停在格子分辨率。
 //
 // Headers 是回源要带的 HTTP 请求头，形如 "Referer: https://live.bilibili.com/"。
 // 四个平台的直播流几乎都校验 Referer/UA，缺了直接 403。
@@ -92,33 +100,57 @@ type State struct {
 	VideoSpeed, AudioSpeed   float64       // 音视频各自的校正倍率（1.0 = 不校正）
 	AVSync                   float64       // 当前音画偏差（秒）
 	HWDec                    string        // 实际启用的硬解；空或 "no" 表示软件解码
+
+	// Log 是 mpv 自己报的错误 / 警告，最近若干条（旧的在前面）。
+	//
+	// 直播卡顿这类问题，mpv 的日志是唯一能说明「卡在哪一层」的东西——
+	// 是 hls 在跳分片、还是解码器拿不到参考帧、还是 HTTP 重连。原来它只
+	// 往 stderr 打，双击启动的进程没有 stderr，等于不留。上层每帧把它转进
+	// 应用日志，出问题时才有东西可看。
+	Log []LogLine
+}
+
+// LogLine 是 mpv 的一条日志。
+type LogLine struct {
+	Level string // error / warn / info
+	Text  string
+	// Seq 单调递增。上层据此只转发没见过的那些，不必自己维护游标。
+	Seq uint64
 }
 
 // Player owns a native playback engine, event worker and rendering worker.
 // Its methods are safe from any goroutine. Close it when its window closes.
 // Commands enqueue asynchronously; State reports the engine's confirmed result.
 type Player struct {
-	mu                 sync.Mutex
-	commandMu          sync.Mutex
-	state              State
-	native             backend
-	opts               Options
-	wake, renderWake   chan struct{}
-	stop, done         chan struct{}
-	workers            sync.WaitGroup
-	invalidate         func()
-	frame              *Frame
-	serial             uint64
-	width, height      int
+	mu               sync.Mutex
+	commandMu        sync.Mutex
+	state            State
+	native           backend
+	opts             Options
+	wake, renderWake chan struct{}
+	stop, done       chan struct{}
+	workers          sync.WaitGroup
+	invalidate       func()
+	frame            *Frame
+	serial           uint64
+	width, height    int
+	// rawW/rawH 是 mpv 报的原始显示尺寸，不经渲染上限改写。target 每帧从它
+	// 重新算上限，上限才能在中途放开（墙格 → 播放页）。
+	rawW, rawH         int
 	presentW, presentH int  // 非零时按这个尺寸渲染（后台听收不解全尺寸画面）
 	forceRender        bool // 尺寸变化后立刻用当前帧重渲染一次
-	requestID          uint64
-	loadID             uint64
-	pending            map[uint64]bool // true for a load request
-	loading            bool
-	startPending       bool
-	entry              int64
-	paused             bool
+	// mpvLog 是最近的 mpv 错误 / 警告，环形缓冲，State.Log 交出去给上层落盘。
+	mpvLog    []LogLine
+	mpvLogSeq uint64
+	// moovWarned 表示已经记过那条已知无害的 duplicated MOOV 警告。
+	moovWarned   bool
+	requestID    uint64
+	loadID       uint64
+	pending      map[uint64]bool // true for a load request
+	loading      bool
+	startPending bool
+	entry        int64
+	paused       bool
 }
 
 func New(opts Options) (*Player, error) {
@@ -279,53 +311,32 @@ func (p *Player) SetRate(rate float64) error {
 	return p.send([]string{"set", "speed", strconv.FormatFloat(rate, 'f', 3, 64)}, false)
 }
 
-// SetPresenting turns full-size presentation on or off without touching the
-// video track or the audio output. Off keeps decoding at a small render size;
-// the last frame is still updated, but at 160×90, and nobody is meant to show
-// it. On restores the video's own size and re-renders the current frame at
-// once, so the next pull is a full-size picture.
+// SetPresentSize 把软件渲染目标固定为 w×h（按偶数取整），0 表示按视频原始
+// 尺寸渲染。这是呈现的**唯一**旋钮：格子预览、后台收听、播放页全尺寸都走它。
 //
-// alive added this on top of upstream for background listening. It replaces
-// vid=no: deselecting the track made mpv flush its demuxer cache and wait for
-// the stream's next keyframe on return (0.08–5.2s measured on a live HLS).
-// Keeping the track selected and only shrinking the render target leaves the
-// demuxer, the audio clock and the decoded reference chain untouched, so the
-// picture resumes within one frame and the sound never stops.
-func (p *Player) SetPresenting(on bool) {
-	p.mu.Lock()
-	if on {
-		p.presentW, p.presentH = 0, 0
-	} else {
-		p.presentW, p.presentH = 160, 90
-	}
-	p.forceRender = true
-	p.mu.Unlock()
-	select {
-	case p.renderWake <- struct{}{}:
-	default:
-	}
-}
-
-// SetPresentSize 把软件渲染目标固定为 w×h（按偶数取整）。
+// ALIVE 本地补丁，来自上游之外的三个需求：
 //
-// ALIVE 本地补丁，给观测墙用：源流档位、解码分辨率、demuxer 都不动，只把
-// 呈现尺寸收到格子大小。它和把播放器窗口拉小是同一条路径，不是降画质；
-// 没有它，整墙每格都会按 1080p 做一次 YUV→RGB，9 路付不起。
+//   - 观测墙：源流档位、解码分辨率、demuxer 都不动，只把呈现尺寸收到格子
+//     大小。和把播放器窗口拉小是同一条路径，不是降画质；没有它，整墙每格
+//     都会按 1080p 做一次 YUV→RGB，9 路付不起。
+//   - 后台收听：收到 160×90 保留解码，回来一帧接上。它替代了 vid=no——
+//     取消选择视频轨会让 mpv 冲掉 demuxer 缓存、等下一个关键帧
+//     （实测 0.08–5.2 秒），而只缩渲染目标不碰 demuxer、音频时钟和参考帧链，
+//     画面一帧就回来，声音一秒不断。
+//   - 播放页：0，按视频原始尺寸。
 //
-// 传 0 回到视频原始尺寸，等价于 SetPresenting(true)。
+// 以前这里还有第二个入口 SetPresenting(on)（全尺寸 / 160×90）。两套并存时，
+// 各条路径只记得自己那一套，「墙 → 播放页」就永远停在格子分辨率——整屏
+// 都是放大的糊图。合并成一个入口，判断只在上层 presentSizeFor 一处。
 func (p *Player) SetPresentSize(w, h int) {
 	if w <= 0 || h <= 0 {
-		p.SetPresenting(true)
-		return
-	}
-	if w < 2 {
-		w = 2
-	}
-	if h < 2 {
-		h = 2
+		w, h = 0, 0
+	} else {
+		w = max(w, 2) &^ 1
+		h = max(h, 2) &^ 1
 	}
 	p.mu.Lock()
-	p.presentW, p.presentH = w&^1, h&^1
+	p.presentW, p.presentH = w, h
 	p.forceRender = true
 	p.mu.Unlock()
 	select {
@@ -349,10 +360,28 @@ func (p *Player) apply(ev event) {
 	s := &p.state
 	switch ev.kind {
 	case 2:
-		// mpv 的错误日志。默认不打——正常播放时它什么也不说，出问题时才是
-		// 唯一能说明「卡在哪一层」的东西。ALIVE_MPV_LOG=1 打开。
-		if debugLog && (ev.name == "error" || ev.name == "fatal") {
-			println("mpv log:", ev.name, ev.text)
+		// mpv 自己的日志。默认只收 error / warn——正常播放一条都没有，出问题时
+		// 才是唯一能说明「卡在哪一层」的东西。存进环形缓冲，由上层落盘；
+		// ALIVE_MPV_LOG=1 时额外打到 stderr，开发时用。
+		if ev.name == "error" || ev.name == "fatal" || ev.name == "warn" {
+			if debugLog {
+				println("mpv log:", ev.name, ev.text)
+			}
+			// 已知无害的上游噪音，只收第一条：B 站的 fMP4 每个分片都重带 init
+			// 段，于是每几秒刷一条 duplicated MOOV，实测 60 秒 50 条全是它，
+			// 会把真正有用的那几行淹掉。
+			if strings.Contains(ev.text, "duplicated MOOV Atom") {
+				if p.moovWarned {
+					break
+				}
+				p.moovWarned = true
+			}
+			p.mpvLogSeq++
+			p.mpvLog = append(p.mpvLog, LogLine{Level: ev.name, Text: ev.text, Seq: p.mpvLogSeq})
+			if len(p.mpvLog) > mpvLogCap {
+				p.mpvLog = p.mpvLog[len(p.mpvLog)-mpvLogCap:]
+			}
+			s.Log = p.mpvLog
 		}
 	case 1:
 		s.Phase = Failed
@@ -596,9 +625,8 @@ func (p *Player) target() (int, int) {
 			h = 2
 		}
 		w, h = w&^1, h&^1
-		p.mu.Lock()
-		p.width, p.height = w, h
-		p.mu.Unlock()
+		// 不写回 p.width/p.height：那是 mpv 报的原始尺寸，写回裁剪结果会让
+		// 上限变成单向阀——收得紧、放不回。
 		if rw > 0 && rh > 0 {
 			return rw &^ 1, rh &^ 1
 		}

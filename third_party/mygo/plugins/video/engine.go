@@ -81,6 +81,7 @@ type engine struct {
 	command      func(uintptr, uint64, unsafe.Pointer) int32
 	wait         func(uintptr, float64) *nativeEvent
 	observe      func(uintptr, uint64, string, int32) int32
+	requestLog   func(uintptr, string) int32
 	wake         func(uintptr, uintptr, uintptr)
 	errorString  func(int32) unsafe.Pointer
 	renderCreate func(*uintptr, uintptr, *renderParam) int32
@@ -151,7 +152,7 @@ func loadEngine(path string) (*engine, error) {
 	for _, s := range []struct {
 		name string
 		fn   any
-	}{{"mpv_client_api_version", &e.version}, {"mpv_create", &e.create}, {"mpv_set_option_string", &e.option}, {"mpv_initialize", &e.initialize}, {"mpv_destroy", &e.destroy}, {"mpv_command_async", &e.command}, {"mpv_wait_event", &e.wait}, {"mpv_observe_property", &e.observe}, {"mpv_set_wakeup_callback", &e.wake}, {"mpv_error_string", &e.errorString}, {"mpv_render_context_create", &e.renderCreate}, {"mpv_render_context_update", &e.renderUpdate}, {"mpv_render_context_render", &e.render}, {"mpv_render_context_set_update_callback", &e.renderWake}, {"mpv_render_context_free", &e.renderFree}} {
+	}{{"mpv_client_api_version", &e.version}, {"mpv_create", &e.create}, {"mpv_set_option_string", &e.option}, {"mpv_initialize", &e.initialize}, {"mpv_destroy", &e.destroy}, {"mpv_command_async", &e.command}, {"mpv_wait_event", &e.wait}, {"mpv_observe_property", &e.observe}, {"mpv_request_log_messages", &e.requestLog}, {"mpv_set_wakeup_callback", &e.wake}, {"mpv_error_string", &e.errorString}, {"mpv_render_context_create", &e.renderCreate}, {"mpv_render_context_update", &e.renderUpdate}, {"mpv_render_context_render", &e.render}, {"mpv_render_context_set_update_callback", &e.renderWake}, {"mpv_render_context_free", &e.renderFree}} {
 		if err = contentlib.Bind(h, s.name, s.fn); err != nil {
 			contentlib.Release(h)
 			return nil, err
@@ -217,7 +218,23 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 	// sws-fast：让 swscale 走快速路径（构建支持才有效）。
 	for _, o := range [][2]string{{"hwdec", "auto-safe"}, {"scale", "bilinear"}, {"dscale", "bilinear"}, {"sws-fast", "yes"}} {
 		_ = e.option(n.handle, o[0], o[1])
-	} // 直播流几乎都要回源请求头（B站/虎牙/斗鱼的 Referer、抖音的 UA）。mpv 自己
+	}
+	// 缓冲抽干后的恢复门槛。mpv 默认 cache-pause-wait=1.0：缓存一空就要重新
+	// 攒满 1 秒才继续播。直播分片本来就只有 1 秒，等 1 秒等于每次抖动都至少
+	// 卡一秒，所以收到 0.2。
+	//
+	// 这里**不**设 demuxer-readahead-secs / http_persistent / live_start_index。
+	// 三个都实测过，在 libmpv 这条路上都不兑现：
+	//   - readahead-secs：选项读回正确（5.000000），但 hls 的缓冲深度不吃它；
+	//   - http_persistent / http_multiple：mpv 自己的日志说
+	//     「Disabling http_persistent due to custom io_open」——libmpv 的
+	//     嵌入式用法强制自定义 io_open，连接复用和并行下载被 mpv 主动关掉，
+	//     去掉请求头也一样，没有开关可绕；
+	//   - live_start_index：单次样本结论相反，不足以下结论。
+	// 每片新建连接（实测 380ms vs 复用 40ms）才是直播卡顿的主因，而它在这条
+	// 路上无解。详见 doc/decisions/0009-live-continuity.md「第五轮」。
+	_ = e.option(n.handle, "cache-pause-wait", "0.2")
+	// 直播流几乎都要回源请求头（B站/虎牙/斗鱼的 Referer、抖音的 UA）。mpv 自己
 	// 不会编这些，必须由调用方给。http-header-fields 是逗号分隔的列表，每个
 	// 元素原样作为一行 header 发出去。
 	if len(opts.Headers) > 0 {
@@ -240,6 +257,9 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 	if err = e.err(e.initialize(n.handle)); err != nil {
 		return fail(err)
 	}
+	// 订阅 mpv 自己的日志。不订阅就一条都收不到——mpv 默认不向客户端推。
+	// warn 起步：info 级别的 hls / 解复用消息正常播放时也在刷，会把日志淹掉。
+	_ = e.requestLog(n.handle, "warn")
 	api := []byte("sw\x00")
 	params := []renderParam{{kind: 1, data: unsafe.Pointer(&api[0])}, {}}
 	if err = e.err(e.renderCreate(&n.renderer, n.handle, &params[0])); err != nil {

@@ -44,9 +44,13 @@ type Options struct {
 	MaxWidth, MaxHeight int
 	// Silent 使用空音频输出（ao=null）。测试和只取画面的探针用。
 	Silent bool
-	// StartMuted 在起播前静音。观测墙的非激活格子要开真实 AO，但不能出声；
-	// 先静音再 loadfile，避免起播瞬间漏出一声。
-	StartMuted bool
+	// StartSilent 在起播前把音量归零。观测墙的非激活格子要开真实 AO，但不能
+	// 出声；先归零再 loadfile，避免起播瞬间漏出一声。
+	//
+	// 不能用 SetMuted：mpv 的 mute 和 volume 是两个独立开关，之后把音量从 0
+	// 调回来并不会解除 mute。墙上激活时只走 SetVolume，于是切过去仍然没声音
+	// ——这个 bug 已经发生过一次。静音一律用 volume 0。
+	StartSilent bool
 	// SkipAudioGate 不压画面等音频时钟。墙上的格子只要画面，等音频会白压两秒。
 	SkipAudioGate bool
 }
@@ -59,6 +63,10 @@ type Engine struct {
 	mu     sync.Mutex
 	serial uint64
 	frames uint64
+	// calls 是 Frame 被调用的次数。和 frames（真正产出了新画面的次数）一起
+	// 用，才能分清「视图根本没在取帧」和「取了帧但解码器没给新画面」——
+	// 直播画面停住时这两种完全不同，不能靠猜。
+	calls  uint64
 	closed bool
 	gate   audioGate
 }
@@ -132,8 +140,8 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 	if opts.SkipAudioGate || opts.Silent {
 		e.gate.started = true
 	}
-	if opts.StartMuted {
-		if err := p.SetMuted(true); err != nil {
+	if opts.StartSilent {
+		if err := p.SetVolume(0); err != nil {
 			p.Close()
 			return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
 		}
@@ -201,6 +209,9 @@ func (e *Engine) SetWake(wake func()) {
 // 换来「画面出现时声音同时出现」。
 // 返回的 NV12 平面指向 mpv 引擎内部轮换的缓冲，三帧之后才会被覆写。
 func (e *Engine) Frame(t time.Time) (media.Picture, bool, bool) {
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
 	f, serial := e.p.Frame()
 	if f == nil {
 		return media.Picture{}, false, false
@@ -313,18 +324,15 @@ func (e *Engine) SetVolume(v float64) {
 	_ = e.p.SetVolume(v * 100)
 }
 
-// SetMuted 静音或取消静音。
+// SetMuted 静音或取消静音。mygo 的 media.Engine 接口要求这个方法，但应用层
+// 不该用它：mpv 的 mute 和 volume 是两个独立开关，之后把音量从 0 调回来并
+// 不会解除 mute——观测墙激活时只走 SetVolume，于是切过去仍然没声音。要静音
+// 一律把音量置 0，见 Options.StartSilent。
 func (e *Engine) SetMuted(m bool) { _ = e.p.SetMuted(m) }
 
-// SetPresenting 开关全尺寸呈现。
-//
-// false 时视频轨照常解码，只把软件渲染目标收到 160×90；true 恢复视频原始
-// 尺寸并立刻用当前帧重渲染一次。它不碰 vid、不碰 demuxer、不碰 AO：
-// 重新选轨会让 mpv 清空读前缓存并等下一个关键帧（实测 0.08–5.2 秒），
-// 而这里音频和参考帧链都没动，回来只差一帧。
-func (e *Engine) SetPresenting(on bool) { e.p.SetPresenting(on) }
-
-// SetPresentSize 把呈现尺寸固定为 w×h；0 表示回到视频原始尺寸。
+// SetPresentSize 是呈现的**唯一**入口：格子像素、160×90、0（视频原始尺寸）
+// 都走它。以前还有一个 SetPresenting(on) 表示「全尺寸 / 160×90」，两套并存，
+// 各条路径只记得自己那一套，墙 → 播放页就永远停在格子分辨率。
 //
 // 观测墙的每一格用它：源流与解码分辨率不变，只缩小呈现目标。切换尺寸时
 // 引擎会用当前帧立刻重渲染一次，格子上不会经过一帧黑。
@@ -339,6 +347,15 @@ func (e *Engine) Stats() (frames, dropped uint64, audioOn bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.frames, 0, true
+}
+
+// Calls 返回 Frame 被调用过多少次，诊断用。和 Stats 的 frames 相减就能
+// 看出取帧节拍有没有在跑：calls 不涨 = 视图没在取帧；calls 涨而 frames
+// 不涨 = 取了帧但解码器没有新画面。
+func (e *Engine) Calls() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
 }
 
 // Close 释放这一路。可重复调用。

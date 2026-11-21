@@ -103,12 +103,27 @@ func biliStreamName(playurl *bilibiliLive.GetRoomPlayInfoPlayURL) string {
 }
 
 // biliSplitStreamName 从 base_url + extra 还原流名，并返回被削掉的 suffix。
+//
+// base_url 现在有两种形态：
+//
+//	旧的 .../<流名>_<后缀>.flv
+//	新的 .../<流名>_<后缀>/index.m3u8
+//
+// 新形态必须先去掉固定的 /index.m3u8 尾段再取路径最后一段。只取最后一段的
+// 话流名会变成 index，master/url 拿到这个名字查不到任何档位，整条主路径
+// 会静默退回逐档请求——分辨率、码率、2K/4K 档位都跟着丢。
 func biliSplitStreamName(base, extra string) (name, suffix string) {
 	base = strings.TrimSpace(base)
 	if i := strings.IndexByte(base, '?'); i >= 0 {
 		base = base[:i]
 	}
 	base = strings.TrimRight(base, "/")
+	for _, tail := range []string{"/index.m3u8", "/index.flv"} {
+		if strings.HasSuffix(strings.ToLower(base), tail) {
+			base = base[:len(base)-len(tail)]
+			break
+		}
+	}
 	if i := strings.LastIndexByte(base, '/'); i >= 0 {
 		base = base[i+1:]
 	}
@@ -147,11 +162,6 @@ func biliQueryParam(query, key string) string {
 
 // biliMasterPlayInfo 请求 master 播放列表并解析成档位表。
 func (p *bilibiliProvider) biliMasterPlayInfo(ctx context.Context, realID int64, streamName string, desc map[int64]string) (*biliPlayInfo, error) {
-	release, err := p.lim.acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
 
 	body, err := biblib.ExecuteRaw(ctx, p.api, "GET", biliMasterURL, biliMasterParam{
 		Cid:        realID,

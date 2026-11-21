@@ -160,7 +160,7 @@ func (a *App) Island(c *ui.Context) {
 	// 首页不量：那时岛上没有主播信息，量出来也没人用。
 	openW := islandPlayerCollapsedW
 	if player || listening {
-		openW = islandPlayerContentW(c, a.current(), winW)
+		openW = islandPlayerContentW(c, a.current(), winW, islandButtonsW(wallActive))
 	}
 
 	targetW := float32(theme.IslandW)
@@ -241,7 +241,7 @@ func (a *App) Island(c *ui.Context) {
 		body.Children(func() {
 			switch {
 			case player || listening:
-				a.playerIsland(c, w, openW, listening)
+				a.playerIsland(c, w, openW, listening, wallActive)
 			default:
 				a.islandPill(c)
 			}
@@ -379,31 +379,43 @@ func clamp01(v float32) float32 {
 	return v
 }
 
+// islandButtonsW 是右侧按钮组占的宽度：收藏一颗，观测墙上 active 时
+// 收藏左边多一颗「取消 active」。
+//
+// 量宽度和画布局都必须用这同一个数：两边各算一次，增删按钮时文字列就会
+// 和画出来的按钮对不上。
+func islandButtonsW(canCancel bool) float32 {
+	if canCancel {
+		return 2*islandPlayerFollowW + islandPlayerGap
+	}
+	return islandPlayerFollowW
+}
+
 // islandPlayerContentW 量出播放页展开态真正需要的宽度。
 //
 // 文字交给 c.MeasureText 按真实字体量，而不是按字数估：中英文混排、
 // 平台名与 ID 数字的宽度差很多，估算会让岛两头多出或少掉一截空白。
-func islandPlayerContentW(c *ui.Context, s Streamer, winW float32) float32 {
+func islandPlayerContentW(c *ui.Context, s Streamer, winW, buttonsW float32) float32 {
 	titleW, _ := c.MeasureText(0, ui.Span{Text: s.Title, Size: theme.TextSM, Weight: 600})
 	metaW, _ := c.MeasureText(0, ui.Span{Text: islandPlayerMeta(s), Size: theme.Text2XS})
-	return islandPlayerWidth(titleW, metaW, winW)
+	return islandPlayerWidth(titleW, metaW, winW, buttonsW)
 }
 
 // islandPlayerWidth 把量出的两行文字宽度换成岛的目标宽度。
 //
 // 组成：body 内缩 × 2 + 左右内边距 + 头像 + 两段间距 + 较宽的那行文字 +
-// 文字缓冲 + 关注键。结果再钳进 [下限, 上限] 和窗口一半：顶栏两侧还有平台
-// tab 与图标格，岛不能把它们盖掉；内容再短也不能缩到文字列只剩一条缝。
+// 文字缓冲 + 右侧按钮组。结果再钳进 [下限, 上限] 和窗口一半：顶栏两侧还有
+// 平台 tab 与图标格，岛不能把它们盖掉；内容再短也不能缩到文字列只剩一条缝。
 //
 // 宽度只在这几个数之间确定，不依赖当前帧的动画值——同一份内容永远得到
 // 同一个目标宽度，弹簧怎么回弹都不会改变最终长度。
-func islandPlayerWidth(titleW, metaW, winW float32) float32 {
+func islandPlayerWidth(titleW, metaW, winW, buttonsW float32) float32 {
 	textW := titleW
 	if metaW > textW {
 		textW = metaW
 	}
 	w := 2*islandBodyInset + 2*islandPlayerPadX + islandPlayerAvatar +
-		2*islandPlayerGap + textW + islandPlayerTextSlack + islandPlayerFollowW
+		2*islandPlayerGap + textW + islandPlayerTextSlack + buttonsW
 	if limit := winW * 0.5; limit < w {
 		w = limit
 	}
@@ -433,7 +445,7 @@ func islandPlayerMeta(s Streamer) string {
 //
 // w 是这一帧的动画宽度，openW 是展开目标宽度（跟着窗口钳过）。
 // listening 为真时整块内容区是「回到直播间」的点击热区。
-func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
+func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel bool) {
 	s := a.current()
 
 	// m：0 完整展开，1 收成正圆。只有头像用这条曲线；文字和关注键不参与，
@@ -470,12 +482,19 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 	// 否则头像滑过去时会从字上碾过去。展开态 4 + 32 + 10 = 46，而头像在
 	// 收起时最右也只到 0 + 34 = 34，中间始终留着那 12px。
 	textX := islandPlayerPadX + islandPlayerAvatar + islandPlayerGap
+	// 右侧按钮组：常态只有收藏一颗；观测墙上 active 时收藏左边多一颗
+	// 「取消 active」，文字列要让出这 36px，否则岛宽不变、标题先被挤没。
+	buttonsW := islandPlayerFollowW
+	if canCancel {
+		buttonsW += islandPlayerGap + islandPlayerFollowW
+	}
 	textW := openW - 2*islandBodyInset - 2*islandPlayerPadX -
-		islandPlayerAvatar - 2*islandPlayerGap - islandPlayerTextSlack - islandPlayerFollowW
+		islandPlayerAvatar - 2*islandPlayerGap - islandPlayerTextSlack - buttonsW
 	if textW < 0 {
 		textW = 0
 	}
 	followX := openW - islandBodyInset - islandPlayerPadX - islandPlayerFollowW
+	cancelX := followX - islandPlayerGap - islandPlayerFollowW
 
 	// 文字列：垂直居中，两行固定，SingleLine 保证它不会自己换行。
 	text := ui.Column(c).Absolute().Top(0).Bottom(0).Left(textX).Width(textW).
@@ -487,6 +506,65 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 			FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
 			TextColor(theme.MediaTextDim)
 	})
+
+	// 头像：位置和直径都是插值出来的，所以它是「被岛宽拖着走」的。
+	//
+	// 在线绿点只在展开态画。收起后头像 34 撑满内容区，绿点画在头像外沿
+	// （size-d+1）就整个出了内容区，被 body 的圆角裁掉大半，剩一小截弧
+	// 挂在圆的右下角——那不是「绿点被收进去」，那是一颗没擦干净的脏点。
+	// 判据用宽度而不是进度：绿点是可见与否的二值状态，给它一段淡出反而
+	// 会在半透明时露出那截残弧。岛宽到「放得下绿点」才画。
+	showLive := w >= islandPlayerAvatar+2*islandPlayerPadX+islandLiveDotRoom
+
+	// 头像自己带名字：它的位置和直径就是这条动画的主体，测试和无障碍树
+	// 都要能单独量到它（外面那层热区铺满内容区，宽度不说明任何事）。
+	avatar := ui.Box(c).Absolute().Left(avatarX).Top(avatarY).
+		Size(avatarD, avatarD).Shrink(0).Label("主播头像")
+	avatar.Children(func() {
+		a.islandAvatar(c, s, avatarD, showLive)
+	})
+
+	// 后台收听：整块内容区都是回播放页的热区，压在头像和文字之上。
+	//
+	// 它必须画在按钮之前、头像之后。MyGo 的命中链只取指针下最上层的元素
+	// 和它的祖先，不会穿过兄弟往下找：热区排在按钮之后会把收藏键整个吃掉
+	// （点收藏等于点整块岛），头像虽然不可点，压在热区上面同样会挡住它。
+	// 顺序因此是 文字 → 头像 → 热区 → 按钮。
+	if listening {
+		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+			Cursor(ui.CursorPointer).Label("回到直播间")
+		if hit.Hovered() {
+			hit.Background(ui.RGBA(255, 255, 255, 0.06))
+		}
+		if hit.Clicked() {
+			// 进的是 active 那一间：a.Player 可能被别处改过，墙上真正在
+			// 出声的房间才是这一下该打开的目标。
+			if key := a.WatchActive; key != "" {
+				if room, ok := a.watchRoom(key); ok {
+					a.Player = room
+				}
+			}
+			// 回播放页只走路由：attachMedia 在 PlayerPage 里把全尺寸呈现打开。
+			a.Router.Push(routePlayer)
+		}
+	}
+
+	// 取消 active：只在墙上 active 时出现，放在收藏左边。
+	if canCancel {
+		cancel := ui.Box(c).Absolute().Left(cancelX).Top((islandContentH-islandPlayerFollowW)/2).
+			Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
+			Center().Cursor(ui.CursorPointer).Label("取消观测发声")
+		cancel.Background(theme.MediaRow).Border(1, theme.MediaRowLine)
+		if cancel.Hovered() {
+			cancel.Background(theme.MediaHair).BorderColor(theme.MediaHairStrong)
+		}
+		if cancel.Clicked() {
+			a.watchDeactivate()
+		}
+		cancel.Children(func() {
+			ui.Icon(c, iconX).FontSize(15).TextColor(theme.MediaText)
+		})
+	}
 
 	// 关注：纯图标，不带文字。头像右下角那个绿点已经说明在播，这里
 	// 只留一颗星，岛才不至于拖得太长。
@@ -523,36 +601,6 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening bool) {
 		}
 		ui.Icon(c, ico).FontSize(15).TextColor(col)
 	})
-
-	// 头像：位置和直径都是插值出来的，所以它是「被岛宽拖着走」的。
-	//
-	// 在线绿点只在展开态画。收起后头像 34 撑满内容区，绿点画在头像外沿
-	// （size-d+1）就整个出了内容区，被 body 的圆角裁掉大半，剩一小截弧
-	// 挂在圆的右下角——那不是「绿点被收进去」，那是一颗没擦干净的脏点。
-	// 判据用宽度而不是进度：绿点是可见与否的二值状态，给它一段淡出反而
-	// 会在半透明时露出那截残弧。岛宽到「放得下绿点」才画。
-	showLive := w >= islandPlayerAvatar+2*islandPlayerPadX+islandLiveDotRoom
-
-	// 头像自己带名字：它的位置和直径就是这条动画的主体，测试和无障碍树
-	// 都要能单独量到它（外面那层热区铺满内容区，宽度不说明任何事）。
-	avatar := ui.Box(c).Absolute().Left(avatarX).Top(avatarY).
-		Size(avatarD, avatarD).Shrink(0).Label("主播头像")
-	avatar.Children(func() {
-		a.islandAvatar(c, s, avatarD, showLive)
-	})
-
-	// 后台收听：整块内容区都是回播放页的热区，压在头像和文字之上。
-	if listening {
-		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-			Cursor(ui.CursorPointer).Label("回到直播间")
-		if hit.Hovered() {
-			hit.Background(ui.RGBA(255, 255, 255, 0.06))
-		}
-		if hit.Clicked() {
-			// 回播放页只走路由：attachMedia 在 PlayerPage 里把全尺寸呈现打开。
-			a.Router.Push(routePlayer)
-		}
-	}
 }
 
 // islandAvatar 画一枚圆形头像。showLive 控制是否在右下角画在线绿点和呼吸环。

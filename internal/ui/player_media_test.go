@@ -12,6 +12,7 @@ import (
 
 	"alive/internal/live"
 	"alive/internal/playback"
+	"alive/internal/watch"
 )
 
 // ---------------------------------------------------------------- 假边界
@@ -557,60 +558,77 @@ func TestRefreshAtFor(t *testing.T) {
 func TestDeadReason(t *testing.T) {
 	now := time.Now()
 	var m playerMedia
-	if got := m.deadReason(false, false, 0, now); got != "" {
+	if got := m.deadReason(false, false, false, 0, now); got != "" {
 		t.Fatalf("还没出图就判死：%q", got)
 	}
-	if got := m.deadReason(true, false, 10*time.Second, now); got != "ended" {
+	if got := m.deadReason(true, false, false, 10*time.Second, now); got != "ended" {
 		t.Fatalf("播放器自己停了，判定=%q", got)
 	}
 	m = playerMedia{}
-	if got := m.deadReason(true, true, 10*time.Second, now); got != "" {
+	if got := m.deadReason(true, true, false, 10*time.Second, now); got != "" {
 		t.Fatalf("刚起步就判死：%q", got)
 	}
 	// 时间轴在走就一直健康。
 	m.stillPos, m.stillAt = 10*time.Second, now
-	if got := m.deadReason(true, true, 11*time.Second, now.Add(time.Minute)); got != "" {
+	if got := m.deadReason(true, true, false, 11*time.Second, now.Add(time.Minute)); got != "" {
 		t.Fatalf("时间轴在走却判死：%q", got)
 	}
 	// 停在同一个位置上超过预算才算卡住。
 	m.stillPos, m.stillAt = 11*time.Second, now
-	if got := m.deadReason(true, true, 11*time.Second, now.Add(streamStallTimeout-time.Second)); got != "" {
+	if got := m.deadReason(true, true, false, 11*time.Second, now.Add(streamStallTimeout-time.Second)); got != "" {
 		t.Fatalf("预算内就判死：%q", got)
 	}
-	if got := m.deadReason(true, true, 11*time.Second, now.Add(streamStallTimeout+time.Second)); got != "stalled" {
+	if got := m.deadReason(true, true, false, 11*time.Second, now.Add(streamStallTimeout+time.Second)); got != "stalled" {
 		t.Fatalf("停住超过预算，判定=%q", got)
+	}
+	// 缓冲时时间轴不动是正常的：既不能判死，也不能把停住的时间攒着。
+	m.stillPos, m.stillAt = 11*time.Second, now.Add(-time.Minute)
+	if got := m.deadReason(true, true, true, 11*time.Second, now); got != "" {
+		t.Fatalf("缓冲中被判死：%q", got)
+	}
+	if m.stillAt != now {
+		t.Fatalf("缓冲没有把停帧基准拨到现在：stillAt=%v", m.stillAt)
+	}
+	if got := m.deadReason(true, true, false, 11*time.Second, now.Add(streamStallTimeout-time.Second)); got != "" {
+		t.Fatalf("缓冲刚结束就判死：%q", got)
 	}
 }
 
 // ---------------------------------------------------------------- 后台收听
 
-// trackSpy 记全尺寸呈现被开关了几次、最后是什么状态。
+// trackSpy 记呈现尺寸被推了几次、每次是多少。
 type trackSpy struct {
-	mu     sync.Mutex
-	states []bool
+	mu    sync.Mutex
+	sizes [][2]int
 }
 
-func (s *trackSpy) SetPresenting(on bool) {
+func (s *trackSpy) SetPresentSize(w, h int) {
 	s.mu.Lock()
-	s.states = append(s.states, on)
+	s.sizes = append(s.sizes, [2]int{w, h})
 	s.mu.Unlock()
 }
 
-func (s *trackSpy) SetPresentSize(w, h int) {}
-
-func (s *trackSpy) last() (bool, bool) {
+func (s *trackSpy) presentSizes() [][2]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.states) == 0 {
-		return false, false
+	return append([][2]int(nil), s.sizes...)
+}
+
+// last 是最后一次推的呈现尺寸；ok 表示推过。
+func (s *trackSpy) last() (presentSize, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.sizes) == 0 {
+		return presentSize{}, false
 	}
-	return s.states[len(s.states)-1], true
+	p := s.sizes[len(s.sizes)-1]
+	return presentSize{W: p[0], H: p[1]}, true
 }
 
 func (s *trackSpy) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.states)
+	return len(s.sizes)
 }
 
 // useTrack 把引擎取用换成 spy，并给 app 挂一个非 nil 的播放器。
@@ -636,16 +654,16 @@ func TestDetachKeepsSound(t *testing.T) {
 	if !a.media.background {
 		t.Fatal("没有进入后台收听")
 	}
-	if on, ok := spy.last(); !ok || on {
-		t.Fatalf("全尺寸呈现最后状态是 %v（有没有设过 %v），应当关掉", on, ok)
+	if got, ok := spy.last(); !ok || got != (presentSize{W: 160, H: 90}) {
+		t.Fatalf("后台收听该收成 160×90，实际 %+v（推过 %v）", got, ok)
 	}
 	if a.media.roomKey == "" {
 		t.Fatal("后台收听把房间记号清了：地址续期和断流重连都会失去目标")
 	}
 
-	// 幂等：再调一次不该重复设。
+	// 幂等：再调一次不该重复推。
 	if n := spy.count(); n != 1 {
-		t.Fatalf("第二次 detach 又关了一次呈现（共 %d 次）", n)
+		t.Fatalf("第二次 detach 又推了一次呈现（共 %d 次）", n)
 	}
 }
 
@@ -676,11 +694,11 @@ func TestAttachResumesSameEngine(t *testing.T) {
 	if a.media.loading {
 		t.Fatal("回来进了 loading：画面上只剩加载层，最后一帧被盖掉了")
 	}
-	if on, ok := spy.last(); !ok || !on {
-		t.Fatalf("回来没有打开全尺寸呈现：%v（设过 %v）", on, ok)
+	if got, ok := spy.last(); !ok || got != (presentSize{}) {
+		t.Fatalf("回来该放回视频原始尺寸，实际 %+v（推过 %v）", got, ok)
 	}
 	if n := spy.count(); n != 2 {
-		t.Fatalf("呈现设了 %d 次（关+开应当正好 2 次）", n)
+		t.Fatalf("呈现推了 %d 次（小图 + 全尺寸应当正好 2 次）", n)
 	}
 	if !a.media.openedAt.Equal(epoch) {
 		t.Fatal("回来把打开时刻重置了：首帧预算会从头再算一遍")
@@ -777,7 +795,104 @@ func TestAttachIgnoredOffPlayerPage(t *testing.T) {
 	if !a.media.background {
 		t.Fatal("不在播放页时 attachMedia 把后台收听标记清了")
 	}
-	if on, _ := spy.last(); on {
-		t.Fatal("不在播放页时 attachMedia 把全尺寸呈现打开了")
+	if got, ok := spy.last(); ok && got == (presentSize{}) {
+		t.Fatal("不在播放页时 attachMedia 把呈现放回了全尺寸")
+	}
+}
+
+// TestDeadReasonBufferingDeadline 锁住静默断流的兜底。
+//
+// FLV 断流时连接还在、数据不来，mpv 一直报 buffering，既不 ended 也不报错
+// （本地实测 150 秒仍是 playing / err=nil）。没有这条上限，播放页会永远
+// 停在最后一帧，只有地址到期能把它救回来。
+func TestDeadReasonBufferingDeadline(t *testing.T) {
+	m := &playerMedia{}
+	start := time.Now()
+	if got := m.deadReason(true, true, true, 5*time.Second, start); got != "" {
+		t.Fatalf("刚进缓冲就判死：%q", got)
+	}
+	if got := m.deadReason(true, true, true, 5*time.Second, start.Add(10*time.Second)); got != "" {
+		t.Fatalf("缓冲 10 秒就判死：%q", got)
+	}
+	if got := m.deadReason(true, true, true, 5*time.Second, start.Add(21*time.Second)); got == "" {
+		t.Fatal("缓冲 21 秒仍未判死：静默断流会让播放页永远停在最后一帧")
+	}
+	// 缓冲结束、时间轴重新推进：窗口清零，不能接着算。
+	if got := m.deadReason(true, true, false, 6*time.Second, start.Add(22*time.Second)); got != "" {
+		t.Fatalf("恢复推进后立刻判死：%q", got)
+	}
+	// 再进缓冲，重新计时。
+	if got := m.deadReason(true, true, true, 6*time.Second, start.Add(23*time.Second)); got != "" {
+		t.Fatalf("重新进缓冲就判死：%q", got)
+	}
+	if got := m.deadReason(true, true, true, 6*time.Second, start.Add(33*time.Second)); got != "" {
+		t.Fatalf("重新缓冲 10 秒就判死：%q", got)
+	}
+}
+
+// 呈现尺寸只由 presentSizeFor 一处求值：播放页全尺寸、墙上 active 是格子、
+// 其它页面的后台收听是 160×90。这张表就是「画面该多大」的唯一真相——
+// 以前这套判断散在六七个调用点上，漏一处就是画面糊或者卡在小图。
+func TestPresentSizeFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		route  string
+		watch  bool
+		rect   watch.Rect
+		hasRec bool
+		want   presentSize
+	}{
+		{"播放页全尺寸", routePlayer, true, watch.Rect{}, false, presentSize{}},
+		{"墙上 active 用格子", routeFollows, true, watch.Rect{W: 700, H: 394}, true,
+			presentSize{W: 1169, H: 720}},
+		{"别的页面后台收听", routeHome, false, watch.Rect{}, false, presentSize{W: 160, H: 90}},
+	}
+	for _, tc := range cases {
+		a := seededApp(t)
+		a.Router = ui.NewRouter(tc.route)
+		if tc.watch {
+			a.FollowsSection = followsSectionWatch
+		}
+		a.media.roomKey = "douyu|123"
+		if tc.hasRec {
+			a.watch.init()
+			a.watch.rects["douyu|123"] = tc.rect
+		}
+		if got := a.presentSizeFor(); got != tc.want {
+			t.Errorf("%s：得到 %+v，期望 %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// 值没变时不要重推：SetPresentSize 每次都让引擎立刻重渲染一帧。
+func TestApplyPresentSkipsUnchanged(t *testing.T) {
+	a := seededApp(t)
+	spy := &trackSpy{}
+	useTrack(t, a, spy)
+	a.Router = ui.NewRouter(routeHome) // 后台收听：160×90
+
+	a.applyPresent()
+	a.applyPresent()
+	a.applyPresent()
+
+	if n := len(spy.presentSizes()); n != 1 {
+		t.Fatalf("同一个尺寸推了 %d 次", n)
+	}
+}
+
+// 换了新引擎必须无条件推一次：新引擎上的尺寸是它自己的默认值，
+// 和 present 相等不代表已经推过。
+func TestApplyPresentForceAlwaysPushes(t *testing.T) {
+	a := seededApp(t)
+	spy := &trackSpy{}
+	useTrack(t, a, spy)
+	a.Router = ui.NewRouter(routeHome)
+
+	a.applyPresent()
+	a.applyPresentForce()
+	a.applyPresentForce()
+
+	if n := len(spy.presentSizes()); n != 3 {
+		t.Fatalf("强制推只发生 %d 次，期望 3", n)
 	}
 }

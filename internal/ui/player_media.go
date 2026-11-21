@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"alive/internal/applog"
 	"alive/internal/live"
 	"alive/internal/playback"
 )
@@ -64,9 +65,9 @@ type playerMedia struct {
 	// danmuRetryAt 是弹幕连接失败后的退避点。ensureDanmaku 每帧都会问，
 	// 没有它会在平台拒绝时每帧重连。
 	danmuRetryAt time.Time
-	// lastW/H 是重开之前那一帧的呈现尺寸。墙上 active 刷新/热切换时用它
-	// 保住同一块渲染目标，不缩回 160×90，也不跳成全尺寸。
-	lastW, lastH int
+	// present 是这一路该呈现多大，也是唯一的呈现意图。换引擎、进页面、
+	// 进后台都只是重新求一次它再推给引擎，不再有第二套状态去猜。
+	present presentSize
 
 	// 画面推进的观测点。不能直接信 VideoPlayer.Buffering()：Media
 	// Foundation 在直播 HLS 上每一次 playlist 滚动都会发一次 WAITING，而把
@@ -86,6 +87,12 @@ type playerMedia struct {
 	// 胶囊 1.5 秒不动就提示，重连要等 10 秒，不能共用一个时间戳。
 	stillPos time.Duration
 	stillAt  time.Time
+	// bufferStallSince 是「一直在缓冲、时间轴又不动」的起点。
+	//
+	// FLV 的静默断流（连接还在、数据不来）只表现为 paused-for-cache：
+	// mpv 不 ended、不报错，本地实测 150 秒仍是 playing。没有这条上限，
+	// 播放页就会永远停在最后一帧。
+	bufferStallSince time.Time
 	// refreshAt 是当前这条地址到期前该换新地址的时刻；零值表示平台没声明寿命。
 	refreshAt time.Time
 	// refreshing 表示已经派出去一次热切换，避免每帧重复派。
@@ -108,7 +115,11 @@ type playerMedia struct {
 	diagAt         time.Time
 	diagPos        time.Duration
 	diagAudio      time.Duration
-	audioStalled   bool
+	diagFrames     uint64
+	diagCalls      uint64
+	// mpvLogSeq 是已转进应用日志的 mpv 日志序号，避免同一条重复写。
+	mpvLogSeq    uint64
+	audioStalled bool
 	// detachedAt 是进入后台收听的时刻，日志用。
 	detachedAt time.Time
 	// tickPending 表示后台收听的定时心跳已经排上，避免每帧重复排。
@@ -168,10 +179,13 @@ func (m *playerMedia) reset() {
 	m.stillPos, m.stillAt = 0, time.Time{}
 	m.refreshAt, m.lastSwapAt = time.Time{}, time.Time{}
 	m.refreshing = false
+	m.bufferStallSince = time.Time{}
 	m.swapFailures = 0
 	m.background = false
 	m.detachedAt = time.Time{}
 	m.tickPending = false
+	// 呈现意图跟着房间走，换房间必须归零；否则上一间的格子尺寸会套到下一路。
+	m.present = presentSize{}
 }
 
 // cancelSession 结束当前这一轮起播。
@@ -305,12 +319,10 @@ func (a *App) detachMedia() {
 	if e == nil {
 		return
 	}
-	// 墙上不碰呈现尺寸：从播放页全尺寸回来，视频在卡片里 contain；
-	// 激活/退出/回墙都不改渲染目标，画面不会因为进出一趟播放页再变一次。
-	if a.Router == nil || a.Router.Path() != routeFollows || a.FollowsSection != followsSectionWatch {
-		e.SetPresenting(false)
-	}
+	// 离开播放页：按新位置重新求一次呈现尺寸。墙上 active 是格子，别的页面
+	// 是后台收听的小图，都由 presentSizeFor 一处判断。
 	m.background = true
+	a.applyPresent()
 	m.detachedAt = time.Now()
 	// 后台只剩小帧、没人看，缓冲胶囊和停帧看门狗的判据（「画面有没有在动」）
 	// 失去意义。基准拨到现在，回来时不会立刻误判成卡死。
@@ -374,7 +386,10 @@ func (a *App) attachMedia() {
 	// 立刻把「画面没动」判成卡死。
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 	m.stillPos, m.stillAt = 0, time.Time{}
-	e.SetPresenting(true)
+	// 回到播放页：呈现尺寸重新求一次。墙格开的引擎在这里放回视频原始
+	// 尺寸——从墙上点岛进播放页走的正是这条路（引擎本来就在 a.media 里，
+	// watchAdoptActive 直接返回），以前漏了这一下，整屏一直是格子放大。
+	a.applyPresent()
 	// 弹幕由 PlayerPage 的 ensureDanmaku 重新连一条：离开播放页时已经断掉，
 	// 回来不重放旧聊天。这里只管画面尺寸。
 }
@@ -388,9 +403,67 @@ func (a *App) attachMedia() {
 // 只声明用得到的一个方法，而不是整个 *playback.Engine：测试里没有 libmpv，
 // 造不出真引擎，但这一段状态机该被验到。
 type videoTrack interface {
-	SetPresenting(on bool)
-	// SetPresentSize 把呈现尺寸固定到格子物理像素；墙上的每一格都要用。
+	// SetPresentSize 把呈现尺寸固定为 w×h；0 表示按视频原始尺寸。
+	//
+	// 这是呈现的**唯一**旋钮：格子预览、后台收听、播放页全尺寸都走它。
+	// 以前还有一个 SetPresenting(on) 表示「全尺寸 / 160×90」，两套并存，
+	// 各自被不同路径调用，墙 → 播放页那条路就永远停在格子分辨率上。
 	SetPresentSize(w, h int)
+}
+
+// presentSize 是「这一路该呈现多大」。
+//
+// 零值表示按视频原始尺寸。所有会改变呈现的时机（开流、接管、进出播放页、
+// 后台收听、热切换）都只调 presentSizeFor 求一次，再交给 applyPresent。
+// 判断只写在一处，所以不会出现「这条路径忘了放开」。
+type presentSize struct{ W, H int }
+
+// presentSizeFor 求这一路此刻该呈现多大。
+//
+//	播放页          → 0,0（视频原始尺寸）
+//	观测墙 active   → 格子物理像素
+//	后台收听        → 160×90（只解码不给人看）
+func (a *App) presentSizeFor() presentSize {
+	// 播放页且不在后台：全尺寸。background 必须先看——离开播放页的那一帧
+	// 路由可能还停在播放页上，只看路由会把「已经收进后台」的一路算成全尺寸。
+	if !a.media.background && a.Router != nil && a.Router.Path() == routePlayer {
+		return presentSize{}
+	}
+	if a.onWatchWall() {
+		if r, ok := a.watch.rects[a.media.roomKey]; ok {
+			w, h := watchSize(r)
+			return presentSize{W: w, H: h}
+		}
+		// 墙上但还没量到格子：保持现状，别把画面缩成 160×90 再跳回来。
+		return a.media.present
+	}
+	return presentSize{W: 160, H: 90}
+}
+
+// applyPresent 把 present 意图推给当前引擎。没有引擎时什么都不做——
+// 意图留着，下一路引擎接上时由 adopt 再推一次。
+//
+// 值没变就不推：SetPresentSize 每次都会让引擎立刻重渲染一帧，每帧都调
+// 等于把画面按帧率重画一遍。
+func (a *App) applyPresent() {
+	want := a.presentSizeFor()
+	tr := a.media.engine()
+	if want == a.media.present && tr != nil {
+		return
+	}
+	a.media.present = want
+	if tr != nil {
+		tr.SetPresentSize(want.W, want.H)
+	}
+}
+
+// applyPresentForce 无条件推一次。只给「换了新引擎」用：新引擎上的呈现
+// 尺寸还是它自己的默认值，和 present 相等不代表已经推过。
+func (a *App) applyPresentForce() {
+	a.media.present = a.presentSizeFor()
+	if tr := a.media.engine(); tr != nil {
+		tr.SetPresentSize(a.media.present.W, a.media.present.H)
+	}
 }
 
 // engineOf 从播放器取出它的引擎。生产实现是类型断言；测试里换成假的。
@@ -453,9 +526,6 @@ func (a *App) ensureMedia(c *ui.Context) {
 func (a *App) beginSession(stage string) playbackSession {
 	m := &a.media
 	m.cancelSession()
-	if m.player != nil {
-		m.lastW, m.lastH = m.player.Size()
-	}
 	a.stopPlayback()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -471,6 +541,8 @@ func (a *App) beginSession(stage string) playbackSession {
 	m.upstream = live.Variant{}
 	m.loading = true
 	m.err = ""
+	m.buffering = false
+	m.bufferingSince = time.Time{}
 
 	sess := playbackSession{seq: m.seq, ctx: ctx, id: m.id, start: m.start, win: m.win}
 	logStage(sess.id, sess.start, "begin")
@@ -530,7 +602,8 @@ func (a *App) startStream(keepDanmaku bool) {
 	if a.media.roomKey == streamKey {
 		known = a.media.stream
 	}
-	line, want := a.lineIDFor(streamKey, known), a.qualityFor(streamKey)
+	lineLabel := a.lineFor(streamKey)
+	line, want := a.lineIDForLabel(streamKey, known, lineLabel), a.qualityFor(streamKey)
 	// 只有用户主动切档才记录；进房间时的默认档不该弹“降档”提示。
 	picked := a.media.pendingQualityPick
 	a.media.pendingQualityPick = ""
@@ -712,12 +785,10 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 	a.media.refreshAt = refreshAtFor(upstream)
 	a.media.loading = false
 	a.media.err = ""
-	// 重开这一路时保持原来的呈现尺寸：墙上 active 刷新不该改变格子画面。
-	if a.media.lastW > 0 && a.media.lastH > 0 {
-		if tr := engineOf(p); tr != nil {
-			tr.SetPresentSize(a.media.lastW, a.media.lastH)
-		}
-	}
+	// 新引擎接上，按当前位置求一次呈现尺寸。墙上 active 重开仍是格子，
+	// 播放页是全尺寸，判断只在 presentSizeFor 一处。必须无条件推：新引擎
+	// 上的尺寸还是它自己的默认值，和 present 相等不代表已经推过。
+	a.applyPresentForce()
 	// 播放器打开就按当前音量对齐，别让用户先听到满音量再跳
 	volume := float64(a.Volume)
 	// 0 就是静音：播放器的 SetVolume(0) 与 SetMuted(true) 在听感上等价，
@@ -748,15 +819,11 @@ func (a *App) adoptBackgroundPresentingOff() {
 	if a.Router != nil && a.Router.Path() == routePlayer {
 		return
 	}
-	e := a.media.engine()
-	if e == nil {
+	if a.media.engine() == nil {
 		return
 	}
-	// 墙上 active 是卡片，不是后台收听的小图；保留当前尺寸。
-	if !a.onWatchWall() {
-		e.SetPresenting(false)
-	}
 	a.media.background = true
+	a.applyPresent()
 	a.media.detachedAt = time.Now()
 }
 
@@ -807,7 +874,8 @@ func (a *App) scheduleSwap(reason string) {
 	m.lastSwapAt = time.Now()
 	sess := a.session()
 	cur := a.current()
-	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: a.lineIDFor(m.roomKey, m.stream), quality: m.upstream.Label, background: m.background}
+	line := a.lineIDFor(m.roomKey, m.stream)
+	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: line, quality: m.upstream.Label, background: m.background}
 	logStage(sess.id, sess.start, "swap-start", "reason", reason)
 	go a.runHotSwap(sess, req, reason)
 }
@@ -825,6 +893,9 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 			if a.media.swapFailures >= swapMaxFailures {
 				// 新地址也开不起来：退回整轮重来，至少让用户看到进度。
 				a.media.swapFailures = 0
+				// 这一行必须留：日志里连续出现的「取流#N」如果来自这里，
+				// 说明是整轮重开把缓冲丢掉了，不是播放器自己停的。
+				slog.Info("热切换失败，整轮重开", "reason", reason)
 				a.startStream(true)
 				return
 			}
@@ -904,19 +975,9 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 	a.media.refreshAt = refreshAtFor(v)
 	a.media.refreshing = false
 	a.media.swapFailures = 0
-	// 后台收听时换上去的是一路新引擎。墙上 active 沿用旧尺寸，绝不缩成
-	// 160×90；只有首页/别的页面的后台收听才收小，避免一直唤醒窗口。
-	if a.media.background {
-		if a.onWatchWall() {
-			if old != nil {
-				if w, h := old.Size(); w > 0 && h > 0 {
-					e.SetPresentSize(w, h)
-				}
-			}
-		} else {
-			e.SetPresenting(false)
-		}
-	}
+	// 新引擎按当前位置求一次呈现尺寸：墙上是格子，播放页是全尺寸，后台
+	// 收听是小图。判断只在 presentSizeFor 一处，热切换不必各自补一遍。
+	a.applyPresentForce()
 	volume := float64(a.Volume)
 	p.SetVolume(volume)
 	a.pushedVolume = volume
@@ -951,6 +1012,7 @@ func (m *playerMedia) stopPlayback() {
 	m.bufferingSince = time.Time{}
 	m.diagAt = time.Time{}
 	m.diagPos, m.diagAudio = 0, 0
+	m.diagFrames, m.diagCalls = 0, 0
 	m.audioStalled = false
 }
 
@@ -982,6 +1044,20 @@ func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
 	}
 	d := e.Debug()
 	m := &a.media
+	// mpv 自己的报错转进应用日志。这一条是「卡在哪一层」的唯一直接证据：
+	// hls 在跳分片、解码器拿不到参考帧、HTTP 在重连，都只有 mpv 知道。
+	// 按 Seq 增量转发，同一条不会重复写。
+	if n := len(d.Log); n > 0 {
+		if d.Log[n-1].Seq > m.mpvLogSeq {
+			for _, l := range d.Log {
+				if l.Seq <= m.mpvLogSeq {
+					continue
+				}
+				applog.Write(fmt.Sprintf("mpv %s: %s", l.Level, l.Text))
+				m.mpvLogSeq = l.Seq
+			}
+		}
+	}
 	if d.Buffering != m.buffering {
 		args := []any{"pos", d.Position.Milliseconds(), "audio", d.AudioPTS.Milliseconds(),
 			"cache_ms", d.CacheDuration.Milliseconds(), "cache_pct", d.CacheBuffering,
@@ -999,6 +1075,8 @@ func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
 	if now.Sub(m.diagAt) < time.Second {
 		return
 	}
+	frames, _, _ := e.Stats()
+	calls := e.Calls()
 	if !m.diagAt.IsZero() && !d.Buffering && d.AudioPTS == m.diagAudio && d.Position > m.diagPos {
 		if !m.audioStalled {
 			m.audioStalled = true
@@ -1008,7 +1086,19 @@ func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
 	} else if d.AudioPTS > m.diagAudio {
 		m.audioStalled = false
 	}
+	// 视频停帧：画面时钟不动、音频还在走。这是墙上和播放页都报过的那一种。
+	// 同一秒把「视图取了几次帧 / 解码器给了几次新画面」写出来：calls 不涨
+	// 说明没人来取帧，calls 涨而 frames 不涨说明取了但没画面——两者是完全
+	// 不同的故障，不能再用别的猜。
+	if !m.diagAt.IsZero() && !d.Buffering && d.Position == m.diagPos && d.AudioPTS > m.diagAudio {
+		logStage(m.id, m.start, "视频停帧",
+			"pos", d.Position.Milliseconds(), "audio", d.AudioPTS.Milliseconds(),
+			"render_calls", calls-m.diagCalls, "new_frames", frames-m.diagFrames,
+			"cache_ms", d.CacheDuration.Milliseconds(), "cache_pct", d.CacheBuffering,
+			"vfps", d.VFFPS, "avsync", d.AVSync)
+	}
 	m.diagAt, m.diagPos, m.diagAudio = now, d.Position, d.AudioPTS
+	m.diagFrames, m.diagCalls = frames, calls
 }
 
 // trackFirstFrame 记录首帧，并在超时和播放器报错时落到可重试终态。
@@ -1062,7 +1152,7 @@ func (a *App) trackFirstFrame() {
 		//   2. 这一路已经停了：播放器自己结束，或者时间轴长时间不动。
 		//      这是兜底，正常情况下第一条先触发。
 		if a.Playing {
-			if why := m.deadReason(true, p.Playing(), p.Position(), now); why != "" {
+			if why := m.deadReason(true, p.Playing(), p.Buffering(), p.Position(), now); why != "" {
 				// 不在这里打日志：卡住的时候每帧都会命中，scheduleSwap 自己会
 				// 记一条 swap-start，带原因。
 				a.scheduleSwap("dead-" + why)
@@ -1084,6 +1174,12 @@ func (a *App) trackFirstFrame() {
 // 缓冲也会让时间轴停住，所以这个值必须比缓冲胶囊的 1.5 秒宽：6 秒还没动一下，
 // 就不是抖动，是断了。再长用户就盯着静止画面了。
 const streamStallTimeout = 6 * time.Second
+
+// streamBufferStallTimeout 是缓冲态下时间轴停住的容忍。
+//
+// 和墙上的 watchDeadReason 共用同一个数。20 秒给了「停 8 秒又恢复」这类
+// 短抖动自己接上的机会——本地实测恢复用时 2.5 秒；再长就不是抖动了。
+const streamBufferStallTimeout = 20 * time.Second
 
 // trackBackground 是后台收听态的健康检查。
 //
@@ -1124,13 +1220,32 @@ func (a *App) trackBackground(p *ui.VideoPlayer, now time.Time) {
 // 「播完」这一说，所以播放器自己停下只有一种解释：这颗地址不能用了——CDN
 // 给的签名地址有过期时间（斗鱼实测约 5 分钟），到期后连接被关，mpv 把它当成
 // 文件结束。卡住（时间轴不动）是另一种：数据断了，mpv 还在原地等。
-func (m *playerMedia) deadReason(ready, playing bool, pos time.Duration, now time.Time) string {
+func (m *playerMedia) deadReason(ready, playing, buffering bool, pos time.Duration, now time.Time) string {
 	if !ready {
 		return ""
 	}
 	if !playing {
 		return "ended"
 	}
+	if buffering {
+		// 缓冲时时间轴本来就不动。基准拨到现在，否则一次 4 秒的
+		// paused-for-cache 会把之前冻住的时间一起攒满、缓冲刚结束就判死，
+		// 刚攒的缓存也跟着丢。
+		//
+		// 但缓冲不能无限等：FLV 静默断流时 mpv 一直报 buffering，既不
+		// ended 也不报错（实测 150 秒）。没有这条上限，播放页永远停在
+		// 最后一帧，只有地址到期能把它救回来。
+		if pos != m.stillPos || m.bufferStallSince.IsZero() {
+			m.stillPos, m.stillAt, m.bufferStallSince = pos, now, now
+			return ""
+		}
+		m.stillPos, m.stillAt = pos, now
+		if now.Sub(m.bufferStallSince) > streamBufferStallTimeout {
+			return "buffered-too-long"
+		}
+		return ""
+	}
+	m.bufferStallSince = time.Time{}
 	if m.stillAt.IsZero() || pos != m.stillPos {
 		m.stillPos, m.stillAt = pos, now
 		return ""
@@ -1501,11 +1616,16 @@ func (a *App) syncPlayer() {
 	}
 	// 音量统一走 SetVolume，0 就是静音。两种 surface 都不必各自处理静音态，
 	// 也省掉「静音后恢复要强制重推一次」那套特殊路径。
-	// VideoPlayer 没有 Volume() getter，所以自己记一份推过的值来比较。
-	if want := float64(a.Volume); !almostEqual(want, a.pushedVolume) {
+	//
+	// 目标音量是 a.Volume；播放器上的实际音量可能是 0（起播静音、墙格预览、
+	// 从墙上接管过来的一路还没同步）。所以判据用「播放器当前音量」而不是
+	// 自己记的 pushedVolume：后者只说明我们推过什么，说明不了播放器现在是
+	// 不是静着——接管之后 pushedVolume 已经被设成目标值，两边相等就不再推，
+	// 结果是切进播放页一直没有声音。
+	if want := float64(a.Volume); !almostEqual(want, p.Volume()) {
 		p.SetVolume(want)
-		a.pushedVolume = want
 	}
+	a.pushedVolume = float64(a.Volume)
 }
 
 // sameQuality 判断“点选的”和“实际下发的”是不是同一档。

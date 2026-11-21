@@ -13,6 +13,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"alive/internal/applog"
 	"alive/internal/media"
 	appui "alive/internal/ui"
 
@@ -22,6 +23,12 @@ import (
 )
 
 func main() {
+	// 日志落盘：%LOCALAPPDATA%\alive\logs\alive.log。
+	//
+	// 必须排在所有 slog 调用之前。双击 exe 的进程没有 stderr，不落盘就等于
+	// 不留日志——之前排「直播卡」时正因为这一点，拿不到 mpv 自己说的话。
+	applog.Setup()
+
 	// 头像的磁盘缓存放 %LOCALAPPDATA%\alive\images。
 	//
 	// 和状态（%APPDATA%）分开：缓存丢了不丢任何配置，系统清理工具也能

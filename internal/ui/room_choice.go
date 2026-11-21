@@ -116,6 +116,23 @@ func (a *App) learnRoomChoice(key string, stream live.Stream, up live.Variant) {
 	a.setRoomChoice(key, c)
 }
 
+// lineIDForLabel 把界面上的线路标签换成节点 id。stream 是这个房间已经
+// 到手的档位表（可能为空）；标签不在这份表里时退回房间记下的 id。自动
+// 换线用的是临时标签，不走 roomChoice，所以单独一个入口。
+func (a *App) lineIDForLabel(key string, stream live.Stream, label string) string {
+	if label == "" {
+		return ""
+	}
+	if id := lineIDIn(stream.Lines, label); id != "" {
+		return id
+	}
+	c := a.roomChoiceOf(key)
+	if c.Line == label {
+		return c.LineID
+	}
+	return ""
+}
+
 func lineIDIn(lines []live.Line, label string) string {
 	for _, l := range lines {
 		if l.Label == label {

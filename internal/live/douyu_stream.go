@@ -587,13 +587,8 @@ func (p *douyuProvider) douyuPlayAttempts(ctx context.Context, roomID string, ra
 			continue
 		}
 
-		release, err := p.lim.acquire(ctx)
-		if err != nil {
-			return nil, err
-		}
 		body, err := p.api.postForm(ctx, "取流", fmt.Sprintf(douyuH5PlayURL, roomID),
 			strings.NewReader(form), p.douyuHeaders(roomID, did, login))
-		release()
 		if err != nil {
 			lastErr = err
 			continue
@@ -741,12 +736,7 @@ func (p *douyuProvider) douyuEncryption(ctx context.Context, force, login bool) 
 		return s.enc, nil
 	}
 
-	release, err := p.lim.acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
 	body, err := p.api.get(ctx, "取流签名", fmt.Sprintf(douyuEncryptionURL, did), p.douyuHeaders("", did, login))
-	release()
 	if err != nil {
 		return nil, err
 	}
@@ -815,10 +805,25 @@ func (p *douyuProvider) douyuHeaders(roomID, did string, login bool) header {
 
 // ---------------------------------------------------------------- 地址清洗
 
+// douyuParsePlayURL 从取流响应里取一条能播的地址。
+//
+// 斗鱼的响应里没有格式参数可控（请求表单只有 enc_data / rate / cdn / hevc=0，
+// 没有 format），所以**服务端给什么就是什么**。这里能做的是：把响应里所有
+// 候选都收集起来，优先选 FLV。
+//
+// 为什么 FLV 优先：libmpv 的嵌入式用法强制自定义 io_open，mpv 因此关掉 hls
+// 的连接复用（它自己的日志：「hls: Disabling http_persistent due to custom
+// io_open」），HLS 每片新建 TCP+TLS，实测单片 380ms，追不上实时；FLV 是单条
+// 长连接，没有这个问题。B 站就是因为一直走 HLS 才反复缓冲。
+//
+// 旧实现直接 return 第一个非空字段（rtmp_live），既不挑格式也不留日志——哪天
+// 斗鱼换成下发 m3u8，会静默踩同一个坑。
 func douyuParsePlayURL(data *douyuPlayData) (string, error) {
 	live := strings.TrimSpace(html.UnescapeString(data.RtmpLive))
+
+	var candidates []string
 	if douyuIsPlayable(live) {
-		return live, nil
+		candidates = append(candidates, live)
 	}
 	for _, base := range []string{
 		strings.TrimSpace(html.UnescapeString(data.RtmpURL)),
@@ -829,7 +834,7 @@ func douyuParsePlayURL(data *douyuPlayData) (string, error) {
 		}
 		combined := strings.TrimRight(base, "/") + "/" + strings.TrimLeft(live, "/")
 		if douyuIsPlayable(combined) {
-			return combined, nil
+			candidates = append(candidates, combined)
 		}
 	}
 	for _, candidate := range []string{
@@ -839,13 +844,34 @@ func douyuParsePlayURL(data *douyuPlayData) (string, error) {
 	} {
 		value := strings.TrimSpace(html.UnescapeString(candidate))
 		if douyuIsPlayable(value) {
-			return value, nil
+			candidates = append(candidates, value)
 		}
 	}
 	if flv := strings.TrimSpace(html.UnescapeString(douyuAnyString(data.FlvURL))); douyuIsDirectMedia(flv) {
-		return flv, nil
+		candidates = append(candidates, flv)
 	}
-	return "", fmt.Errorf("斗鱼取流响应里没有可播放地址")
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("斗鱼取流响应里没有可播放地址")
+	}
+
+	best := candidates[0]
+	for _, c := range candidates {
+		if douyuIsFLVURL(c) && !douyuIsFLVURL(best) {
+			best = c
+		}
+	}
+	// 只记格式，不记地址（地址带签名）。
+	slog.Debug("斗鱼取流地址", "candidates", len(candidates), "flv", douyuIsFLVURL(best),
+		"hls", strings.Contains(strings.ToLower(best), ".m3u8"))
+	return best, nil
+}
+
+// douyuIsFLVURL 判断地址是不是 FLV。
+func douyuIsFLVURL(raw string) bool {
+	if i := strings.IndexByte(raw, '?'); i >= 0 {
+		raw = raw[:i]
+	}
+	return strings.HasSuffix(strings.ToLower(raw), ".flv")
 }
 
 func douyuIsPlayable(value string) bool {

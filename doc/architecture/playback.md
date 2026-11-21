@@ -240,7 +240,8 @@ demuxer 缓存并等 live 边缘的**下一个**关键帧，实测 0.08–5.2 �
 
 `runHotSwap` 原来等新一路出图再切。后台态下没人拉帧，这条判据会 100% 失败，
 所以 `swapRequest.background` 让它在后台态改等 `Position() > 0`。
-换上去之后还要补一次 `SetPresenting(false)`：新引擎的呈现闸门默认是开的。
+换上去之后还要按当前位置推一次呈现尺寸（`applyPresentForce`）：新引擎的
+呈现尺寸是它自己的默认值，不会继承旧那一路。
 
 ### 两路 mpv 不抢 WASAPI
 

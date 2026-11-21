@@ -20,7 +20,7 @@
 |---|---|---|
 | [playback.md](architecture/playback.md) | 播放链路：mpv 负责什么、我们只负责的三件事、bgr0 的 alpha 陷阱、首帧模型、怎么区分上游慢和我们慢 | **动 `internal/playback`、`third_party/mygo/plugins/video`、`internal/ui/player_media.go` 之前** |
 | [platform.md](architecture/platform.md) | 四个平台的取流约束：入口、登录门槛、线路语义、编码分支 | 动 `internal/live` 之前，或遇到"取不到流 / 档位不对 / 选错了分支" |
-| [watch.md](architecture/watch.md) | 悲鸣观测：9 间全档会话、所有权交接、弹幕边界、16:9 布局、灵动岛 | **动 `internal/watch`、`internal/ui/watch*.go` 之前** |
+| [watch.md](architecture/watch.md) | 悲鸣观测：12 间全档会话、所有权交接、弹幕边界、16:9 布局、灵动岛 | **动 `internal/watch`、`internal/ui/watch*.go` 之前** |
 
 ### decisions
 
@@ -36,7 +36,7 @@
 | [0008-palette-system.md](decisions/0008-palette-system.md) | 配色的定位、舒适契约、六套主题、旧六套审计、负参考与状态色（**2026-11-20 已落地**） | 改配色、强调色、状态色、表面阶梯之前 |
 | [0009-live-continuity.md](decisions/0009-live-continuity.md) | 直播连续性的五类判据、实测归因（上游空档）、弹幕时钟与轨道的定点修复、回到播放页「音频不断 + 画面 <1s」的取舍与否证 | 改播放缓存/音频参数/热切换/后台收听，或再怀疑「直播卡顿」之前 |
 | [0010-switch-content-still.md](decisions/0010-switch-content-still.md) | 切平台 / 分区时内容层不动：两个位移根因、六条帧级不变量、动效只留在控件上 | 给首页/关注页内容加动效、改骨架、或再报「切换闪/抖」之前 |
-| [0011-watch-wall.md](decisions/0011-watch-wall.md) | 悲鸣观测：9 间硬上限、不降画质、不按带宽准入、同引擎交接、弹幕只属于播放页 | 动观测墙、加格数、讨论降档/带宽/弹幕保活之前 |
+| [0011-watch-wall.md](decisions/0011-watch-wall.md) | 悲鸣观测：12 间硬上限、不降画质、不按带宽准入、同引擎交接、弹幕只属于播放页 | 动观测墙、加格数、讨论降档/带宽/弹幕保活之前 |
 
 ### reference
 

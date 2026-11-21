@@ -2,8 +2,8 @@ package ui
 
 import "testing"
 
-// 后台收听时重开一路（登录成功要重取流）：新引擎建成后全尺寸呈现要立刻关掉，
-// 只留 160×90 的小尺寸解码，后台标记也要补回来，否则岛还会掉回默认态。
+// 后台收听时重开一路（登录成功要重取流）：新引擎建成后呈现尺寸要立刻收到
+// 160×90，后台标记也要补回来，否则岛还会掉回默认态。
 func TestAdoptBackgroundKeepsPresentingOff(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
@@ -18,8 +18,8 @@ func TestAdoptBackgroundKeepsPresentingOff(t *testing.T) {
 	if !a.media.background {
 		t.Fatal("后台重开没进后台收听态")
 	}
-	if on, ok := spy.last(); !ok || on {
-		t.Fatalf("全尺寸呈现最后状态是 %v（有没有设过 %v），应当关掉", on, ok)
+	if got, ok := spy.last(); !ok || got != (presentSize{W: 160, H: 90}) {
+		t.Fatalf("后台收听该收成 160×90，实际 %+v（推过 %v）", got, ok)
 	}
 	if a.media.detachedAt.IsZero() {
 		t.Fatal("没记下进入后台的时刻")

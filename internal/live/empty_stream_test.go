@@ -39,8 +39,9 @@ func TestBiliStreamPreservesLiveWithoutVariants(t *testing.T) {
 	}{
 		{"missing_playurl", 1, `{"live_status":1}`, true, 1},
 		{"empty_tiers", 1, `{"live_status":1,"playurl_info":{"playurl":{"stream":[]}}}`, true, 1},
-		// 探测声明可请求 250，但逐档响应确认的是 150，过滤后仍应保留在播状态。
-		{"filtered_tiers", 1, `{"live_status":1,"playurl_info":{"playurl":{"stream":[{"protocol_name":"http_hls","format":[{"format_name":"ts","codec":[{"codec_name":"avc","current_qn":150,"accept_qn":[250]}]}]}]}}}`, true, 2},
+		// 探测声明可请求 250，但这一档没有 master、也没有解析地址：仍要保留在播
+		// 状态，菜单列出档位但不带地址（地址由 StreamForPlayback 按需解析）。
+		{"filtered_tiers", 1, `{"live_status":1,"playurl_info":{"playurl":{"stream":[{"protocol_name":"http_hls","format":[{"format_name":"ts","codec":[{"codec_name":"avc","current_qn":150,"accept_qn":[250]}]}]}]}}}`, true, 1},
 		{"room_offline", 0, `{"live_status":1}`, false, 0},
 		{"playinfo_confirms_offline", 1, `{"live_status":0}`, false, 1},
 	}
@@ -66,15 +67,22 @@ func TestBiliStreamPreservesLiveWithoutVariants(t *testing.T) {
 			})
 			api := biblib.New()
 			api.Resty().SetTransport(transport)
-			p := &bilibiliProvider{api: api, lc: bilibiliLive.New(api), uids: newCache[biliRoomRef](), lim: newLimiter(1, 0)}
+			p := &bilibiliProvider{api: api, lc: bilibiliLive.New(api), uids: newCache[biliRoomRef](), lim: newLimiter(4, 0)}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			got, err := p.Stream(ctx, "123", "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Live != tc.wantLive || len(got.Variants) != 0 {
-				t.Fatalf("Live=%v variants=%d; want Live=%v variants=0", got.Live, len(got.Variants), tc.wantLive)
+			if got.Live != tc.wantLive {
+				t.Fatalf("Live=%v; want Live=%v", got.Live, tc.wantLive)
+			}
+			// Stream 只给菜单骨架：可以列出档位，但绝不能带地址——
+			// 地址只由 StreamForPlayback 按需解析。
+			for _, v := range got.Variants {
+				if v.URL != "" {
+					t.Fatalf("Stream 返回了带地址的档位 %q，菜单不该解析地址", v.Label)
+				}
 			}
 			if got.RoomID != "123" || got.Platform != Bilibili || got.Title != "测试直播间" {
 				t.Fatal("room metadata was not preserved")
@@ -121,15 +129,22 @@ func TestDouyinStreamPreservesLiveWithoutVariants(t *testing.T) {
 			})
 			p := newDouyin()
 			p.api.http = &http.Client{Transport: transport}
-			p.lim = newLimiter(1, 0)
+			p.lim = newLimiter(4, 0)
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			got, err := p.Stream(ctx, "123", "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Live != tc.wantLive || len(got.Variants) != 0 {
-				t.Fatalf("Live=%v variants=%d; want Live=%v variants=0", got.Live, len(got.Variants), tc.wantLive)
+			if got.Live != tc.wantLive {
+				t.Fatalf("Live=%v; want Live=%v", got.Live, tc.wantLive)
+			}
+			// Stream 只给菜单骨架：可以列出档位，但绝不能带地址——
+			// 地址只由 StreamForPlayback 按需解析。
+			for _, v := range got.Variants {
+				if v.URL != "" {
+					t.Fatalf("Stream 返回了带地址的档位 %q，菜单不该解析地址", v.Label)
+				}
 			}
 			if got.RoomID != "123" || got.Platform != Douyin {
 				t.Fatal("room identity was not preserved")

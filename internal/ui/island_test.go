@@ -512,9 +512,14 @@ func TestPlayerIslandWidthFromText(t *testing.T) {
 		{"超过上限", 400, 100, 1440, islandPlayerMaxW},
 		{"窄窗口按一半", 400, 100, 600, 300},
 		{"窗口再窄也保住下限", 10, 10, 200, islandPlayerMinW},
+		{"墙上 active 多一颗取消按钮", 100, 60, 1440, 234},
 	}
 	for _, tc := range cases {
-		if got := islandPlayerWidth(tc.titleW, tc.metaW, tc.winW); got != tc.want {
+		buttonsW := islandPlayerFollowW
+		if tc.name == "墙上 active 多一颗取消按钮" {
+			buttonsW = islandButtonsW(true)
+		}
+		if got := islandPlayerWidth(tc.titleW, tc.metaW, tc.winW, buttonsW); got != tc.want {
 			t.Errorf("%s：宽 %v，期望 %v", tc.name, got, tc.want)
 		}
 	}
@@ -639,5 +644,94 @@ func TestFeedURLsWithoutPlayer(t *testing.T) {
 	keep := app.feedURLs("bilibili")
 	if keep[""] {
 		t.Fatal("keep 集合里出现了空 URL")
+	}
+}
+
+// 墙上 active 时，岛右侧的收藏键必须自己收到点击，不能被我整块热区吃掉。
+//
+// 热区是「回到直播间」，它铺满内容区；上一版把它画在所有按钮之后，
+// MyGo 的命中链只取最上层元素，于是点收藏键等于点整块岛——直接跳进
+// 播放页，关注状态一点没变。
+func TestIslandWatchActiveFollowButtonClicks(t *testing.T) {
+	app, tt := newWatchMock(t, watchTestRooms(2))
+	room := app.WatchRooms[1]
+	app.WatchActive = watchKey(room)
+	app.Player = room
+	app.Follows = []FollowRecord{{
+		Platform: room.Platform, RoomID: room.RoomID,
+		Name: room.Name, Title: room.Title,
+	}}
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	if _, ok := tt.Find("取消关注"); !ok {
+		t.Fatalf("墙上 active 的岛没有关注键：texts=%q", tt.Texts())
+	}
+	if err := tt.Click("取消关注"); err != nil {
+		t.Fatalf("关注键点不到：%v", err)
+	}
+	tt.Frame()
+	if app.isFollowed(room) {
+		t.Fatal("点了取消关注，记录还在")
+	}
+	if app.Router.Path() != routeFollows {
+		t.Fatalf("点关注键跳到了 %q", app.Router.Path())
+	}
+}
+
+// 墙上 active 时，收藏左边那颗按钮取消 active：声音收掉、岛回到时钟，
+// 但不离开这一屏，也不把这一间从墙上移出去。
+func TestIslandWatchActiveCancelButton(t *testing.T) {
+	app, tt := newWatchMock(t, watchTestRooms(2))
+	room := app.WatchRooms[0]
+	app.WatchActive = watchKey(room)
+	app.Player = room
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	if _, ok := tt.Find("取消观测发声"); !ok {
+		t.Fatalf("墙上 active 的岛没有取消按钮：texts=%q", tt.Texts())
+	}
+	if err := tt.Click("取消观测发声"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.WatchActive != "" {
+		t.Fatalf("取消后 active=%q", app.WatchActive)
+	}
+	if app.Router.Path() != routeFollows {
+		t.Fatalf("取消 active 离开了观测墙：route=%q", app.Router.Path())
+	}
+	if len(app.WatchRooms) != 2 {
+		t.Fatalf("取消 active 动了观测盒：%+v", app.WatchRooms)
+	}
+	tt.Advance(time.Second)
+	tt.Frame()
+	if r, ok := tt.Find("灵动岛"); !ok || r.W < 90 {
+		t.Fatalf("取消 active 后岛没有回到时钟：%+v ok=%v", r, ok)
+	}
+}
+
+// 点岛进的是 active 那一间，不是 a.Player 里碰巧剩下的别的房间。
+func TestIslandWatchActiveClickOpensActiveRoom(t *testing.T) {
+	app, tt := newWatchMock(t, watchTestRooms(2))
+	room := app.WatchRooms[1]
+	app.WatchActive = watchKey(room)
+	app.Player = app.WatchRooms[0] // 目标被别处改掉了
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	if err := tt.Click("回到直播间"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.Router.Path() != routePlayer {
+		t.Fatalf("点岛没有进播放页：route=%q", app.Router.Path())
+	}
+	if watchKey(app.Player) != watchKey(room) {
+		t.Fatalf("进的是 %q，期望 active 那一间 %q", watchKey(app.Player), watchKey(room))
 	}
 }
