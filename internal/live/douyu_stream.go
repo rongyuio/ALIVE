@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -36,7 +37,17 @@ const (
 	douyuEncCacheMax = 5 * time.Minute
 	// 距到期不足 30 秒就重新取，避免请求途中描述符过期。
 	douyuEncGuard = 30 * time.Second
+
+	// douyuRenewCooldown 是强制续期失败后的冷却：同一张废票不要在十分钟里
+	// 反复撞 passport，passport 本身也有风控。
+	douyuRenewCooldown = 10 * time.Minute
+	// douyuGuestFallback 是游客兜底的维持时间：票据被判失效后先按游客看，
+	// 过了这段时间再试一次登录态。
+	douyuGuestFallback = 10 * time.Minute
 )
+
+// errDouyuRenewCooling 表示刚续期失败过，还在冷却里。
+var errDouyuRenewCooling = errors.New("斗鱼续期冷却中")
 
 // douyuEncryption 是缓存的签名材料。
 type douyuEncryption struct {
@@ -58,6 +69,9 @@ type douyuSigner struct {
 	enc     *douyuEncryption
 	fetched time.Time
 	did     string
+	// login 记录这份描述符是用哪种身份取的。描述符跟请求身份绑定：
+	// 用登录态取的 enc_data 拿去发游客请求，服务端回 403 鉴权失败。
+	login bool
 }
 
 // douyuPlayData 是 getH5PlayV1 的 data 对象。
@@ -525,15 +539,49 @@ func (p *douyuProvider) douyuResolveQuality(ctx context.Context, roomID string, 
 
 // ---------------------------------------------------------------- 单次取流
 
-// douyuPlayData 发起一次 getH5PlayV1；失败时强制刷新签名描述符重试一次。
+// douyuPlayData 发起一次 getH5PlayV1，并在登录票据被拒时自愈。
+//
+// 斗鱼对「服务端已作废的登录票据」回 403 鉴权失败——和风控同一个状态码，
+// 而且票据的 exp 可能还差好几天，本地完全看不出来。整站取流失败就是这么来的
+// （2026-11-21）。所以带登录态吃 403 时：先强制续期换一张票，再不行就按
+// 游客取流——看播比维持登录态重要。
 func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate int, cdn string) (*douyuPlayData, error) {
 	if strings.TrimSpace(roomID) == "" {
 		return nil, fmt.Errorf("live: 斗鱼房间号为空")
 	}
 
+	login := p.douyuLoginActive()
+	data, err := p.douyuPlayAttempts(ctx, roomID, rate, cdn, login)
+	if err == nil || !login || !errors.Is(err, ErrBlocked) {
+		return data, err
+	}
+
+	slog.Info("斗鱼取流被登录态拒绝，尝试刷新票据", "room", roomID, "rate", rate, "cdn", cdn)
+	if rerr := p.douyuRenewAuth(ctx); rerr == nil {
+		data, err = p.douyuPlayAttempts(ctx, roomID, rate, cdn, true)
+		if err == nil {
+			return data, nil
+		}
+		if !errors.Is(err, ErrBlocked) {
+			return nil, err
+		}
+	}
+
+	guest, gerr := p.douyuPlayAttempts(ctx, roomID, rate, cdn, false)
+	if gerr != nil {
+		// 游客也过不去，说明是真空控或网络问题，把登录态那次的原因报上去。
+		slog.Info("斗鱼游客兜底也失败", "room", roomID, "rate", rate, "cdn", cdn, "error", gerr)
+		return nil, err
+	}
+	p.douyuMarkGuest()
+	return guest, nil
+}
+
+// douyuPlayAttempts 用同一种身份（登录 / 游客）取流；描述符过期时强制刷新重试一次。
+func (p *douyuProvider) douyuPlayAttempts(ctx context.Context, roomID string, rate int, cdn string, login bool) (*douyuPlayData, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		form, did, err := p.douyuSign(ctx, roomID, rate, cdn, attempt > 0)
+		form, did, err := p.douyuSign(ctx, roomID, rate, cdn, attempt > 0, login)
 		if err != nil {
 			lastErr = err
 			continue
@@ -544,7 +592,7 @@ func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate i
 			return nil, err
 		}
 		body, err := p.api.postForm(ctx, "取流", fmt.Sprintf(douyuH5PlayURL, roomID),
-			strings.NewReader(form), p.douyuHeaders(roomID, did))
+			strings.NewReader(form), p.douyuHeaders(roomID, did, login))
 		release()
 		if err != nil {
 			lastErr = err
@@ -574,11 +622,76 @@ func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate i
 	return nil, lastErr
 }
 
+// douyuLoginActive 报告这次请求该不该带登录态。
+func (p *douyuProvider) douyuLoginActive() bool {
+	if !douyuCookieHasLogin(p.authCookieString()) {
+		return false
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	return !time.Now().Before(p.guestUntil)
+}
+
+// douyuMarkGuest 在票据被判失效后切到游客取流一段时间。
+func (p *douyuProvider) douyuMarkGuest() {
+	p.stateMu.Lock()
+	p.guestUntil = time.Now().Add(douyuGuestFallback)
+	until := p.guestUntil
+	p.stateMu.Unlock()
+	slog.Info("斗鱼登录票据不可用，先按游客取流", "until", until.Format("15:04"))
+}
+
+// douyuRenewAuth 强制续期一次票据。
+//
+// 同时到达的十几个取流请求会一起失败，这里只让一个真去续：其余等它的
+// 完成信号（可以被 ctx 打断），续完发现 cookie 换了就直接当成功。
+// 冷却期内的重试直接放弃，别连着撞 passport。
+func (p *douyuProvider) douyuRenewAuth(ctx context.Context) error {
+	if p.forceRenew == nil {
+		return errNoRenewNeeded{"没有续期实现"}
+	}
+	seen := p.authCookieString()
+
+	p.renewMu.Lock()
+	if wait := p.renewWait; wait != nil {
+		p.renewMu.Unlock()
+		select {
+		case <-wait:
+			if p.authCookieString() != seen {
+				return nil
+			}
+			return errDouyuRenewCooling
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if p.authCookieString() != seen {
+		p.renewMu.Unlock()
+		return nil
+	}
+	if !p.renewAt.IsZero() && time.Since(p.renewAt) < douyuRenewCooldown {
+		p.renewMu.Unlock()
+		return errDouyuRenewCooling
+	}
+	done := make(chan struct{})
+	p.renewWait = done
+	p.renewAt = time.Now()
+	p.renewMu.Unlock()
+
+	err := p.forceRenew(ctx)
+
+	p.renewMu.Lock()
+	p.renewWait = nil
+	p.renewMu.Unlock()
+	close(done)
+	return err
+}
+
 // douyuSign 生成 getH5PlayV1 的表单。
 //
 // Go 的 url.Values 会把 key 排序，而斗鱼只校验字段值，不校验顺序。
-func (p *douyuProvider) douyuSign(ctx context.Context, roomID string, rate int, cdn string, force bool) (string, string, error) {
-	enc, err := p.douyuEncryption(ctx, force)
+func (p *douyuProvider) douyuSign(ctx context.Context, roomID string, rate int, cdn string, force, login bool) (string, string, error) {
+	enc, err := p.douyuEncryption(ctx, force, login)
 	if err != nil {
 		return "", "", err
 	}
@@ -610,14 +723,17 @@ func (p *douyuProvider) douyuSign(ctx context.Context, roomID string, rate int, 
 }
 
 // douyuEncryption 取/复用加密描述符。
-func (p *douyuProvider) douyuEncryption(ctx context.Context, force bool) (*douyuEncryption, error) {
+//
+// 描述符和 did、请求身份都绑定：换 did 或从登录态切到游客（反之亦然）
+// 都必须重新取一份，不能拿旧身份签的材料去发新身份的请求。
+func (p *douyuProvider) douyuEncryption(ctx context.Context, force, login bool) (*douyuEncryption, error) {
 	s := p.signer
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
 	did := p.did
-	if !force && s.enc != nil && s.did == did &&
+	if !force && s.enc != nil && s.did == did && s.login == login &&
 		now.Sub(s.fetched) < douyuEncCacheMax &&
 		s.enc.expiryAt > now.Unix()+int64(douyuEncGuard/time.Second) &&
 		s.enc.encTime >= 1 && s.enc.encTime <= 16 &&
@@ -629,7 +745,7 @@ func (p *douyuProvider) douyuEncryption(ctx context.Context, force bool) (*douyu
 	if err != nil {
 		return nil, err
 	}
-	body, err := p.api.get(ctx, "取流签名", fmt.Sprintf(douyuEncryptionURL, did), p.douyuHeaders("", did))
+	body, err := p.api.get(ctx, "取流签名", fmt.Sprintf(douyuEncryptionURL, did), p.douyuHeaders("", did, login))
 	release()
 	if err != nil {
 		return nil, err
@@ -675,6 +791,7 @@ func (p *douyuProvider) douyuEncryption(ctx context.Context, force bool) (*douyu
 	}
 	s.fetched = now
 	s.did = did
+	s.login = login
 	return s.enc, nil
 }
 
@@ -682,7 +799,7 @@ func (p *douyuProvider) douyuEncryption(ctx context.Context, force bool) (*douyu
 //
 // Cookie 里 did 必须一直在（dy_did / acf_did 两个都发，少一个会被判成
 // 异常客户端）；登录之后再叠上登录字段，清晰度才按账号给。
-func (p *douyuProvider) douyuHeaders(roomID, did string) header {
+func (p *douyuProvider) douyuHeaders(roomID, did string, login bool) header {
 	referer := "https://www.douyu.com/"
 	if roomID != "" {
 		referer = "https://www.douyu.com/" + roomID
@@ -692,7 +809,7 @@ func (p *douyuProvider) douyuHeaders(roomID, did string) header {
 		"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
 		"Origin":          "https://www.douyu.com",
 		"Referer":         referer,
-		"Cookie":          p.douyuCookieHeader(did),
+		"Cookie":          p.douyuCookieHeader(did, login),
 	}
 }
 

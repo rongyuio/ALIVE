@@ -263,6 +263,23 @@ EOF，uid=\<登录 uid\> 正常收到认证回复。`TestBiliDanmuLoginUID` 看�
 启动时 `verifyQR` 也从这里恢复，否则验证成功后 `saveSession` 会把存下来的头像写空。回 `{"error":0}` 却没下发认证 cookie 时算失败（did 不对就是这个形状），
 不能当成功，否则就是 ryDailyCheckin 文档里记的 2026-10-05 那次静默失效。
 
+2026-11-21 整站取流失败后补了三条硬约束：
+
+- **safeAuth 换的是整组票据**：一次下发新的 `dy_auth` + `acf_auth` +
+  `acf_jwt_token`。只换 `acf_*`、留着旧 `dy_auth`，拼出来是「新票配旧
+  auth」，取流接口对所有带登录态的请求回 403 鉴权失败——会话每续一次坏一次。
+  `douyuIsRenewAuthName` 把 `dy_auth` 算进续期字段，由
+  `TestDouyuRenewSwapsWholeAuthSet` 看住。这次线上会话就是 11-20 续期时
+  被续坏的。
+- **票据可能早于 `exp` 失效**：服务端作废后直接 403，本地 JWT 的 `exp` 还差
+  好几天，到期闸门根本不放行。取流遇 403 时先强制续期一次
+  （`qrAuth.RenewNow`，跳过闸门），续不上就按游客取流——看播优先于维持登录态。
+- **`enc_data` 跟请求身份绑定**：拿登录态取的签名描述符去发游客请求同样
+  403。`douyuSigner` 的缓存因此按（did，是否登录）分开，游客兜底会自己取一份。
+
+代价是游客兜底期间拿不到账号专享档；`guestUntil`（10 分钟）到期或续期成功
+后会重新尝试登录态。
+
 ### B 站：cookie/refresh 三步
 
 bilibili v0.14.0 的 `login.Client` 提供完整三步：

@@ -71,6 +71,21 @@ type douyuProvider struct {
 	authCookie string
 	// auth 是扫码登录；它和取流共用上面这个 api 会话。
 	auth *qrAuth
+
+	// forceRenew 是「票据被服务端判失效」时的强制续期入口，默认接
+	// 扫码登录的 RenewNow；测试里换成假的，免得碰真实会话文件。
+	forceRenew func(context.Context) error
+	// renewMu 串行化强制续期：一次取流会并发打「档位 × 线路」十几个请求，
+	// 票据失效时它们会同时吃 403，不能各自去撞一遍 passport。
+	// renewWait 是进行中那次续期的完成信号：同时到达的请求等它，
+	// 而不是抱着一把锁等到超时。
+	renewMu   sync.Mutex
+	renewWait chan struct{}
+	renewAt   time.Time
+	// stateMu 保护 guestUntil。票据被判失效后先按游客取流一段时间，
+	// 保证还能看，而不是每次都先撞一次 403 再兜底。
+	stateMu    sync.Mutex
+	guestUntil time.Time
 }
 
 func newDouyu() *douyuProvider {
@@ -88,6 +103,7 @@ func newDouyu() *douyuProvider {
 		signer: &douyuSigner{},
 	}
 	p.auth = newDouyuAuth(p)
+	p.forceRenew = p.auth.RenewNow
 	return p
 }
 

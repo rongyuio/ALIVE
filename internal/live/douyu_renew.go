@@ -46,6 +46,19 @@ func (d *douyuAuthDriver) renew(ctx context.Context, sess authSession) (string, 
 	if due, why := douyuRenewDue(sess.Cookies, time.Now()); !due {
 		return "", "", errNoRenewNeeded{why}
 	}
+	return d.renewAuth(ctx, sess)
+}
+
+// forceRenew 实现 cookieForceRenewer：跳过到期闸门直接续一次。
+//
+// 取流接口会在 JWT 还没到 exp 时就判票据失效（服务端作废），本地时间
+// 看不出来；这时只能强制走一遍 safeAuth 换新票据。
+func (d *douyuAuthDriver) forceRenew(ctx context.Context, sess authSession) (string, string, error) {
+	return d.renewAuth(ctx, sess)
+}
+
+// renewAuth 是两条续期路径共用的主体。
+func (d *douyuAuthDriver) renewAuth(ctx context.Context, sess authSession) (string, string, error) {
 	cookies := douyuParseCookieFields(sess.Cookies)
 	did := cookies["dy_did"]
 	issued := false
@@ -238,8 +251,12 @@ func douyuRenewHeaders(req *http.Request, cookie string) {
 }
 
 func douyuIsRenewAuthName(name string) bool {
+	// dy_auth 必须一起换：safeAuth 一次下发新的 dy_auth + acf_auth +
+	// acf_jwt_token，只换 acf_* 会拼出「新票配旧 dy_auth」的混合 cookie，
+	// 取流接口一律回 403 鉴权失败。
 	return strings.HasPrefix(name, "acf_") ||
-		name == "dy_did" || name == "dy_accounts_main" || name == "LTP0"
+		name == "dy_auth" || name == "dy_did" ||
+		name == "dy_accounts_main" || name == "LTP0"
 }
 
 func refreshedDouyuAuthNames(cookies []*http.Cookie) []string {

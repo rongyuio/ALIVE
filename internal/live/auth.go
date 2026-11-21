@@ -113,6 +113,14 @@ type cookieRenewer interface {
 	renew(ctx context.Context, sess authSession) (cookies, refreshToken string, err error)
 }
 
+// cookieForceRenewer 是能跳过「还不到期」闸门、立刻续期的驱动。
+//
+// 平台可能比本地 exp 更早判定票据失效（服务端作废），到期时间看不出来；
+// 取流被平台以「鉴权失败」拒绝时，需要一条强制续期的路径。
+type cookieForceRenewer interface {
+	forceRenew(ctx context.Context, sess authSession) (cookies, refreshToken string, err error)
+}
+
 // 扫码节奏：B 站和斗鱼都是 3 秒一次。
 const qrPollInterval = 3 * time.Second
 
@@ -403,6 +411,52 @@ func (a *qrAuth) renewOnce(ctx context.Context) {
 	}
 	a.writeSession(sess)
 	slog.Info("cookie 已续期", "platform", a.platform)
+}
+
+// RenewNow 立刻续期一次登录票据，跳过到期闸门。
+//
+// 取流被平台以「鉴权失败」拒绝时用它：本地读到的 exp 可能还远，但服务端
+// 已经不认这张票据了。成功时新 cookie 写回驱动并落盘，界面状态不变。
+func (a *qrAuth) RenewNow(ctx context.Context) error {
+	fr, ok := a.renewer.(cookieForceRenewer)
+	if !ok {
+		return errNoRenewNeeded{"该平台不支持强制续期"}
+	}
+	if !a.Auth().LoggedIn {
+		return errNoRenewNeeded{"当前是游客"}
+	}
+
+	// 有会话文件就沿用（带 UID / 昵称 / refresh token），cookie 以驱动
+	// 当前持有的为准——它可能比文件新。
+	sess := authSession{Cookies: a.drv.cookieString()}
+	if stored, ok := loadAuthSession(a.platform); ok {
+		sess = stored
+		sess.Cookies = a.drv.cookieString()
+	}
+	if sess.Cookies == "" {
+		return errSessionInvalid
+	}
+
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cookies, token, err := fr.forceRenew(c, sess)
+	if err != nil {
+		return err
+	}
+	if cookies == "" || cookies == sess.Cookies {
+		return errNoRenewNeeded{"续期没有返回新票据"}
+	}
+	a.drv.loadCookies(cookies)
+	sess.Cookies = cookies
+	if token != "" {
+		sess.RefreshToken = token
+		if r, ok := a.drv.(interface{ setRefreshToken(string) }); ok {
+			r.setRefreshToken(token)
+		}
+	}
+	a.writeSession(sess)
+	slog.Info("cookie 已强制续期", "platform", a.platform)
+	return nil
 }
 
 // writeSession 用现成的 authSession 覆盖会话文件（temp + rename）。

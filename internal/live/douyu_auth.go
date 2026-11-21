@@ -263,10 +263,16 @@ func (p *douyuProvider) SetAuthListener(fn func()) { p.auth.SetAuthListener(fn) 
 // ---------------------------------------------------------------- cookie 工具
 
 // setAuthCookie 换掉登录态。空串表示退出登录。
+//
+// 换票成功要把「游客兜底」解除：新票据不一定还有同样的毛病，
+// 继续按游客取流就是白白丢掉清晰度。
 func (p *douyuProvider) setAuthCookie(raw string) {
 	p.authMu.Lock()
 	p.authCookie = raw
 	p.authMu.Unlock()
+	p.stateMu.Lock()
+	p.guestUntil = time.Time{}
+	p.stateMu.Unlock()
 }
 
 // authCookieString 返回登录 cookie（不含 did 兜底），供落盘用。
@@ -280,8 +286,12 @@ func (p *douyuProvider) authCookieString() string {
 //
 // did 永远是当前请求的那个（取流时可能来自签名响应），登录字段有就带上。
 // 只发登录 cookie、不发 did 会被判成异常客户端；反过来只发 did 就是游客。
-func (p *douyuProvider) douyuCookieHeader(did string) string {
-	fields := douyuParseCookieFields(p.authCookieString())
+// login=false 用于票据被判失效后的游客兜底：只发 did，不带任何 acf_*。
+func (p *douyuProvider) douyuCookieHeader(did string, login bool) string {
+	fields := map[string]string{}
+	if login {
+		fields = douyuParseCookieFields(p.authCookieString())
+	}
 	fields["dy_did"] = did
 	fields["acf_did"] = did
 	return buildCookieString(fields, douyuCookieOrder)
