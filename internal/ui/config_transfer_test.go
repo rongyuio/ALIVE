@@ -43,7 +43,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	if dst.Quality != "原画" || dst.Volume != 0.42 {
 		t.Errorf("播放设置没有覆盖：quality=%q volume=%v", dst.Quality, dst.Volume)
 	}
-	if got, want := dst.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+	if got, want := dst.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers, sectionIDWatch}; !equalStrings(got, want) {
 		t.Errorf("一级分区顺序 %v，期望 %v", got, want)
 	}
 

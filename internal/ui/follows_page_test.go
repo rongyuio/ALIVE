@@ -327,7 +327,7 @@ func TestFollowsSectionTabsDragToReorder(t *testing.T) {
 	tt.Release(tx, ty)
 	tt.Frame()
 
-	if got, want := app.FollowsSectionOrder, []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+	if got, want := app.FollowsSectionOrder, []string{sectionIDSubs, sectionIDStreamers, sectionIDWatch}; !equalStrings(got, want) {
 		t.Fatalf("拖动后顺序 %v，期望 %v", got, want)
 	}
 	// 屏幕上的位置也换了：订阅分区到了左边

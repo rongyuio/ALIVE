@@ -111,9 +111,20 @@ const islandPlayerAvatar float32 = theme.IslandH - 6
 //     的话岛会掉回默认态几秒，看着像「听着听着没了」。
 //
 // 取流失败时 loading 落回 false，岛也就不会再假装在收听。
+// onWatchWall 报告当前是不是「悲鸣观测」那一屏。
+func (a *App) onWatchWall() bool {
+	return a.Router != nil && a.Router.Path() == routeFollows &&
+		a.FollowsSection == followsSectionWatch
+}
+
 func (a *App) islandListening() bool {
 	if a.Router != nil && a.Router.Path() == routePlayer {
 		return false
+	}
+	// 观测墙上的 active 也是「这一路还开着」：它可能由墙自己的会话持有，
+	// 不在 a.media 里。岛照样显示它，点一下回播放页。
+	if a.WatchActive != "" {
+		return true
 	}
 	return a.media.background || (a.media.loading && a.media.roomKey != "")
 }
@@ -153,6 +164,10 @@ func (a *App) Island(c *ui.Context) {
 	switch {
 	case player:
 		// 展开态常驻：不再有 InfoOpen 这一档收起
+		targetW = openW
+	case a.onWatchWall():
+		// 观测墙上岛承担「正在播放谁」：展开显示当前 active 的房间，
+		// 点整块回播放页。收成正圆只能说「还在响」，说不出是哪一间。
 		targetW = openW
 	case listening:
 		// 后台收听缩成一枚正圆，和播放页收起态同一个尺寸——它们是同一件事

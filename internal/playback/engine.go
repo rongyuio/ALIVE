@@ -36,6 +36,19 @@ type Options struct {
 	Width     int
 	Height    int
 	FrameRate float64
+
+	// MaxWidth / MaxHeight 限制软件渲染目标的尺寸；零表示按视频原始尺寸。
+	//
+	// 观测墙用它：源流档位和解码分辨率都不动，只把呈现尺寸收到格子大小。
+	// 这不是降画质——和把播放器窗口拉小是同一条路径。
+	MaxWidth, MaxHeight int
+	// Silent 使用空音频输出（ao=null）。测试和只取画面的探针用。
+	Silent bool
+	// StartMuted 在起播前静音。观测墙的非激活格子要开真实 AO，但不能出声；
+	// 先静音再 loadfile，避免起播瞬间漏出一声。
+	StartMuted bool
+	// SkipAudioGate 不压画面等音频时钟。墙上的格子只要画面，等音频会白压两秒。
+	SkipAudioGate bool
 }
 
 // Engine 是一路直播的播放引擎，实现 media.Engine。
@@ -102,9 +115,28 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
-	p, err := video.New(video.Options{Library: lib, Headers: opts.Headers, Width: opts.Width, Height: opts.Height, ClientName: audioClientName})
+	p, err := video.New(video.Options{
+		Library:    lib,
+		Headers:    opts.Headers,
+		Width:      opts.Width,
+		Height:     opts.Height,
+		MaxWidth:   opts.MaxWidth,
+		MaxHeight:  opts.MaxHeight,
+		Silent:     opts.Silent,
+		ClientName: audioClientName,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+	}
+	e := &Engine{p: p, done: make(chan struct{})}
+	if opts.SkipAudioGate || opts.Silent {
+		e.gate.started = true
+	}
+	if opts.StartMuted {
+		if err := p.SetMuted(true); err != nil {
+			p.Close()
+			return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+		}
 	}
 	if err := p.Load(upstream); err != nil {
 		p.Close()
@@ -117,7 +149,6 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
 
-	e := &Engine{p: p, done: make(chan struct{})}
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -292,6 +323,12 @@ func (e *Engine) SetMuted(m bool) { _ = e.p.SetMuted(m) }
 // 重新选轨会让 mpv 清空读前缓存并等下一个关键帧（实测 0.08–5.2 秒），
 // 而这里音频和参考帧链都没动，回来只差一帧。
 func (e *Engine) SetPresenting(on bool) { e.p.SetPresenting(on) }
+
+// SetPresentSize 把呈现尺寸固定为 w×h；0 表示回到视频原始尺寸。
+//
+// 观测墙的每一格用它：源流与解码分辨率不变，只缩小呈现目标。切换尺寸时
+// 引擎会用当前帧立刻重渲染一次，格子上不会经过一帧黑。
+func (e *Engine) SetPresentSize(w, h int) { e.p.SetPresentSize(w, h) }
 
 // Debug 返回底层 libmpv 的原始状态，诊断用。
 func (e *Engine) Debug() video.State { return e.p.State() }

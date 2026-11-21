@@ -108,6 +108,9 @@ var (
 	MediaTrackFill  = ui.RGBA(255, 255, 255, 0.26)
 	MediaHairStrong = ui.RGBA(255, 255, 255, 0.24)
 	MediaScrimSoft  = ui.RGBA(0, 0, 0, 0.22)
+	// MediaScrimTile 是观测墙格子底部信息条的压暗层：0.66 才压得住
+	// 亮场景的直播画面，同时不把整块画面盖死。
+	MediaScrimTile = ui.RGBA(6, 7, 9, 0.66)
 )
 
 // ---------------------------------------------------------------- 半透明叠加

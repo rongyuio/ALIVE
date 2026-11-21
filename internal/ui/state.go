@@ -42,6 +42,7 @@ type persisted struct {
 	Follows             *[]string       `json:"follows,omitempty"`       // 旧格式：只有「平台|昵称」
 	FollowRecords       *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
 	Subs                *[]Subscription `json:"subscriptions,omitempty"`
+	WatchRooms          *[]watchRecord  `json:"watchRooms,omitempty"`
 	Quality             string          `json:"quality,omitempty"`
 	Line                string          `json:"line,omitempty"`
 	Volume              *float32        `json:"volume,omitempty"`
@@ -123,6 +124,10 @@ func (a *App) saveState() {
 
 	follows := append([]FollowRecord(nil), a.Follows...)
 	subs := append([]Subscription(nil), a.Subs...)
+	watchRooms := make([]watchRecord, 0, len(a.WatchRooms))
+	for _, s := range a.WatchRooms {
+		watchRooms = append(watchRooms, watchRecordOf(s))
+	}
 	volume := a.Volume
 	panelW := a.panelWidth()
 	panelOn := a.DanmuPanelOn
@@ -146,6 +151,7 @@ func (a *App) saveState() {
 		FollowsSectionOrder: a.followsSectionOrder(),
 		FollowRecords:       &follows,
 		Subs:                &subs,
+		WatchRooms:          &watchRooms,
 		Quality:             a.Quality,
 		Line:                a.Line,
 		Volume:              &volume,
@@ -204,6 +210,13 @@ func (a *App) restore() {
 		if isLegacyDemoSubs(a.Subs) {
 			a.Subs = nil
 		}
+	}
+	if p.WatchRooms != nil {
+		rooms := make([]Streamer, 0, len(*p.WatchRooms))
+		for _, r := range *p.WatchRooms {
+			rooms = append(rooms, r.streamer())
+		}
+		a.WatchRooms = normalizeWatchRooms(rooms)
 	}
 	if p.Quality != "" {
 		a.Quality = p.Quality

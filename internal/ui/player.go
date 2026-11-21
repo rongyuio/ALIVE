@@ -34,8 +34,23 @@ var (
 // 压暗、chrome 对比度都能照常验证。
 func (a *App) PlayerPage(c *ui.Context) {
 	a.ensureDanmuLoop()
+	// 从观测墙进来：如果这一间已经在墙上活着，把同一个引擎接过来，不重取流。
+	// 目标不是墙上的 active 时，先把墙上的 active 停掉，避免两路声音。
+	target := watchKey(a.current())
+	if a.WatchActive != "" && a.WatchActive != target {
+		a.watchDropActive()
+	}
+	if !a.watchAdoptActive() && a.WatchActive == target && a.media.roomKey != target {
+		// 墙上的这一间还没出首帧：收掉它，让正常的起播路径接手。
+		if s := a.watch.sessions[target]; s != nil {
+			a.watchCloseSession(s)
+		}
+		a.WatchActive, a.WatchPending = "", ""
+	}
 	// 接真实流：房间变了才重新取流 + 连弹幕
 	a.ensureMedia(c)
+	// 弹幕只属于播放页：不管画面是刚起的还是从墙上接过来的，进页面就连一条新的。
+	a.ensureDanmaku()
 	// 从后台收听回来：把全尺寸呈现重新打开。
 	//
 	// 必须排在 ensureMedia 之后：换台时 ensureMedia 已经 reset 并重开一路，

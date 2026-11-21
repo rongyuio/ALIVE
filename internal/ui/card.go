@@ -59,7 +59,7 @@ func CardHeight(w float32) float32 {
 // 要么已经在新位置上（新一屏），中间没有「淡入」「上浮」这一档。
 // 之前这里带 opacity 0→1 + translateY 10→0，量出来整屏下落 10 DIP、
 // 行内最多错开 6.6 DIP，而封面还在加载——这就是「切换后画面一直在抖」。
-func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleFollow func()) ui.Element {
+func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleFollow, onWatch func()) ui.Element {
 	coverH := w * 9 / 16
 
 	card := ui.Column(c).Width(w).Radius(theme.RadiusMD)
@@ -79,6 +79,11 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 	if onOpen != nil && card.Clicked() {
 		onOpen()
 	}
+	card.ContextMenu(func(m *ui.Menu) {
+		if onWatch != nil && m.Item("收进悲鸣观测").Chosen() {
+			onWatch()
+		}
+	})
 
 	card.Children(func() {
 		// ---------------------------------------------------------- 封面区

@@ -35,11 +35,14 @@ func (a *App) FollowsPage(c *ui.Context) {
 		feed := ui.Column(c).Key(navKey(followsFeedKind(a.FollowsSection), a.followsSeq)).
 			Grow(1)
 		feed.Children(func() {
-			if a.FollowsSection == followsSectionSubs {
+			switch a.FollowsSection {
+			case followsSectionSubs:
 				a.subscribeFeed(c)
-				return
+			case followsSectionWatch:
+				a.watchWall(c)
+			default:
+				a.followsGrid(c, a.followsList())
 			}
-			a.followsGrid(c, a.followsList())
 		})
 	})
 }
@@ -48,19 +51,23 @@ func (a *App) FollowsPage(c *ui.Context) {
 const (
 	followsSectionStreamers = iota
 	followsSectionSubs
+	followsSectionWatch
 )
 
-// followsFeedKind 是内容层的身份前缀：两级分区各算各的内容。
+// followsFeedKind 是内容层的身份前缀：各级分区各算各的内容。
 func followsFeedKind(section int) string {
-	if section == followsSectionSubs {
+	switch section {
+	case followsSectionSubs:
 		return "follows-subs"
+	case followsSectionWatch:
+		return "follows-watch"
 	}
 	return "follows"
 }
 
 // followsSectionNames 是一级分区的名字，下标和常量的取值一致。
 // 显示顺序不在这里——那由 FollowsSectionOrder 决定，用户拖一次就变。
-var followsSectionNames = []string{"关注主播", "订阅分区"}
+var followsSectionNames = []string{"关注主播", "订阅分区", "悲鸣观测"}
 
 // 一级分区在顺序表里的身份。
 //
@@ -69,15 +76,28 @@ var followsSectionNames = []string{"关注主播", "订阅分区"}
 const (
 	sectionIDStreamers = "streamers"
 	sectionIDSubs      = "subs"
+	sectionIDWatch     = "watch"
 )
 
 // defaultFollowsSectionOrder 是第一次启动时的分区顺序。
-var defaultFollowsSectionOrder = []string{sectionIDStreamers, sectionIDSubs}
+var defaultFollowsSectionOrder = []string{sectionIDStreamers, sectionIDSubs, sectionIDWatch}
+
+// validFollowsSectionID 报告一个顺序表身份是不是认识的分区。
+func validFollowsSectionID(id string) bool {
+	switch id {
+	case sectionIDStreamers, sectionIDSubs, sectionIDWatch:
+		return true
+	}
+	return false
+}
 
 // followsSectionOf 把顺序表里的身份换回分区常量；认不出来就退到关注主播。
 func followsSectionOf(id string) int {
-	if id == sectionIDSubs {
+	switch id {
+	case sectionIDSubs:
 		return followsSectionSubs
+	case sectionIDWatch:
+		return followsSectionWatch
 	}
 	return followsSectionStreamers
 }
@@ -95,7 +115,7 @@ func normalizeFollowsSectionOrder(in []string) []string {
 	seen := make(map[string]bool, len(defaultFollowsSectionOrder))
 	out := make([]string, 0, len(defaultFollowsSectionOrder))
 	for _, id := range in {
-		if (id == sectionIDStreamers || id == sectionIDSubs) && !seen[id] {
+		if validFollowsSectionID(id) && !seen[id] {
 			out = append(out, id)
 			seen[id] = true
 		}
@@ -147,11 +167,18 @@ func (a *App) followsPanel(c *ui.Context) {
 
 	panel.Children(func() {
 		a.followsSectionRow(c)
-		if a.FollowsSection == followsSectionSubs {
+		switch a.FollowsSection {
+		case followsSectionSubs:
 			a.subscribeRow(c)
-			return
+		case followsSectionWatch:
+			// 墙上不加常驻工具条：正在播谁由灵动岛承担。只有用户点开
+			// 「＋」时才长出这一行添加面板。
+			if a.WatchPickerOpen {
+				a.watchPicker(c)
+			}
+		default:
+			a.followsPlatformRow(c)
 		}
-		a.followsPlatformRow(c)
 	})
 }
 
@@ -187,8 +214,11 @@ func (a *App) followsSectionRow(c *ui.Context) {
 
 		ui.Box(c).Grow(1)
 
-		if a.FollowsSection == followsSectionStreamers {
+		switch a.FollowsSection {
+		case followsSectionStreamers:
 			a.followsActions(c)
+		case followsSectionWatch:
+			a.watchActions(c)
 		}
 	})
 }
@@ -420,6 +450,9 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 	// 右键菜单只在“全部关注”里提供取消关注：这里列出的都是已关注的主播，
 	// 菜单只做减法，不能反过来把记录加回去。
 	row.ContextMenu(func(m *ui.Menu) {
+		if m.Item("收进悲鸣观测").Chosen() {
+			a.watchAdd(s)
+		}
 		if m.Item("取消关注").Chosen() {
 			a.removeFollow(s)
 		}

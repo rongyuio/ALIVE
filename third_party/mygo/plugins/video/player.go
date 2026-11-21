@@ -305,6 +305,34 @@ func (p *Player) SetPresenting(on bool) {
 	default:
 	}
 }
+
+// SetPresentSize 把软件渲染目标固定为 w×h（按偶数取整）。
+//
+// ALIVE 本地补丁，给观测墙用：源流档位、解码分辨率、demuxer 都不动，只把
+// 呈现尺寸收到格子大小。它和把播放器窗口拉小是同一条路径，不是降画质；
+// 没有它，整墙每格都会按 1080p 做一次 YUV→RGB，9 路付不起。
+//
+// 传 0 回到视频原始尺寸，等价于 SetPresenting(true)。
+func (p *Player) SetPresentSize(w, h int) {
+	if w <= 0 || h <= 0 {
+		p.SetPresenting(true)
+		return
+	}
+	if w < 2 {
+		w = 2
+	}
+	if h < 2 {
+		h = 2
+	}
+	p.mu.Lock()
+	p.presentW, p.presentH = w&^1, h&^1
+	p.forceRender = true
+	p.mu.Unlock()
+	select {
+	case p.renderWake <- struct{}{}:
+	default:
+	}
+}
 func finite(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) }
 func seconds(n float64) time.Duration {
 	if !finite(n) || n < 0 || n > float64(math.MaxInt64)/1e9 {

@@ -595,6 +595,8 @@ func (s *trackSpy) SetPresenting(on bool) {
 	s.mu.Unlock()
 }
 
+func (s *trackSpy) SetPresentSize(w, h int) {}
+
 func (s *trackSpy) last() (bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

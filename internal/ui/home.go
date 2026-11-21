@@ -99,6 +99,18 @@ type App struct {
 	// media 是播放页的媒体层：转封装 + 播放器 + 弹幕连接。
 	// 它们要跨帧活着，所以挂在 App 上而不是视图里。
 	media playerMedia
+
+	// 观测盒：最多 watch.MaxRooms 间，顺序即墙上的布局顺序。
+	WatchRooms []Streamer
+	// WatchActive 是当前激活（出声）的房间 key：platform|roomID。
+	// 它可能由 a.media 持有（从播放页回来），也可能是墙上的 wallSession。
+	WatchActive string
+	// WatchPending 是点了但还没出首帧的激活目标。
+	WatchPending string
+	// WatchPickerOpen 是墙头「＋」展开的添加面板。
+	WatchPickerOpen bool
+	// watch 是墙上非 active 的播放会话。
+	watch wallMedia
 	// pushedVolume 是最后一次推给播放器的音量。
 	// ui.VideoPlayer 没有 Volume() getter，只能自己记一份来避免每帧重设。
 	pushedVolume float64
@@ -546,6 +558,11 @@ func (a *App) Shell(c *ui.Context) {
 			if a.Router.Path() != routePlayer && a.media.roomKey != "" {
 				a.detachMedia()
 			}
+			// 墙不可见时关掉非 active 的格子；active 留着出声。播放页打开时
+			// 墙上的 active 已经被 PlayerPage 接管，这里只剩清理其余会话。
+			if a.Router.Path() != routeFollows || a.FollowsSection != followsSectionWatch {
+				a.watchHide()
+			}
 			// 媒体层的心跳：后台收听时视频元素不在了，没有东西替它请求帧，
 			// 地址续期和断流重连会跟着一起停摆。
 			a.kickMediaTick()
@@ -768,6 +785,8 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 					a.Router.Push(routePlayer)
 				}, func() {
 					a.toggleFollow(st)
+				}, func() {
+					a.watchAdd(st)
 				})
 			}
 			// 最后一行不足 cols 时补空位，卡片宽度才不会被拉宽

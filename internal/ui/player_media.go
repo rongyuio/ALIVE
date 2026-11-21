@@ -61,6 +61,9 @@ type playerMedia struct {
 	// danmuSeq 单独管弹幕连接。换清晰度不该让同一房间的聊天断掉，也不能因为
 	// 画面那一路的代号变了，就把刚连上的弹幕当成过期结果丢掉。
 	danmuSeq int
+	// danmuRetryAt 是弹幕连接失败后的退避点。ensureDanmaku 每帧都会问，
+	// 没有它会在平台拒绝时每帧重连。
+	danmuRetryAt time.Time
 
 	// 画面推进的观测点。不能直接信 VideoPlayer.Buffering()：Media
 	// Foundation 在直播 HLS 上每一次 playlist 滚动都会发一次 WAITING，而把
@@ -211,6 +214,7 @@ func (m *playerMedia) stalled(p *ui.VideoPlayer) bool {
 // 这一帧的驱动靠调用方（Shell）在必要时 c.After 续上；background 态下
 // 视图里没有视频元素在请求帧，所以还额外挂一条定时器，见 kickMediaTick。
 func (a *App) mediaTick() {
+	a.watchTick(time.Now())
 	if a.media.player == nil {
 		return
 	}
@@ -226,22 +230,37 @@ func (a *App) mediaTick() {
 // 而且窗口销毁后 Update 会自己丢掉回调。
 func (a *App) kickMediaTick() {
 	m := &a.media
-	if !m.background || m.player == nil || a.Win == nil {
+	if a.Win == nil {
 		m.tickPending = false
+		a.watch.tickPending = false
 		return
 	}
-	if m.tickPending {
-		return
-	}
-	m.tickPending = true
-	win := a.Win
-	time.AfterFunc(playbackHealthPollInterval, func() {
-		runOnMain(win, func() {
-			a.media.tickPending = false
-			a.mediaTick()
-			a.kickMediaTick()
+	if m.background && m.player != nil && !m.tickPending {
+		m.tickPending = true
+		win := a.Win
+		time.AfterFunc(playbackHealthPollInterval, func() {
+			runOnMain(win, func() {
+				a.media.tickPending = false
+				a.mediaTick()
+				a.kickMediaTick()
+			})
 		})
-	})
+	}
+	// 墙上的 active 可能由墙自己持有（还没进过播放页），也可能在离开播放页后
+	// 由 a.media 持有。两种都要有心跳：地址续期、断流、下播判定不能停在没人看
+	// 的那一面。
+	needWatch := len(a.watch.sessions) > 0 || (a.WatchActive != "" && a.media.roomKey != a.WatchActive)
+	if needWatch && !a.watch.tickPending {
+		a.watch.tickPending = true
+		win := a.Win
+		time.AfterFunc(playbackHealthPollInterval, func() {
+			runOnMain(win, func() {
+				a.watch.tickPending = false
+				a.mediaTick()
+				a.kickMediaTick()
+			})
+		})
+	}
 }
 
 // closeMedia 是离开播放页时的清理入口。
@@ -249,6 +268,19 @@ func (a *App) kickMediaTick() {
 // 先把代号推进（reset 里的 cancelSession 会做），再清 roomKey：正在路上的
 // 取流结果回来时已经找不到对应的那一轮，只会被丢弃并关掉自己的资源。
 func (a *App) closeMedia() {
+	// 明确退出播放页：弹幕一起断，聊天记录不跨会话保留。
+	// 观测盒里的房间还在，回墙上是一格封面，不是一条假装还活着的连接。
+	if a.WatchActive != "" && a.WatchActive == a.media.roomKey {
+		a.WatchActive = ""
+		a.WatchPending = ""
+	}
+	a.closeDanmaku()
+	a.media.danmuRetryAt = time.Time{}
+	a.DanmuLog = nil
+	a.Danmu = nil
+	a.panelSeen = 0
+	a.panelPending = 0
+	a.watch.activeW, a.watch.activeH = 0, 0
 	a.media.reset()
 	a.media.roomKey = ""
 }
@@ -271,15 +303,31 @@ func (a *App) detachMedia() {
 	if e == nil {
 		return
 	}
-	e.SetPresenting(false)
+	// 退回观测盒时，active 那一格要按格子物理像素呈现，不是 160×90 的模糊小图。
+	if a.Router != nil && a.Router.Path() == routeFollows && a.FollowsSection == followsSectionWatch {
+		if r, ok := a.watch.rects[m.roomKey]; ok {
+			w, h := watchSize(r)
+			e.SetPresentSize(w, h)
+		} else {
+			e.SetPresenting(false)
+		}
+	} else {
+		e.SetPresenting(false)
+	}
 	m.background = true
 	m.detachedAt = time.Now()
-	// 后台只剩 160×90 的小帧、没人看，缓冲胶囊和停帧看门狗的判据（「画面有没有
-	// 在动」）失去意义。基准拨到现在，回来时不会立刻误判成卡死。
+	a.watch.activeW, a.watch.activeH = 0, 0
+	// 后台只剩小帧、没人看，缓冲胶囊和停帧看门狗的判据（「画面有没有在动」）
+	// 失去意义。基准拨到现在，回来时不会立刻误判成卡死。
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 	m.stillPos, m.stillAt = 0, time.Time{}
-	// 已经飞出去的那批属于离开前的时刻；弹幕时钟在后台不走，留着回来会看到
-	// 一屏定格的旧弹幕。清掉，回来只接新的。轨道占用与时钟基准一起重置。
+	// 弹幕只属于播放页：离开就断，记录也清空。再进来（无论从墙还是从列表）
+	// 都是一条全新连接，不保留上一段聊天。
+	a.closeDanmaku()
+	a.media.danmuRetryAt = time.Time{}
+	a.DanmuLog = nil
+	a.panelSeen = 0
+	a.panelPending = 0
 	a.Danmu = nil
 	a.danmuLanes = nil
 	a.danmuPos = 0
@@ -332,7 +380,8 @@ func (a *App) attachMedia() {
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 	m.stillPos, m.stillAt = 0, time.Time{}
 	e.SetPresenting(true)
-	// 弹幕不动：回来还是同一间房，聊天不该断。
+	// 弹幕由 PlayerPage 的 ensureDanmaku 重新连一条：离开播放页时已经断掉，
+	// 回来不重放旧聊天。这里只管画面尺寸。
 }
 
 // videoTrack 是后台收听要的那一小块引擎能力：开关全尺寸呈现。
@@ -345,6 +394,8 @@ func (a *App) attachMedia() {
 // 造不出真引擎，但这一段状态机该被验到。
 type videoTrack interface {
 	SetPresenting(on bool)
+	// SetPresentSize 把呈现尺寸固定到格子物理像素；墙上的每一格都要用。
+	SetPresentSize(w, h int)
 }
 
 // engineOf 从播放器取出它的引擎。生产实现是类型断言；测试里换成假的。
@@ -464,6 +515,7 @@ func (a *App) startStream(keepDanmaku bool) {
 	sess := a.beginSession("取流")
 	if !keepDanmaku {
 		a.closeDanmaku()
+		a.media.danmuRetryAt = time.Time{}
 		// 换房间时旧房的弹幕一条都不能留：面板是「历史」，混进上一间房
 		// 的聊天会让人以为串台了。
 		a.DanmuLog = nil
@@ -621,7 +673,10 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) b
 		FrameRate: upstream.FrameRate,
 	}
 	go func() {
-		e, err := openNative(sess.ctx, upstream.URL, opts)
+		// 引擎不挂在这一轮的取流 ctx 上：观测墙和播放页会交接同一个引擎，
+		// 取消取流不能顺手把还在墙上的画面关掉。生命周期归 *ui.VideoPlayer，
+		// 它 Close 时引擎自己收；这一轮的 ctx 仍用来判断结果是否过期。
+		e, err := openNative(context.Background(), upstream.URL, opts)
 		if err != nil {
 			logStage(sess.id, sess.start, "native-failed", "error", errClass(err))
 			if sess.ctx.Err() != nil {
@@ -799,7 +854,8 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 		fail(errors.New("没有拿到可播放的地址"))
 		return
 	}
-	e, err := openNative(sess.ctx, selected.URL, playback.Options{
+	// 同上：引擎寿命归播放器，不归取流 ctx。交接给墙上的格子时不能被取消。
+	e, err := openNative(context.Background(), selected.URL, playback.Options{
 		Headers: selected.Headers, Width: selected.Width, Height: selected.Height, FrameRate: selected.FrameRate,
 	})
 	if err != nil {
@@ -1285,6 +1341,36 @@ func (m *playerMedia) closeDanmaku() {
 	m.danmaku = nil
 }
 
+// ensureDanmaku 给播放页的当前房间连一条弹幕。
+//
+// 弹幕只属于播放页：观测盒不连，离开播放页就断；从墙上接管过来的同一路画面
+// 进播放页时也要重新连一条新的。失败后退避 30 秒，避免每帧重连。
+func (a *App) ensureDanmaku() {
+	if a.Router == nil || a.Router.Path() != routePlayer {
+		return
+	}
+	s := a.current()
+	if s.Platform == "" || s.RoomID == "" {
+		return
+	}
+	if a.media.roomCtx != nil {
+		return
+	}
+	if !a.media.danmuRetryAt.IsZero() && time.Now().Before(a.media.danmuRetryAt) {
+		return
+	}
+	prov, ok := providerFor(live.Platform(s.Platform))
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.media.roomCtx, a.media.roomCancel = ctx, cancel
+	a.media.danmuSeq++
+	seq := a.media.danmuSeq
+	win := a.Win
+	go a.startDanmaku(ctx, seq, prov, s.RoomID, win)
+}
+
 // startDanmaku 使用独立房间 context；切档不取消，退出与切房立即取消。
 // win 和 ctx 均由主线程捕获，后台不读取 App 的窗口字段。
 func (a *App) startDanmaku(ctx context.Context, seq int, prov live.Provider, roomID string, win *mygo.Window) {
@@ -1306,6 +1392,7 @@ func (a *App) startDanmaku(ctx context.Context, seq int, prov live.Provider, roo
 		slog.Warn("弹幕连接失败", "room", roomID, "error", errClass(err))
 		runOnMain(win, func() {
 			if a.media.danmuSeq == seq {
+				a.media.danmuRetryAt = time.Now().Add(30 * time.Second)
 				a.closeDanmaku()
 			}
 		})

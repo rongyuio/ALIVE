@@ -38,13 +38,13 @@ func TestMoveFollowsSection(t *testing.T) {
 	app.FollowsSectionOrder = []string{sectionIDStreamers, sectionIDSubs}
 
 	app.moveFollowsSection(sectionIDStreamers, sectionIDSubs)
-	if got, want := app.FollowsSectionOrder, []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+	if got, want := app.FollowsSectionOrder, []string{sectionIDSubs, sectionIDStreamers, sectionIDWatch}; !equalStrings(got, want) {
 		t.Fatalf("拖「关注主播」到「订阅分区」后顺序 %v，期望 %v", got, want)
 	}
 
 	// 状态表被改坏时：不认识的丢掉，缺的按默认补在后面
 	app.FollowsSectionOrder = []string{"unknown", sectionIDSubs}
-	if got, want := app.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+	if got, want := app.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers, sectionIDWatch}; !equalStrings(got, want) {
 		t.Fatalf("坏数据整理后顺序 %v，期望 %v", got, want)
 	}
 
@@ -108,7 +108,7 @@ func TestStateRoundTrip(t *testing.T) {
 	if len(restored.PlatformOrder) != 4 || restored.PlatformOrder[0] != "bilibili" {
 		t.Errorf("平台顺序 %v", restored.PlatformOrder)
 	}
-	if got, want := restored.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers}; !equalStrings(got, want) {
+	if got, want := restored.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers, sectionIDWatch}; !equalStrings(got, want) {
 		t.Errorf("一级分区顺序 %v，期望 %v", got, want)
 	}
 }
