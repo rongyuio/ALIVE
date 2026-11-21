@@ -83,11 +83,13 @@ type App struct {
 	// InfoOpen 是播放页灵动岛是否展开。展开态现在常驻（岛同时承担「正在看谁」
 	// 和「声音从哪来」），所以这个字段只表示「进过这个房间」，不再有收起。
 	// infoRoom 记着当前房间，用来判断是不是换了直播间。
-	InfoOpen    bool
-	infoRoom    string
-	Quality     string
+	InfoOpen bool
+	infoRoom string
+	// roomChoices 是每个直播间自己的清晰度 / 线路（键 platform|roomID）。
+	// 这两项属于房间，不属于应用；全局存一份会在切台、接管时串到别的平台。
+	// 读写走 room_choice.go。
+	roomChoices map[string]roomChoice
 	QualityOpen bool
-	Line        string
 	LineOpen    bool
 	// 清晰度和线路两个下拉是 hover 触发的（onMouseEnter 开、onMouseLeave
 	// 排一个 220ms 后关的定时器），hoverLeft 记指针最后一次离开按钮和面板
@@ -107,8 +109,6 @@ type App struct {
 	WatchActive string
 	// WatchPending 是点了但还没出首帧的激活目标。
 	WatchPending string
-	// WatchPickerOpen 是墙头「＋」展开的添加面板。
-	WatchPickerOpen bool
 	// watch 是墙上非 active 的播放会话。
 	watch wallMedia
 	// pushedVolume 是最后一次推给播放器的音量。
@@ -359,18 +359,13 @@ func newApp() *App {
 		Follows:             []FollowRecord{},
 		// 首帧网格还没量过，先用最小卡片宽占位：预取封面时不能是 0，
 		// 0 在图片缓存里表示「按原图解码」。
-		gridCardW: theme.CardMinWidth,
-		Router:    ui.NewRouter(routeHome),
-		PaletteID: theme.Palettes[0].ID,
-		ThemeMode: themeModeSystem,
-		Volume:    0.6,
-		Playing:   true,
-		clock:     time.Now,
-		// 清晰度 / 线路都只能来自平台返回值，本地不留默认：B 站没有叫
-		// 「原画」的档位（它是「1080P 原画」），虎牙抖音的档位名又各不相同。
-		// 空串表示「还不知道是哪一档」，取到档位后由 player_media 校正成第一档。
-		Quality:       "",
-		Line:          "",
+		gridCardW:     theme.CardMinWidth,
+		Router:        ui.NewRouter(routeHome),
+		PaletteID:     theme.Palettes[0].ID,
+		ThemeMode:     themeModeSystem,
+		Volume:        0.6,
+		Playing:       true,
+		clock:         time.Now,
 		DanmuOn:       true,
 		DanmuFont:     20,
 		DanmuDur:      10 * time.Second,

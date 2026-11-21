@@ -13,6 +13,8 @@
 - 双击格子 / 点灵动岛：放大成播放页，**同一个引擎接管**，不重新取流。
 - 墙上不显示弹幕，也不保留弹幕连接；只有放大成播放页时才连一条全新的。
 - 墙头没有常驻状态；正在播放谁由灵动岛承担。墙上岛展开显示当前房间。
+- 墙头的「＋」展开添加面板：一行说明「从关注里挑，点一下收进观测盒」+ 候选
+  chip（`＋ [品牌色平台] 名字`）；点 chip 收进观测盒，面板收起。
 - 最多 9 间，不是按带宽算的；用户带宽不在产品判断里。
 - 墙格可以拖动换位，顺序落盘；右键还有「前移 / 后移」，给键盘和读屏一条不依赖
   拖拽的路径。active 跟着房间身份走，换位不会把声音切到别的格子。
@@ -33,22 +35,32 @@ internal/playback              libmpv 薄壳；MaxWidth/Height、起播静音、
 
 ## 所有权与交接
 
-`a.WatchActive` 是当前出声那间的 `platform|roomID`。它有两种归属：
+`a.WatchActive` 是当前出声那间的 `platform|roomID`。**一激活就接管进
+`playerMedia`**；`wallSession` 只保留还没出首帧的 pending 格和所有非 active 格。
 
 | 归属 | 什么时候 | 画面 | 声音 | 谁驱动 |
 |---|---|---|---|---|
-| `wallSession` | 在墙上激活，还没进播放页 | 格子物理像素 | 开 | `watchTick` |
-| `playerMedia` | 从播放页退回墙 | 格子物理像素 | 开 | `mediaTick` |
+| `wallSession` | 非 active 预览；active 还没出首帧 | 格子物理像素 | 无 | `watchTick` |
+| `playerMedia` | 激活完成；从播放页退回墙 | 格子物理像素 | 开 | `mediaTick` |
 
 交接规则：
 
-- **墙 → 播放页**：`watchAdoptActive` 把 `wallSession` 的 `player` / `stream` /
-  `upstream` 原样交给 `playerMedia`，从墙的 map 里摘掉；`SetPresenting(true)`
-  恢复全尺寸；弹幕由 `ensureDanmaku` 重新连一条。取流、首帧、地址都不重来。
-- **播放页 → 墙**：`detachMedia` 保留引擎，把呈现尺寸从全尺寸收到该格物理像素；
-  墙直接画 `a.media.player`，不从 map 里另开。弹幕在离开时断开并清空记录。
+- **墙上激活 / 退出 active**：只换所有权、声音焦点和强调环；**呈现尺寸
+  一像素不动**。activate 和 release 两边都不调 `SetPresentSize`——这两处
+  曾经各自补过一次，造成“点一下就变”和“active 变非 active 又变”。首帧前
+  是 pending，首帧一到大就自动接管。
+- **墙 → 播放页**：`watchAdoptActive(false)` 把 `player` / `stream` / `upstream`
+  原样交给 `playerMedia`，`SetPresenting(true)` 恢复全尺寸；弹幕由
+  `ensureDanmaku` 重新连一条。取流、首帧、地址都不重来。
+- **播放页 → 墙**：`detachMedia` 保留引擎和全尺寸呈现，墙直接画
+  `a.media.player`，视频在卡片里 `Contain`；不把渲染目标收到格子。
+  弹幕在离开时断开并清空记录。墙上激活、退出、从播放页回来都不碰呈现尺寸；
+  只有进播放页的 `SetPresenting(true)` 会切全尺寸。
+- **墙上 active 的刷新 / 热切换**：新引擎沿用旧 player 的 `Size()`，不缩回
+  160×90；只有首页等非墙页面的后台收听才收小。`adoptPlayback` 用 `lastW/H`，
+  `adoptSwap` 用旧 player 尺寸，两条都保住原渲染目标。
 - **在墙上激活另一格**：`watchReleaseActive` 把 `playerMedia` 持有的这一路移回
-  `wallSession`，静音但不停播；再采纳新的一格。旧格子的 `player.Close()` 归墙
+  `wallSession`，静音但不停播；再接管新的一格。旧格子的 `player.Close()` 归墙
   管理，不再由取流 ctx 管。
 - **引擎不挂取流 ctx**：`playback.Open` 用 `context.Background()`，生命周期归
   `*ui.VideoPlayer`。否则墙上的画面会在切房 / 换档时被顺手关掉。
@@ -94,14 +106,32 @@ internal/playback              libmpv 薄壳；MaxWidth/Height、起播静音、
 - 读 `player.Size()` 更糟：那是渲染目标，而渲染目标又按格子比例设，会形成反馈，
   首帧到达后整面墙重排一次。
 
-统一 16:9 是稳定的；竖屏/4:3 的流左右留黑，不裁剪。墙底是纯黑，格间只留 12
-的缝；标题/主播名叠在画面底部，不单独占信息条。active 格只加一圈强调色内阴影
-和常显的静音键，不改格子大小——激活不该让整面墙重排。
+统一 16:9 是稳定的；竖屏/4:3 的流左右留黑，不裁剪。
+
+墙面不画底色，落在页面的 `BgPrimary` 上；每一格是一个卡片：`RadiusMD` +
+`BgSecondary` + 顶部 `TopLight`，和直播卡片同一套表面。格间用 `GridGap`（16），
+不是自己写的 12。没有整块黑色矩形。
+
+常态格子里只有画面；active 只加一圈强调色内阴影，不改格子大小——激活不该让
+整面墙重排。hover 或键盘聚焦时，底部升起一条底栏，**底栏本身就是遮罩**，信息
+和控件是一块：第一行是品牌色平台胶囊 + 主播名 + 标题，第二行直接复用播放页控制台：44 高玻璃条，左侧播放/刷新/音量（滑条+百分比），右侧放大/移出；弹幕/清晰度/线路/小窗/全屏都精简掉。每个 hover 的格子都显示完整控制条。active 的播放/暂停、刷新、音量分别直接调用
+播放页的 `togglePlayback` / `retryStream` / `volumeControl`，没有墙专用分支；
+非 active 格的播放/暂停切自己的 `player`，刷新只重载自己。**音量按格各存一份**
+（`wall.volumes`，key 是 `platform|roomID`）：非 active 格显示自己记住的百分比和
+静音图标，滑条填充用暗一档的 accent；点滑条 / 滚轮会先激活这一格再改它自己的
+值——改的始终只是这格，别的格的值一动不动。active 格的音量仍走 `volumeControl`，
+`setVolume` 负责把它记到当前 active 名下，切走再切回来还是那个值。每格音量随
+`watchRooms` 一起落盘（`watchRecord.Volume`），重启后还是自己的；没调过的格不写，
+重新上墙时继承当时的全局音量。加载态直接复用播放页整块遮罩、30px spinner 和 `正在拉取直播流…`，不再自己画小胶囊。不 hover 时不显示这些。
+
+接通中 / 未开播 / 预览失败的提示不等 hover，常显在格子顶部中间；那是状态，
+不是 chrome。
 
 ## 灵动岛
 
-- 在观测墙上：岛展开，显示当前 active 的房间标题、平台/房间号、头像；整块是
-  回播放页的热区。
+- 在观测墙上、且有 active 时：岛展开，显示当前房间标题、平台/房间号、头像；
+  整块是回播放页的热区。
+- 观测墙上没有 active 时：保持首页的时钟岛，不缩成圆。
 - 其它页面后台收听：仍收成一枚头像圆。
 - 岛上显示的是实际播放的档位；格子左上角也写 `平台 · 档位`，避免“墙上是原画、
   点进去变蓝光”没人发现。

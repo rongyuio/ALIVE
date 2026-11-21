@@ -65,8 +65,7 @@ func TestStateRoundTrip(t *testing.T) {
 	app.Subs = []Subscription{
 		{PlatformID: "huya", Platform: "虎牙", Group: "手游", Name: "原神"},
 	}
-	app.Quality = "蓝光"
-	app.Line = "线路3"
+	app.setRoomChoice("bilibili|1001", roomChoice{Quality: "蓝光", Line: "线路3", LineID: "l3"})
 	app.Volume = 0.25
 	app.PlatformOrder = normalizePlatformOrder([]string{"bilibili", "douyu"})
 	app.FollowsSectionOrder = []string{sectionIDSubs, sectionIDStreamers}
@@ -99,8 +98,11 @@ func TestStateRoundTrip(t *testing.T) {
 	if len(restored.Subs) != 1 || restored.Subs[0].Name != "原神" {
 		t.Errorf("订阅 %+v，期望只有「原神」", restored.Subs)
 	}
-	if restored.Quality != "蓝光" || restored.Line != "线路3" {
-		t.Errorf("清晰度/线路 %q/%q", restored.Quality, restored.Line)
+	if c := restored.roomChoiceOf("bilibili|1001"); c.Quality != "蓝光" || c.Line != "线路3" || c.LineID != "l3" {
+		t.Errorf("房间的清晰度/线路没有恢复：%+v", c)
+	}
+	if len(restored.roomChoices) != 1 {
+		t.Errorf("房间选择多出了别的项：%+v", restored.roomChoices)
 	}
 	if restored.Volume != 0.25 {
 		t.Errorf("音量 %v，期望 0.25", restored.Volume)

@@ -238,7 +238,7 @@ func TestStartStreamUsesSelectedVariant(t *testing.T) {
 	useProvider(t, prov)
 
 	a := seededApp(t)
-	a.Quality = "原画" // 请求原画，但服务端只给了蓝光
+	a.setRoomQuality("douyu|123", "原画") // 请求原画，但服务端只给了蓝光
 	a.media.stream = live.Stream{Variants: menu}
 
 	a.startStream(false)
@@ -246,8 +246,8 @@ func TestStartStreamUsesSelectedVariant(t *testing.T) {
 	stubs.pump(t)
 	stubs.pump(t)
 
-	if a.Quality != "蓝光4M" {
-		t.Fatalf("菜单标签没校正成实际档位，得到 %q", a.Quality)
+	if got := a.qualityFor("douyu|123"); got != "蓝光4M" {
+		t.Fatalf("菜单标签没校正成实际档位，得到 %q", got)
 	}
 	if got := stubs.native.count(); got != 1 {
 		t.Fatalf("播放引擎被打开 %d 次", got)
@@ -269,13 +269,14 @@ func TestQualityDowngradeShowsNotice(t *testing.T) {
 	a := seededApp(t)
 	a.media.stream = live.Stream{Variants: prov.full.Variants}
 	a.media.roomKey = "douyu|1"
+	a.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "主播"}
 
 	a.PickQuality("原画1080P60")
 	stubs.pump(t)
 	stubs.pump(t)
 
-	if a.Quality != "蓝光4M" {
-		t.Fatalf("菜单没有校正到实际档位: %q", a.Quality)
+	if got := a.qualityFor("douyu|1"); got != "蓝光4M" {
+		t.Fatalf("菜单没有校正到实际档位: %q", got)
 	}
 	if !contains(a.media.notice, "原画1080P60") || !contains(a.media.notice, "蓝光4M") {
 		t.Fatalf("降档没有提示: %q", a.media.notice)
@@ -379,12 +380,12 @@ func TestUnconfirmedSelectedUsesNeutralLabel(t *testing.T) {
 		selected: live.Variant{URL: "https://example.invalid/unconfirmed.flv"}}
 	useProvider(t, prov)
 	a := seededApp(t)
-	a.Quality = "原画"
+	a.setRoomQuality("douyu|123", "原画")
 	a.startStream(false)
 	stubs.pump(t)
 	stubs.pump(t)
-	if a.Quality != "默认" {
-		t.Fatalf("未确认档位显示为 %q", a.Quality)
+	if got := a.qualityFor("douyu|123"); got != "默认" {
+		t.Fatalf("未确认档位显示为 %q", got)
 	}
 	if got := a.qualityOptions(); len(got) != 2 || got[0] != "原画" || got[1] != "高清" {
 		t.Fatalf("目录被破坏: %v", got)

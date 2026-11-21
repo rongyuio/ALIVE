@@ -155,11 +155,13 @@ func (a *App) buildConfigPayload() configPayload {
 			FollowsSectionOrder: a.followsSectionOrder(),
 			Follows:             follows,
 			Subs:                subs,
-			Quality:             a.Quality,
-			Line:                a.Line,
-			Volume:              &volume,
-			DanmuOn:             &danmuOn,
-			Danmu:               &danmu,
+			// 清晰度 / 线路属于房间：导出时带走当前这一间的，导入时
+			// 也只写回当前这一间。没有当前房间就没有可写的归属。
+			Quality: a.qualityFor(a.choiceKey()),
+			Line:    a.lineFor(a.choiceKey()),
+			Volume:  &volume,
+			DanmuOn: &danmuOn,
+			Danmu:   &danmu,
 		},
 	}
 }
@@ -511,16 +513,21 @@ func (a *App) applyConfig(d configData) importSummary {
 	if len(d.FollowsSectionOrder) > 0 {
 		a.FollowsSectionOrder = normalizeFollowsSectionOrder(d.FollowsSectionOrder)
 	}
-	if d.Quality != "" {
-		a.Quality = d.Quality
-		sum.Prefs = true
-	}
-	if d.Line != "" {
-		a.Line = d.Line
-		sum.Prefs = true
+	// 清晰度 / 线路按房间存：只有当前这一路能接住导入值，没有房间时
+	// 丢掉——把它们塞回全局正是串台的来源。
+	if key := a.choiceKey(); key != "" {
+		if d.Quality != "" {
+			a.setRoomQuality(key, d.Quality)
+			sum.Prefs = true
+		}
+		if d.Line != "" {
+			a.setRoomLine(key, d.Line, "")
+			sum.Prefs = true
+		}
 	}
 	if d.Volume != nil {
-		a.Volume = *d.Volume
+		// 走 setVolume：墙上正出声的那格同步成导入值，别的格保留自己的。
+		a.setVolume(*d.Volume)
 		sum.Prefs = true
 	}
 	if d.DanmuOn != nil {

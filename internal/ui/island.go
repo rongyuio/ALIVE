@@ -121,8 +121,8 @@ func (a *App) islandListening() bool {
 	if a.Router != nil && a.Router.Path() == routePlayer {
 		return false
 	}
-	// 观测墙上的 active 也是「这一路还开着」：它可能由墙自己的会话持有，
-	// 不在 a.media 里。岛照样显示它，点一下回播放页。
+	// 观测墙上的 active 也是一路开着的声音：它可能由墙自己的会话持有，
+	// 不在 a.media 里。Island 会看到它，但不展开成后台收听那一枚。
 	if a.WatchActive != "" {
 		return true
 	}
@@ -142,6 +142,9 @@ func (a *App) Island(c *ui.Context) {
 	winW, _ := c.Size()
 	player := a.Router != nil && a.Router.Path() == routePlayer
 	listening := a.islandListening()
+	// 观测墙上的 active 就是那一间单直播间：岛展开显示它，环是流光，
+	// 和播放页同一套形态（见 islandRings）。
+	wallActive := a.onWatchWall() && !player && a.WatchActive != ""
 
 	if player {
 		a.enterPlayerIsland()
@@ -165,9 +168,9 @@ func (a *App) Island(c *ui.Context) {
 	case player:
 		// 展开态常驻：不再有 InfoOpen 这一档收起
 		targetW = openW
-	case a.onWatchWall():
-		// 观测墙上岛承担「正在播放谁」：展开显示当前 active 的房间，
-		// 点整块回播放页。收成正圆只能说「还在响」，说不出是哪一间。
+	case wallActive:
+		// 观测墙上的 active 跟单直播间一样展开：显示的就是 active 那一间，
+		// 点整块回播放页。
 		targetW = openW
 	case listening:
 		// 后台收听缩成一枚正圆，和播放页收起态同一个尺寸——它们是同一件事
@@ -222,7 +225,7 @@ func (a *App) Island(c *ui.Context) {
 		//
 		// 光面必须**每一帧都画**：它就是岛的墨底本身。收听态 ring=0 时
 		// 色带整条是墨，岛照样有形状；不画的话岛就只剩呼吸环那一圈。
-		ring, breath := islandRings(player, listening, islandMorph(w, openW))
+		ring, breath := islandRings(player, listening, wallActive, islandMorph(w, openW))
 		a.islandGlow(c, theme.RadiusFull, ring)
 		if breath > 0 {
 			a.islandBreath(c, breath)
@@ -317,18 +320,23 @@ func (a *App) enterPlayerIsland() {
 
 // islandRings 决定画哪几圈环，以及各自的不透明度。
 //
-//	首页        ring=1，breath=0   只有流光
-//	播放页      ring=1-m，breath=m  展开时纯流光，收缩时交叉淡化
-//	后台收听    ring=0，breath=1   纯呼吸环
+//	首页          ring=1，breath=0   只有流光
+//	观测墙 active  ring=1，breath=0   展开显示 active 那间，环是流光
+//	播放页        ring=1-m，breath=m  展开时纯流光，收缩时交叉淡化
+//	后台收听      ring=0，breath=1   纯呼吸环
 //
 // 抽成纯函数是因为它没法用像素验证：两个环同一个主题色、都在动、都在同一条
 // 环带上，截图和像素统计分不出谁是谁。上一版就是在这里出错——首页 openW
 // 等于收起宽度（岛上没有主播信息可量），islandMorph 恒为 1，跟着收起进度
 // 走就把时钟岛画成了呼吸环，流光整个消失。
 //
-// 所以首页那一支必须显式写出来，不能靠 m 的取值碰巧对。
-func islandRings(player, listening bool, m float32) (ring, breath float32) {
+// 所以首页那一支必须显式写出来，不能靠 m 的取值碰巧对。观测墙上的 active
+// 也一样：它就是那一间单直播间，形态跟播放页一致，环也是流光——呼吸环属于
+// 「后台收听」，墙上的 active 不是那个语义。
+func islandRings(player, listening, wallActive bool, m float32) (ring, breath float32) {
 	switch {
+	case wallActive:
+		return 1, 0
 	case player:
 		return 1 - m, m
 	case listening:

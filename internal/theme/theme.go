@@ -111,6 +111,12 @@ var (
 	// MediaScrimTile 是观测墙格子底部信息条的压暗层：0.66 才压得住
 	// 亮场景的直播画面，同时不把整块画面盖死。
 	MediaScrimTile = ui.RGBA(6, 7, 9, 0.66)
+	// 平台品牌色只用于观测墙的平台胶囊，不随主题变。胶囊上的字统一用
+	// IslandInk：四个品牌色配深色字的对比度都比白字高。
+	BrandBilibili = ui.RGB(0xFB, 0x72, 0x99)
+	BrandDouyu    = ui.RGB(0xFF, 0x6A, 0x00)
+	BrandHuya     = ui.RGB(0xFF, 0xB3, 0x00)
+	BrandDouyin   = ui.RGB(0xFE, 0x2C, 0x55)
 )
 
 // ---------------------------------------------------------------- 半透明叠加

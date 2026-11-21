@@ -16,7 +16,8 @@ func TestConfigRoundTrip(t *testing.T) {
 	src.Subs = []Subscription{
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "英雄联盟", CategoryID: "1_1"},
 	}
-	src.Quality = "原画"
+	src.Player = Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"}
+	src.setRoomQuality("bilibili|1001", "原画")
 	src.Volume = 0.42
 	src.FollowsSectionOrder = []string{sectionIDSubs, sectionIDStreamers}
 
@@ -33,6 +34,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	dst := NewMockApp()
 	dst.Follows = nil
 	dst.Subs = nil
+	dst.Player = Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"}
 	sum := dst.applyConfig(parsed)
 	if sum.Follows != 2 || sum.Subs != 1 {
 		t.Fatalf("导入 %+v，期望 2 位关注 1 个订阅", sum)
@@ -40,8 +42,8 @@ func TestConfigRoundTrip(t *testing.T) {
 	if len(dst.Follows) != 2 || dst.Follows[0].RoomID != "1001" {
 		t.Fatalf("关注没有正确落地：%+v", dst.Follows)
 	}
-	if dst.Quality != "原画" || dst.Volume != 0.42 {
-		t.Errorf("播放设置没有覆盖：quality=%q volume=%v", dst.Quality, dst.Volume)
+	if got := dst.qualityFor("bilibili|1001"); got != "原画" || dst.Volume != 0.42 {
+		t.Errorf("播放设置没有覆盖：quality=%q volume=%v", got, dst.Volume)
 	}
 	if got, want := dst.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers, sectionIDWatch}; !equalStrings(got, want) {
 		t.Errorf("一级分区顺序 %v，期望 %v", got, want)

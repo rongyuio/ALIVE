@@ -402,21 +402,23 @@ func absInt(v int) int {
 // 两边都不移动，也分不开。
 func TestIslandRings(t *testing.T) {
 	cases := []struct {
-		name             string
-		player, listen   bool
-		m                float32
-		wantRing, wantBr float32
+		name                 string
+		player, listen, wall bool
+		m                    float32
+		wantRing, wantBr     float32
 	}{
-		{"首页只有流光", false, false, 1, 1, 0},
-		{"首页 m 取任何值都不影响", false, false, 0, 1, 0},
-		{"播放页展开：纯流光", true, false, 0, 1, 0},
-		{"播放页收起途中：交叉淡化", true, false, 0.4, 0.6, 0.4},
-		{"播放页收定：纯呼吸环", true, false, 1, 0, 1},
-		{"后台收听：纯呼吸环", false, true, 1, 0, 1},
-		{"后台收听不看 m", false, true, 0, 0, 1},
+		{"首页只有流光", false, false, false, 1, 1, 0},
+		{"首页 m 取任何值都不影响", false, false, false, 0, 1, 0},
+		{"播放页展开：纯流光", true, false, false, 0, 1, 0},
+		{"播放页收起途中：交叉淡化", true, false, false, 0.4, 0.6, 0.4},
+		{"播放页收定：纯呼吸环", true, false, false, 1, 0, 1},
+		{"后台收听：纯呼吸环", false, true, false, 1, 0, 1},
+		{"后台收听不看 m", false, true, false, 0, 0, 1},
+		{"观测墙 active：收成圆，环仍是流光", false, true, true, 1, 1, 0},
+		{"观测墙 active 不看 m", false, true, true, 0, 1, 0},
 	}
 	for _, tc := range cases {
-		ring, breath := islandRings(tc.player, tc.listen, tc.m)
+		ring, breath := islandRings(tc.player, tc.listen, tc.wall, tc.m)
 		if ring != tc.wantRing || breath != tc.wantBr {
 			t.Errorf("%s：ring=%v breath=%v，期望 %v / %v",
 				tc.name, ring, breath, tc.wantRing, tc.wantBr)

@@ -64,6 +64,9 @@ type playerMedia struct {
 	// danmuRetryAt 是弹幕连接失败后的退避点。ensureDanmaku 每帧都会问，
 	// 没有它会在平台拒绝时每帧重连。
 	danmuRetryAt time.Time
+	// lastW/H 是重开之前那一帧的呈现尺寸。墙上 active 刷新/热切换时用它
+	// 保住同一块渲染目标，不缩回 160×90，也不跳成全尺寸。
+	lastW, lastH int
 
 	// 画面推进的观测点。不能直接信 VideoPlayer.Buffering()：Media
 	// Foundation 在直播 HLS 上每一次 playlist 滚动都会发一次 WAITING，而把
@@ -280,7 +283,6 @@ func (a *App) closeMedia() {
 	a.Danmu = nil
 	a.panelSeen = 0
 	a.panelPending = 0
-	a.watch.activeW, a.watch.activeH = 0, 0
 	a.media.reset()
 	a.media.roomKey = ""
 }
@@ -303,20 +305,13 @@ func (a *App) detachMedia() {
 	if e == nil {
 		return
 	}
-	// 退回观测盒时，active 那一格要按格子物理像素呈现，不是 160×90 的模糊小图。
-	if a.Router != nil && a.Router.Path() == routeFollows && a.FollowsSection == followsSectionWatch {
-		if r, ok := a.watch.rects[m.roomKey]; ok {
-			w, h := watchSize(r)
-			e.SetPresentSize(w, h)
-		} else {
-			e.SetPresenting(false)
-		}
-	} else {
+	// 墙上不碰呈现尺寸：从播放页全尺寸回来，视频在卡片里 contain；
+	// 激活/退出/回墙都不改渲染目标，画面不会因为进出一趟播放页再变一次。
+	if a.Router == nil || a.Router.Path() != routeFollows || a.FollowsSection != followsSectionWatch {
 		e.SetPresenting(false)
 	}
 	m.background = true
 	m.detachedAt = time.Now()
-	a.watch.activeW, a.watch.activeH = 0, 0
 	// 后台只剩小帧、没人看，缓冲胶囊和停帧看门狗的判据（「画面有没有在动」）
 	// 失去意义。基准拨到现在，回来时不会立刻误判成卡死。
 	m.lastPos, m.lastPosAt = 0, time.Time{}
@@ -458,6 +453,9 @@ func (a *App) ensureMedia(c *ui.Context) {
 func (a *App) beginSession(stage string) playbackSession {
 	m := &a.media
 	m.cancelSession()
+	if m.player != nil {
+		m.lastW, m.lastH = m.player.Size()
+	}
 	a.stopPlayback()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -524,8 +522,15 @@ func (a *App) startStream(keepDanmaku bool) {
 		a.panelPending = 0
 	}
 
-	// 界面上存的是线路标签（「主线」「备线1」），取流要的是节点 id。
-	line, want := a.lineID(a.Line), a.Quality
+	// 清晰度 / 线路属于这一间房：用房间自己的记录去取流。线路在界面上
+	// 是标签（「主线」「备线1」），取流要节点 id；本房间的档位表还在手上
+	// 时现映射，否则用记录里存下的 id。
+	streamKey := watchKey(s)
+	var known live.Stream
+	if a.media.roomKey == streamKey {
+		known = a.media.stream
+	}
+	line, want := a.lineIDFor(streamKey, known), a.qualityFor(streamKey)
 	// 只有用户主动切档才记录；进房间时的默认档不该弹“降档”提示。
 	picked := a.media.pendingQualityPick
 	a.media.pendingQualityPick = ""
@@ -565,26 +570,7 @@ func (a *App) startStream(keepDanmaku bool) {
 		// 房间详情先上屏：标题、头像、是否在播都不依赖转封装
 		a.applyMedia(sess, func() {
 			a.media.stream = info
-			switch {
-			// 平台确认了实际档位就听它的：请求「原画」但服务端只给了
-			// 「蓝光」时，菜单必须显示真正在播的那一档，不能让标签撒谎。
-			case selected.URL != "" && (selected.Label == "" || selected.ID == ""):
-				a.Quality = "默认"
-			case selected.Label != "":
-				a.Quality = selected.Label
-			case len(info.Variants) > 0 && !hasVariantLabel(info.Variants, a.Quality):
-				// 档位 / 线路的标签跟着平台走：上一间房选的「蓝光」在这一间
-				// 可能根本不存在，不校正就会显示一个菜单里没有的值。
-				a.Quality = defaultVariantLabel(info.Variants)
-			}
-			// 单线路的平台（抖音）根本没有线路概念，控件整块不出现；
-			// 旧的线路名要清掉，否则控制条上会挂着一个不存在的值。
-			switch {
-			case len(info.Lines) == 0:
-				a.Line = ""
-			case !hasLineLabel(info.Lines, a.Line):
-				a.Line = info.Lines[0].Label
-			}
+			a.learnRoomChoice(streamKey, info, selected)
 			// 平台可以给不了所点的档位（斗鱼对匿名请求会把「原画」降成
 			// 「蓝光4M」）。默默换掉会让人以为切档没生效，所以明说一次。
 			if picked != "" && selected.Label != "" && !sameQuality(picked, selected.Label) {
@@ -726,6 +712,12 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 	a.media.refreshAt = refreshAtFor(upstream)
 	a.media.loading = false
 	a.media.err = ""
+	// 重开这一路时保持原来的呈现尺寸：墙上 active 刷新不该改变格子画面。
+	if a.media.lastW > 0 && a.media.lastH > 0 {
+		if tr := engineOf(p); tr != nil {
+			tr.SetPresentSize(a.media.lastW, a.media.lastH)
+		}
+	}
 	// 播放器打开就按当前音量对齐，别让用户先听到满音量再跳
 	volume := float64(a.Volume)
 	// 0 就是静音：播放器的 SetVolume(0) 与 SetMuted(true) 在听感上等价，
@@ -760,7 +752,10 @@ func (a *App) adoptBackgroundPresentingOff() {
 	if e == nil {
 		return
 	}
-	e.SetPresenting(false)
+	// 墙上 active 是卡片，不是后台收听的小图；保留当前尺寸。
+	if !a.onWatchWall() {
+		e.SetPresenting(false)
+	}
 	a.media.background = true
 	a.media.detachedAt = time.Now()
 }
@@ -812,7 +807,7 @@ func (a *App) scheduleSwap(reason string) {
 	m.lastSwapAt = time.Now()
 	sess := a.session()
 	cur := a.current()
-	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: a.Line, quality: m.upstream.Label, background: m.background}
+	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: a.lineIDFor(m.roomKey, m.stream), quality: m.upstream.Label, background: m.background}
 	logStage(sess.id, sess.start, "swap-start", "reason", reason)
 	go a.runHotSwap(sess, req, reason)
 }
@@ -909,10 +904,18 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 	a.media.refreshAt = refreshAtFor(v)
 	a.media.refreshing = false
 	a.media.swapFailures = 0
-	// 后台收听时换上去的是一路新引擎：新引擎的呈现闸门默认是开的，不补
-	// 这一下，换完地址它会在后台一直唤醒窗口，后台收听就名存实亡了。
+	// 后台收听时换上去的是一路新引擎。墙上 active 沿用旧尺寸，绝不缩成
+	// 160×90；只有首页/别的页面的后台收听才收小，避免一直唤醒窗口。
 	if a.media.background {
-		e.SetPresenting(false)
+		if a.onWatchWall() {
+			if old != nil {
+				if w, h := old.Size(); w > 0 && h > 0 {
+					e.SetPresentSize(w, h)
+				}
+			}
+		} else {
+			e.SetPresenting(false)
+		}
 	}
 	volume := float64(a.Volume)
 	p.SetVolume(volume)
@@ -1185,8 +1188,9 @@ func (m *playerMedia) startupElapsed(now time.Time) time.Duration {
 // 重新枚举档位把正在看的画面闪一下。地址还没解析（PlaybackStreamer 只解析
 // 当前档）时走取流流程。两种情况都保留弹幕连接。
 func (a *App) PickQuality(label string) {
-	a.Quality = label
-	a.markDirty()
+	// 写进这一间房自己的记录：换台 / 离开后回来，选的还是这一档；
+	// 别的房间、别的平台一个字都不动。
+	a.setRoomQuality(a.choiceKey(), label)
 	if a.media.roomKey == "" {
 		return
 	}
@@ -1210,8 +1214,8 @@ func (a *App) PickQuality(label string) {
 // 线路会参与上游地址的解析（斗鱼每个线路给的 CDN 不同），所以必须
 // 重新取一次 stream；弹幕连接保留。
 func (a *App) pickLine(label string) {
-	a.Line = label
-	a.markDirty()
+	// 选项来自当前这一路的档位表，标签 → 节点 id 就在这份表里换。
+	a.setRoomLine(a.choiceKey(), label, lineIDIn(a.media.stream.Lines, label))
 	if a.media.roomKey != "" {
 		a.startStream(true)
 	}
@@ -1293,14 +1297,6 @@ func defaultVariantLabel(variants []live.Variant) string {
 //
 // B 站的线路在界面上是「主线 / 备线1」，实际切的是 CDN 节点域名；
 // 取流接口只认后者，所以发请求前要换一次。
-func (a *App) lineID(label string) string {
-	for _, l := range a.media.stream.Lines {
-		if l.Label == label {
-			return l.ID
-		}
-	}
-	return label
-}
 
 // hasVariantLabel 报告 label 是否在这一档表里。
 func hasVariantLabel(variants []live.Variant, label string) bool {

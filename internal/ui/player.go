@@ -40,7 +40,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 	if a.WatchActive != "" && a.WatchActive != target {
 		a.watchDropActive()
 	}
-	if !a.watchAdoptActive() && a.WatchActive == target && a.media.roomKey != target {
+	if !a.watchAdoptActive(false) && a.WatchActive == target && a.media.roomKey != target {
 		// 墙上的这一间还没出首帧：收掉它，让正常的起播路径接手。
 		if s := a.watch.sessions[target]; s != nil {
 			a.watchCloseSession(s)
@@ -561,15 +561,19 @@ func (a *App) playerControls(c *ui.Context) {
 				// 清晰度 / 线路：选项全部来自平台返回值，还没取到流时整块
 				// 不出现。摆一个本平台根本不存在的档位，只是先骗一下眼睛。
 				// 这两个是「看什么流」的选择，排在弹幕那组前面更顺手。
+				//
+				// 显示的值读当前这一路自己的房间记录，不读全局：同一个
+				// 控件在切房间后必须立刻换成那一间的档位名。
+				key := a.choiceKey()
 				if qOpts := a.qualityOptions(); len(qOpts) > 0 {
 					a.playerDropdown(c, "清晰度", qOpts,
-						&a.Quality, &a.QualityOpen, &a.QualityHover, a.PickQuality)
+						a.qualityFor(key), &a.QualityOpen, &a.QualityHover, a.PickQuality)
 				}
 				// 线路只列平台真实给出的节点：抖音这类没有多线路概念的平台
 				// 整块不出现——网页端也没有「自动线路」这一项。
 				if lineOpts := a.lineOptions(); len(lineOpts) > 0 {
 					a.playerDropdown(c, "线路", lineOpts,
-						&a.Line, &a.LineOpen, &a.LineHover, a.pickLine)
+						a.lineFor(key), &a.LineOpen, &a.LineHover, a.pickLine)
 				}
 
 				// 弹幕组：开关 / 设置 / 屏蔽词；三颗和外层用同一个 gap，
@@ -704,8 +708,7 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 				v := min(1, max(0, x/m.volumeW))
 				v = float32(math.Round(float64(v)*100)) / 100
 				if v != a.Volume {
-					a.Volume = v
-					a.markDirty()
+					a.setVolume(v)
 				}
 			}
 		}
@@ -800,7 +803,7 @@ func (h *hoverClose) clicked(open *bool) {
 //
 // onPick 在选中一项之后调用：值和菜单的关闭在本函数里完成，但「选中之后
 // 要做什么」是调用方的事（换清晰度要重起一路流，换线路要重新取流）。
-func (a *App) playerDropdown(c *ui.Context, label string, options []string, value *string, open *bool, h *hoverClose, onPick func(string)) {
+func (a *App) playerDropdown(c *ui.Context, label string, options []string, value string, open *bool, h *hoverClose, onPick func(string)) {
 	// 触发条：gap 6、左右各 6 的 padding、12px 白字，
 	// 没有底色也没有圆角，hover / 展开时只是把字提亮到纯白。
 	btn := ui.Row(c).Height(30).Padding(0, 6, 0, 6).Gap(6).
@@ -818,7 +821,7 @@ func (a *App) playerDropdown(c *ui.Context, label string, options []string, valu
 		if lit {
 			col = playerIconOn
 		}
-		ui.Text(c, *value).FontSize(theme.TextXS).TextColor(col)
+		ui.Text(c, value).FontSize(theme.TextXS).TextColor(col)
 		caret := btn.AnimateTo("dd-"+label, caretAngle(*open), theme.EaseOut(190*time.Millisecond))
 		ui.Icon(c, iconChevron).FontSize(12).TextColor(col).Rotate(caret)
 	})
@@ -845,8 +848,8 @@ func (a *App) playerDropdown(c *ui.Context, label string, options []string, valu
 	})
 }
 
-func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open *bool, onPick func(string)) {
-	active := opt == *value
+func (a *App) playerDropdownItem(c *ui.Context, opt string, value string, open *bool, onPick func(string)) {
+	active := opt == value
 	// --player-accent-strong = color-mix(in srgb, accent 24%, transparent)
 	// 注意用 Alpha 而不是 Mix(Transparent)：后者逐通道插值，会把 RGB 一起
 	// 压到 24%，选中底色变成一块发黑的东西。
@@ -860,9 +863,9 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value *string, open 
 		row.Background(strong)
 	}
 	if row.Clicked() {
-		*value = opt
+		// 选中值写进房间记录（由 onPick 完成），这里只负责收起面板：
+		// 组件不再持有一份自己的值，免得和模型里的那一份对不上。
 		*open = false
-		a.markDirty()
 		if onPick != nil {
 			onPick(opt)
 		}
@@ -928,6 +931,5 @@ func (a *App) wheelVolume(dy float32) {
 	if next == a.Volume {
 		return
 	}
-	a.Volume = next
-	a.markDirty()
+	a.setVolume(next)
 }

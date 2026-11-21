@@ -171,11 +171,7 @@ func (a *App) followsPanel(c *ui.Context) {
 		case followsSectionSubs:
 			a.subscribeRow(c)
 		case followsSectionWatch:
-			// 墙上不加常驻工具条：正在播谁由灵动岛承担。只有用户点开
-			// 「＋」时才长出这一行添加面板。
-			if a.WatchPickerOpen {
-				a.watchPicker(c)
-			}
+			// 墙上不加常驻工具条：正在播谁由灵动岛承担。
 		default:
 			a.followsPlatformRow(c)
 		}
@@ -217,8 +213,6 @@ func (a *App) followsSectionRow(c *ui.Context) {
 		switch a.FollowsSection {
 		case followsSectionStreamers:
 			a.followsActions(c)
-		case followsSectionWatch:
-			a.watchActions(c)
 		}
 	})
 }

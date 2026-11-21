@@ -140,15 +140,15 @@ func (a *App) toggleFullscreen() {
 func (a *App) toggleMute() {
 	if a.Volume > 0 {
 		a.volumeBeforeMute = a.Volume
-		a.Volume = 0
+		a.setVolume(0)
 		a.watchSyncActiveAudio()
 		return
 	}
 	if a.volumeBeforeMute > 0 {
-		a.Volume = a.volumeBeforeMute
+		a.setVolume(a.volumeBeforeMute)
 		a.watchSyncActiveAudio()
 		return
 	}
-	a.Volume = 0.6
+	a.setVolume(0.6)
 	a.watchSyncActiveAudio()
 }

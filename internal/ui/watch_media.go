@@ -18,14 +18,15 @@ import (
 // 墙上每一格都是一间「无弹幕的单直播间缩小版」：全档取流、真实 AO、默认静音、
 // 按格子物理像素呈现。只有 a.WatchActive 那一路出声；其余只静音，不重开。
 //
-// active 有两种归属：
-//   - 墙持有（wallSession）：点格子激活、还没进播放页时；
-//   - a.media 持有：从播放页退回观测盒之后。这时墙直接画 a.media.player，
-//     同一个引擎、同一路声音，不再重开。
+// active 在激活完成时接管进 a.media；wallSession 只留非 active 预览和还没出
+// 首帧的 pending 格。因此 active 的播放/暂停、刷新、音量直接用播放页那套函数，
+// 墙上不再有第二套控制逻辑。音量的记账是唯一例外：a.Volume 只表示当前出声那
+// 一路，墙上每格另在 wall.volumes 里记自己的一份，切走再切回来用它自己的值。
 //
-// 进播放页时 watchAdoptActive 把墙上的 active 原样交给 a.media；离开播放页时
-// detachMedia 保留引擎，墙继续画它。激活另一格时 watchReleaseActive 把 a.media
-// 的 active 移回墙上的 wallSession，静音但不停播。
+// 进播放页时 watchAdoptActive(false) 把 active 原样交过去；离开播放页时
+// detachMedia 保留引擎和全尺寸呈现，墙继续画它。激活/退出 active 只换所有权
+// 和声音，不碰呈现尺寸；激活另一格时 watchReleaseActive 把 a.media 的 active
+// 移回墙上的 wallSession，静音但不停播。
 type wallSession struct {
 	key  string
 	room Streamer
@@ -51,6 +52,7 @@ type wallSession struct {
 	refreshAt  time.Time
 	firstFrame bool
 	lastPos    time.Duration
+	lastAudio  time.Duration
 	stillSince time.Time
 
 	// renderW/H 是这一格的软件渲染目标，按格子物理像素给。
@@ -61,11 +63,12 @@ type wallMedia struct {
 	sessions map[string]*wallSession
 	// rects 是上一帧墙上的布局，detachMedia / release 用它给 active 设呈现尺寸。
 	rects map[string]watch.Rect
+	// volumes 是每一格自己的音量（0–1），按 platform|roomID 记。
+	// 墙上仍只有一路出声，但音量不再共用 a.Volume 一份：调哪格只动哪格，
+	// 切走再切回来还是它自己的值，静音一格也不会把别的格改成 0。
+	volumes map[string]float32
 	// tickPending 表示墙的心跳定时器已经排上，避免每帧重复排。
 	tickPending bool
-	// activeW/H 是 media 持有的 active 在墙上最后一次设过的呈现尺寸，
-	// 避免每帧重复 SetPresentSize（那会每帧强制重渲染一次）。
-	activeW, activeH int
 }
 
 func (m *wallMedia) init() {
@@ -75,12 +78,38 @@ func (m *wallMedia) init() {
 	if m.rects == nil {
 		m.rects = make(map[string]watch.Rect)
 	}
+	if m.volumes == nil {
+		m.volumes = make(map[string]float32)
+	}
+}
+
+// watchVolume 读这一格记住的音量。第一次见到它时继承当前出声那一路的值，
+// 之后这格就只认自己这份。
+func (a *App) watchVolume(key string) float32 {
+	a.watch.init()
+	if v, ok := a.watch.volumes[key]; ok {
+		return v
+	}
+	v := a.Volume
+	a.watch.volumes[key] = v
+	return v
+}
+
+// setVolume 改当前出声那一路的音量：播放页，或墙上 active。
+// 墙上 active 时同时把值记到这格名下，切走再切回来才能恢复。
+func (a *App) setVolume(v float32) {
+	a.Volume = min(1, max(0, v))
+	if key := a.WatchActive; key != "" {
+		a.watch.init()
+		a.watch.volumes[key] = a.Volume
+	}
+	a.markDirty()
 }
 
 func watchKey(s Streamer) string { return s.Platform + "|" + s.RoomID }
 
-// watchRecord 是观测盒落盘的一条。只存身份和展示用的元数据，不存签名地址、
-// 会话状态或播放进度——重启后重新取流，盒子顺序和置顶关系保留。
+// watchRecord 是观测盒落盘的一条。只存身份和展示用的元数据、以及这一格自己的
+// 音量，不存签名地址、会话状态或播放进度——重启后重新取流，盒子顺序和置顶关系保留。
 type watchRecord struct {
 	Platform  string  `json:"platform"`
 	RoomID    string  `json:"roomId"`
@@ -93,14 +122,45 @@ type watchRecord struct {
 	Hue       float32 `json:"hue,omitempty"`
 	CoverURL  string  `json:"cover,omitempty"`
 	AvatarURL string  `json:"avatar,omitempty"`
+	// Volume 是这一格自己的音量（0–1）。nil 表示从没调过，下次上墙继承当时的
+	// 全局音量；指针是为了把 0（静音）和「没存过」区分开。
+	Volume *float32 `json:"volume,omitempty"`
 }
 
-func watchRecordOf(s Streamer) watchRecord {
-	return watchRecord(s)
+func (a *App) watchRecordOf(s Streamer) watchRecord {
+	r := watchRecord{
+		Platform:  s.Platform,
+		RoomID:    s.RoomID,
+		Name:      s.Name,
+		Title:     s.Title,
+		Category:  s.Category,
+		Sub:       s.Sub,
+		Viewers:   s.Viewers,
+		Live:      s.Live,
+		Hue:       s.Hue,
+		CoverURL:  s.CoverURL,
+		AvatarURL: s.AvatarURL,
+	}
+	if v, ok := a.watch.volumes[watchKey(s)]; ok {
+		r.Volume = &v
+	}
+	return r
 }
 
 func (r watchRecord) streamer() Streamer {
-	return Streamer(r)
+	return Streamer{
+		Platform:  r.Platform,
+		RoomID:    r.RoomID,
+		Name:      r.Name,
+		Title:     r.Title,
+		Category:  r.Category,
+		Sub:       r.Sub,
+		Viewers:   r.Viewers,
+		Live:      r.Live,
+		Hue:       r.Hue,
+		CoverURL:  r.CoverURL,
+		AvatarURL: r.AvatarURL,
+	}
 }
 
 // normalizeWatchRooms 去重、丢掉没有房间身份的记录，并把上限钳到 9。
@@ -165,31 +225,6 @@ func watchSize(r watch.Rect) (int, int) {
 	return w, h
 }
 
-func (a *App) watchTrack(key string) videoTrack {
-	if key == "" {
-		return nil
-	}
-	if a.media.roomKey == key && a.media.player != nil {
-		return engineOf(a.media.player)
-	}
-	if s := a.watch.sessions[key]; s != nil {
-		return s.track
-	}
-	return nil
-}
-
-// watchQuality 是这一格实际在播的档位，显示在格子上，避免“墙上是原画、
-// 点进去变蓝光”没人发现。平台自己降档时这里写的就是实际档。
-func (a *App) watchQuality(key string) string {
-	if a.media.roomKey == key {
-		return a.media.upstream.Label
-	}
-	if s := a.watch.sessions[key]; s != nil {
-		return s.up.Label
-	}
-	return ""
-}
-
 func (a *App) watchPlayer(key string) *ui.VideoPlayer {
 	if key == "" {
 		return nil
@@ -211,16 +246,18 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 	for _, room := range a.WatchRooms {
 		key := watchKey(room)
 		seen[key] = true
+		// 上墙这一刻就把这格自己的音量定下来。它跟取流无关，视图测试里没有
+		// 窗口也要定；否则会等到第一次激活才去读 a.Volume，而那时它可能
+		// 已经被别的格子改过了。
+		a.watchVolume(key)
 		r, ok := rects[key]
 		if !ok {
 			continue
 		}
 		w, h := watchSize(r)
 		if key == a.WatchActive && a.media.roomKey == key {
-			if tr := a.watchTrack(key); tr != nil && (a.watch.activeW != w || a.watch.activeH != h) {
-				tr.SetPresentSize(w, h)
-				a.watch.activeW, a.watch.activeH = w, h
-			}
+			// 激活不改变呈现尺寸：这一格从开流起就是墙上的渲染目标。
+			// 之前在这里补 SetPresentSize，正是“点一下画面就变”的来源。
 			continue
 		}
 		if s := a.watch.sessions[key]; s != nil {
@@ -308,13 +345,14 @@ func (a *App) watchOpenSession(s *wallSession) {
 	s.openedAt = time.Now()
 
 	ctx, seq, win := s.ctx, s.seq, a.Win
-	quality := a.Quality
+	// 每一格用自己的房间记录：墙上同时挂着几个平台，档位名互不相通。
+	quality, line := a.qualityFor(s.key), a.lineIDFor(s.key, s.stream)
 	room := s.room
 	w, h := s.renderW, s.renderH
 	go func() {
 		fctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
-		info, v, err := fetchStream(fctx, prov, room.RoomID, "", quality)
+		info, v, err := fetchStream(fctx, prov, room.RoomID, line, quality)
 		if err != nil {
 			if ctx.Err() == nil {
 				runOnMain(win, func() {
@@ -368,19 +406,27 @@ func (a *App) watchOpenSession(s *wallSession) {
 				return
 			}
 			p := ui.NewEngineVideoPlayer(e)
-			p.SetMuted(true)
-			p.SetVolume(float64(a.Volume))
+			// 起播先按 0 音量，激活时 adopt 再落这一格自己的值。
+			//
+			// 不能用 SetMuted：MyGo 把静音视频当「一张画」调度，系统要求
+			// 减少动效、窗口被遮住或元素不再显示时会把它按住不播，时间轴
+			// 随之停住——墙的看门狗就会把一路好好的流当断流重连。静音一律
+			// 走 SetVolume(0)，播放器保持非静音。
+			p.SetVolume(0)
 			s.player, s.track = p, e
 			s.stream, s.up = info, v
+			// 平台确认的档位写回这一格自己的记录：激活 / 进播放页时读的就是它。
+			a.learnRoomChoice(s.key, info, v)
 			s.loading = false
 			s.err = ""
 			s.firstFrame = p.Ready()
 			s.failures = 0
 			s.refreshAt = refreshAtFor(v)
 			s.stillSince = time.Now()
-			s.lastPos = 0
+			s.lastPos, s.lastAudio = 0, 0
 			if s.key == a.WatchActive {
 				a.WatchPending = ""
+				a.watchAdoptActive(true)
 				a.watchSyncActiveAudio()
 			}
 			a.invalidateWindows()
@@ -440,6 +486,67 @@ func watchBackoff(n int) time.Duration {
 	}
 }
 
+// watchReload 是格子控制台上的「重新加载」：作用于当前 hover 的那一格。
+// 播放页持有时走 retryStream；墙上自己持有的会话就关掉当前引擎，让下一拍
+// heartbeat 重开。冷格没有会话，等 watchShow 重开即可。
+func (a *App) watchReload(room Streamer) {
+	key := watchKey(room)
+	if a.media.roomKey == key {
+		a.retryStream()
+		return
+	}
+	s := a.watch.sessions[key]
+	if s == nil {
+		return
+	}
+	a.watchRestart(s, "")
+	s.retryAt = time.Now()
+	a.watchOpenSession(s)
+}
+
+// watchBufferStallTimeout 是缓冲态下时间轴停住的容忍。
+//
+// 缓冲本来就会让时间轴停住：6 秒就判死，等于把一条正要恢复的流掐掉，重连
+// 之后还要重新缓冲——墙上一度就是这样每十秒重连一次。缓冲给更宽的窗口，
+// 真死了还有播放器的报错/结束把它兜住。
+const watchBufferStallTimeout = 20 * time.Second
+
+// watchDeadReason 报告这一格是不是已经不能继续播了，空串表示还活着。
+//
+// 直播没有「播完」：播放器自己结束、报错，或者**画面和声音同时**停住，
+// 才只有一种解释——这颗地址不能用了。三条误判单独处理：
+//
+//   - 时间轴用「有没有变化」而不是「有没有变大」。HLS 刷新播放列表时位置
+//     会重排，甚至往回跳；只认递增会把一路好好的流当成断流。
+//   - 还没出图时不判死：慢启动由首帧预算管，不该在 6 秒时先被这里砍掉。
+//   - 视频落后不算死：B站 HLS 的 CDN 节点实测会一阵一阵地供数据，画面时钟
+//     冻住 5–20 秒、音频时钟照走（实测差出 3–17 秒），这时重启只会丢掉正在
+//     攒的缓冲、再拉同一个慢节点。音频还在走就说明这一路是活的。
+//
+// 会顺手更新 lastPos / lastAudio / stillSince，调用方只管问。
+func watchDeadReason(ready, playing, buffering, ended bool, pos, audio time.Duration,
+	lastPos, lastAudio *time.Duration, stillSince *time.Time, now time.Time) string {
+	if ended {
+		return "播放器报告结束"
+	}
+	if !ready || !playing {
+		*stillSince = now
+		return ""
+	}
+	if pos != *lastPos || audio != *lastAudio {
+		*lastPos, *lastAudio, *stillSince = pos, audio, now
+		return ""
+	}
+	limit := streamStallTimeout
+	if buffering {
+		limit = watchBufferStallTimeout
+	}
+	if !stillSince.IsZero() && now.Sub(*stillSince) > limit {
+		return fmt.Sprintf("画面与声音都停住 %d 秒", int(limit/time.Second))
+	}
+	return ""
+}
+
 // watchTick 驱动墙上所有非 media 持有的会话：首帧预算、断流、地址到期、重试。
 //
 // active 若由 a.media 持有，不在这里驱动——playerMedia 自己的心跳管它。
@@ -467,20 +574,21 @@ func (a *App) watchTick(now time.Time) {
 		if s.player.Ready() {
 			s.firstFrame = true
 		}
-		if s.player.Playing() {
-			pos := s.player.Position()
-			if pos > s.lastPos {
-				s.lastPos = pos
-				s.stillSince = now
-			} else if !s.stillSince.IsZero() && now.Sub(s.stillSince) > 6*time.Second {
-				a.watchEnded(s)
-				continue
-			}
-		} else {
-			s.stillSince = now
+		if err := s.player.Err(); err != nil {
+			a.watchEnded(s, "播放器报错："+err.Error())
+			continue
 		}
-		if s.player.Ended() || s.player.Err() != nil {
-			a.watchEnded(s)
+		// 音频时钟是另一路「还活着」的证据：B站 HLS 节点供数一阵一阵的，
+		// 视频落下十几秒时音频通常还在走。只看画面会把活流判死。
+		var audio time.Duration
+		if e, ok := s.track.(*playback.Engine); ok {
+			audio = e.Debug().AudioPTS
+		}
+		if why := watchDeadReason(
+			s.player.Ready(), s.player.Playing(), s.player.Buffering(), s.player.Ended(),
+			s.player.Position(), audio, &s.lastPos, &s.lastAudio, &s.stillSince, now,
+		); why != "" {
+			a.watchEnded(s, why)
 			continue
 		}
 		if !s.refreshAt.IsZero() && now.After(s.refreshAt) {
@@ -490,7 +598,10 @@ func (a *App) watchTick(now time.Time) {
 }
 
 // watchEnded 先问平台：真下播就落未开播，仍 live 才重取。
-func (a *App) watchEnded(s *wallSession) {
+//
+// why 是这一路的实际死因（时间轴停住 / 播放器结束 / 报错），只用于日志和
+// 重连原因——平台确认还在播时，用户看到的仍是「正在重连」，而不是故障。
+func (a *App) watchEnded(s *wallSession, why string) {
 	if s == nil || s.checking || s.player == nil {
 		return
 	}
@@ -515,7 +626,7 @@ func (a *App) watchEnded(s *wallSession) {
 				a.watchOffline(s)
 				return
 			}
-			a.watchRestart(s, "连接结束")
+			a.watchRestart(s, why+"，平台仍在直播")
 		})
 	}()
 }
@@ -534,7 +645,8 @@ func (a *App) watchRestart(s *wallSession, reason string) {
 	s.failures++
 	s.retryAt = time.Now().Add(watchBackoff(s.failures))
 	s.err = reason
-	slog.Info("观测墙重连", "key", s.key, "reason", reason, "failures", s.failures)
+	slog.Info("观测墙重连", "key", s.key, "name", s.room.Name,
+		"reason", reason, "failures", s.failures)
 	a.invalidateWindows()
 }
 
@@ -546,12 +658,17 @@ func (a *App) watchActivate(room Streamer) {
 	}
 	a.watch.init()
 	old := a.WatchActive
+	if old != "" {
+		// 先把旧 active 的音量记到它自己名下，再切走；否则调过的那格会丢值。
+		a.watch.volumes[old] = a.Volume
+	}
 	if a.media.roomKey != "" && a.media.roomKey != key {
 		a.watchReleaseActive()
 	}
 	if old != "" && old != key {
 		if s := a.watch.sessions[old]; s != nil && s.player != nil {
-			s.player.SetMuted(true)
+			// 让位给新的 active：音量归零，但不进静音态（见上）。
+			s.player.SetVolume(0)
 		}
 	}
 	a.WatchActive = key
@@ -559,20 +676,29 @@ func (a *App) watchActivate(room Streamer) {
 	a.Player = room
 	slog.Info("观测墙激活", "key", key, "name", room.Name)
 	a.Playing = true
-	// 点格子 = 声音放开。用户之前主动静音过也恢复到一个可听的音量。
-	if a.Volume <= 0 {
+	// 点格子 = 声音放开。这格自己记着多少就是多少；记的是 0（用户静音过）
+	// 才恢复到一个可听的音量，并写回这格，不碰别的格。
+	volume := a.watchVolume(key)
+	if volume <= 0 {
 		if a.volumeBeforeMute > 0 {
-			a.Volume = a.volumeBeforeMute
+			volume = a.volumeBeforeMute
 		} else {
-			a.Volume = 0.6
+			volume = 0.6
 		}
+		a.watch.volumes[key] = volume
 	}
-	if s := a.watch.sessions[key]; s != nil && s.player == nil {
-		// 点一个失败/离线的格子就是重试它，不用另设按钮。
-		s.offline = false
-		s.retryAt = time.Time{}
-		s.failures = 0
-		a.watchOpenSession(s)
+	a.Volume = volume
+	if s := a.watch.sessions[key]; s != nil {
+		if s.player == nil {
+			// 点一个失败/离线的格子就是重试它，不用另设按钮。
+			s.offline = false
+			s.retryAt = time.Time{}
+			s.failures = 0
+			a.watchOpenSession(s)
+		} else {
+			// 激活即接管：墙上 active 就是播放页那一路，控制走同一套函数。
+			a.watchAdoptActive(true)
+		}
 	}
 	a.watchSyncActiveAudio()
 	a.invalidateWindows()
@@ -592,7 +718,6 @@ func (a *App) watchSyncActiveAudio() {
 		return
 	}
 	s.player.SetVolume(float64(a.Volume))
-	s.player.SetMuted(a.Volume <= 0)
 	if a.Playing {
 		s.player.Play()
 	} else {
@@ -625,10 +750,13 @@ func (a *App) watchReleaseActive() {
 	} else {
 		s.renderW, s.renderH = 640, 360
 	}
-	s.player.SetMuted(true)
-	if s.track != nil {
-		s.track.SetPresentSize(s.renderW, s.renderH)
-	}
+	// 退出 active 只把音量归零，画面必须和激活时一像素不差。不进静音态：
+	// 静音视频会被 MyGo 按住，时间轴一停，看门狗就会重连这一格。
+	s.player.SetVolume(0)
+	// 不碰呈现尺寸。
+	// 这里补 SetPresentSize 正是“active 变非 active 又变一次”的来源。
+	// 音量记回这格名下：它已经不在 a.media 了，之后只认自己这份。
+	a.watch.volumes[key] = a.Volume
 	a.watch.sessions[key] = s
 
 	// 把 a.media 清空，但不 Close 播放器——它已经归墙上了。
@@ -649,7 +777,6 @@ func (a *App) watchReleaseActive() {
 	m.refreshing = false
 	m.swapFailures = 0
 	a.pushedVolume = 0
-	a.watch.activeW, a.watch.activeH = 0, 0
 	a.closeDanmaku()
 	a.DanmuLog = nil
 	a.Danmu = nil
@@ -658,9 +785,12 @@ func (a *App) watchReleaseActive() {
 	a.invalidateWindows()
 }
 
-// watchAdoptActive 进播放页时把墙上的 active 原样交给 a.media。
-// 返回 true 表示已经接上，ensureMedia 不必再取流。
-func (a *App) watchAdoptActive() bool {
+// watchAdoptActive 把墙上的 active 原样交给 a.media。
+//
+// onWall=true 是墙上激活：引擎留在格子里，音频开、呈现尺寸按格子；
+// onWall=false 是进播放页：恢复全尺寸。两条走同一段状态搬迁，不复制。
+// 返回 true 表示已经接上，调用方不必再取流。
+func (a *App) watchAdoptActive(onWall bool) bool {
 	if a.WatchActive == "" || a.media.roomKey == a.WatchActive {
 		return false
 	}
@@ -673,7 +803,11 @@ func (a *App) watchAdoptActive() bool {
 		a.watchReleaseActive()
 	}
 	key := s.key
-	slog.Info("观测墙接管进播放页", "key", key, "name", s.room.Name)
+	where := "播放页"
+	if onWall {
+		where = "墙上"
+	}
+	slog.Info("观测墙接管", "where", where, "key", key, "name", s.room.Name)
 	delete(a.watch.sessions, key)
 	if s.cancel != nil {
 		s.cancel()
@@ -690,25 +824,29 @@ func (a *App) watchAdoptActive() bool {
 	m.player = s.player
 	m.stream = s.stream
 	m.upstream = s.up
+	// 这一路真正在播的档位写回它自己的房间记录：播放页的下拉只读这份，
+	// 不需要任何全局校正。learnRoomChoice 只碰 key 这一间房。
+	a.learnRoomChoice(key, s.stream, s.up)
 	m.loading = false
 	m.err = ""
 	m.firstFrame = true
 	m.openedAt = time.Now()
 	m.pauseStarted = time.Time{}
 	m.pausedFor = 0
-	m.background = false
+	m.background = onWall
 	m.refreshAt = refreshAtFor(s.up)
+	// 接管的是这一格自己记住的音量，不是上一路播放页的值。
+	a.Volume = a.watchVolume(key)
 	a.pushedVolume = float64(a.Volume)
-	m.player.SetMuted(false)
 	m.player.SetVolume(float64(a.Volume))
 	m.player.Play()
-	if tr := engineOf(s.player); tr != nil {
+	if tr := engineOf(s.player); tr != nil && !onWall {
+		// 进播放页才恢复全尺寸。墙上激活保持原渲染目标，一动都不动。
 		tr.SetPresenting(true)
 	}
 	a.Player = s.room
 	a.Playing = true
 	a.WatchPending = ""
-	a.watch.activeW, a.watch.activeH = 0, 0
 	a.closeDanmaku()
 	a.DanmuLog = nil
 	a.Danmu = nil
@@ -724,9 +862,13 @@ func (a *App) watchAdoptActive() bool {
 // 不能把 a.Player 清掉。
 func (a *App) watchDropActive() {
 	key := a.WatchActive
+	if key != "" {
+		// 停掉这一路之前把音量记回这格名下，下次激活还是它自己的值。
+		a.watch.init()
+		a.watch.volumes[key] = a.Volume
+	}
 	a.WatchActive = ""
 	a.WatchPending = ""
-	a.watch.activeW, a.watch.activeH = 0, 0
 	if key == "" {
 		return
 	}
@@ -768,8 +910,32 @@ func (a *App) watchAdd(room Streamer) bool {
 	return true
 }
 
+// watchSwap 交换两格的位置：拖拽是「把这一格换到那一格」，不重排整面墙。
+// active 跟房间身份走，不跟格子序号走。
+func (a *App) watchSwap(dragKey, targetKey string) {
+	if dragKey == targetKey {
+		return
+	}
+	from, to := -1, -1
+	for i, s := range a.WatchRooms {
+		switch watchKey(s) {
+		case dragKey:
+			from = i
+		case targetKey:
+			to = i
+		}
+	}
+	if from < 0 || to < 0 || from == to {
+		return
+	}
+	a.WatchRooms[from], a.WatchRooms[to] = a.WatchRooms[to], a.WatchRooms[from]
+	a.markDirty()
+	a.invalidateWindows()
+}
+
 // watchMove 把一间放到目标原来的位置；规则和 movePlatform / moveFollowsSection
 // 同一套：先摘掉拖拽项，再插到目标索引上。active 跟房间身份走，不跟格子序号走。
+// 拖拽不用它——拖拽是交换（watchSwap），这里只服务右键的前移/后移。
 func (a *App) watchMove(dragKey, targetKey string) {
 	if dragKey == targetKey {
 		return

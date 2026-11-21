@@ -43,14 +43,19 @@ type persisted struct {
 	FollowRecords       *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
 	Subs                *[]Subscription `json:"subscriptions,omitempty"`
 	WatchRooms          *[]watchRecord  `json:"watchRooms,omitempty"`
-	Quality             string          `json:"quality,omitempty"`
-	Line                string          `json:"line,omitempty"`
-	Volume              *float32        `json:"volume,omitempty"`
-	DanmuOn             *bool           `json:"danmuOn,omitempty"`
-	DanmuPanelW         *float32        `json:"danmuPanelW,omitempty"`
-	DanmuPanelOn        *bool           `json:"danmuPanelOn,omitempty"`
-	Danmu               *danmuPrefs     `json:"danmu,omitempty"`
-	DanmuFilters        *[]string       `json:"danmuFilters,omitempty"`
+	// RoomChoices 是每个直播间自己的清晰度 / 线路（键 platform|roomID）。
+	RoomChoices map[string]roomChoice `json:"roomChoices,omitempty"`
+	// Quality / Line 是旧版的全局字段。新模型按房间存，读旧文件时无法
+	// 判断这两个值属于哪一间房，只能丢弃；字段留着是为了旧 JSON 能解析，
+	// 不再写盘。
+	Quality      string      `json:"quality,omitempty"`
+	Line         string      `json:"line,omitempty"`
+	Volume       *float32    `json:"volume,omitempty"`
+	DanmuOn      *bool       `json:"danmuOn,omitempty"`
+	DanmuPanelW  *float32    `json:"danmuPanelW,omitempty"`
+	DanmuPanelOn *bool       `json:"danmuPanelOn,omitempty"`
+	Danmu        *danmuPrefs `json:"danmu,omitempty"`
+	DanmuFilters *[]string   `json:"danmuFilters,omitempty"`
 }
 
 // statePath 是状态文件的位置；拿不到用户配置目录时返回空串，调用方跳过落盘。
@@ -126,7 +131,7 @@ func (a *App) saveState() {
 	subs := append([]Subscription(nil), a.Subs...)
 	watchRooms := make([]watchRecord, 0, len(a.WatchRooms))
 	for _, s := range a.WatchRooms {
-		watchRooms = append(watchRooms, watchRecordOf(s))
+		watchRooms = append(watchRooms, a.watchRecordOf(s))
 	}
 	volume := a.Volume
 	panelW := a.panelWidth()
@@ -152,8 +157,7 @@ func (a *App) saveState() {
 		FollowRecords:       &follows,
 		Subs:                &subs,
 		WatchRooms:          &watchRooms,
-		Quality:             a.Quality,
-		Line:                a.Line,
+		RoomChoices:         a.roomChoices,
 		Volume:              &volume,
 		DanmuOn:             &danmuOn,
 		DanmuPanelW:         &panelW,
@@ -213,16 +217,20 @@ func (a *App) restore() {
 	}
 	if p.WatchRooms != nil {
 		rooms := make([]Streamer, 0, len(*p.WatchRooms))
+		a.watch.init()
 		for _, r := range *p.WatchRooms {
-			rooms = append(rooms, r.streamer())
+			s := r.streamer()
+			rooms = append(rooms, s)
+			// 每格音量是盒子状态的一部分，和房间一起恢复；没存过的不写，
+			// 下次上墙继续继承全局音量。
+			if r.Volume != nil {
+				a.watch.volumes[watchKey(s)] = *r.Volume
+			}
 		}
 		a.WatchRooms = normalizeWatchRooms(rooms)
 	}
-	if p.Quality != "" {
-		a.Quality = p.Quality
-	}
-	if p.Line != "" {
-		a.Line = p.Line
+	if p.RoomChoices != nil {
+		a.roomChoices = p.RoomChoices
 	}
 	if p.Volume != nil {
 		a.Volume = *p.Volume
