@@ -102,6 +102,18 @@ func followsSectionOf(id string) int {
 	return followsSectionStreamers
 }
 
+// followsSectionID 是 followsSectionOf 的反向：把分区常量写成身份串。
+// 落盘和顺序表共用同一套身份，以后加分区不会因为序号错位。
+func followsSectionID(section int) string {
+	switch section {
+	case followsSectionSubs:
+		return sectionIDSubs
+	case followsSectionWatch:
+		return sectionIDWatch
+	}
+	return sectionIDStreamers
+}
+
 // followsSectionOrder 是当前一级分区的显示顺序。
 //
 // 每帧现算而不缓存：顺序表只在拖动和读盘时写入，normalize 的代价是
@@ -268,6 +280,8 @@ func (a *App) selectFollowsSection(i int) {
 	}
 	a.navFlip(&a.followsSeq)
 	a.FollowsSection = i
+	// 下次打开还停在这一区。只记身份，不记 tab 顺序。
+	a.markDirty()
 }
 
 // followsPlatformRow 是「关注主播」的二级分级：平台胶囊（全部 / B站 / 斗鱼……）。
@@ -444,7 +458,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 	// 右键菜单只在“全部关注”里提供取消关注：这里列出的都是已关注的主播，
 	// 菜单只做减法，不能反过来把记录加回去。
 	row.ContextMenu(func(m *ui.Menu) {
-		if m.Item("收进悲鸣观测").Chosen() {
+		if m.Item("悲鸣观测").Chosen() {
 			a.watchAdd(s)
 		}
 		if m.Item("取消关注").Chosen() {

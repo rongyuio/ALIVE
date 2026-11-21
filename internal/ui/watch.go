@@ -19,6 +19,14 @@ import (
 const (
 	watchLiveDotSize  float32 = 10
 	watchLiveDotInset float32 = 12
+
+	// 观测墙控制条的紧凑尺寸。一格只有三百来像素宽，播放页那套
+	// 44 高玻璃条 + 30 热区 + 24 图标会占掉近半格，压在画面上很重。
+	watchBarRowH   float32 = 34
+	watchBarRadius float32 = 12
+	watchIconSize  float32 = 16
+	watchIconHit   float32 = 24
+	watchVolumeW   float32 = 64
 )
 
 // watchWall 是「悲鸣观测」的内容层：把观测盒里的房间按 1–12 间铺满这一屏。
@@ -114,10 +122,15 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 	player := a.watchPlayer(key)
 	sess := a.watch.sessions[key]
 	tile.Children(func() {
-		// 视频井：letterbox 露出的是媒体黑，不是卡片白底。
-		ui.Box(c).Fill().Background(theme.IslandInk)
+		// 视频井、视频、封面都是绝对定位的图层，不参与流式布局。
+		// 原来它们是三个 Fill 兄弟，MyGo 的 flex 收缩会把 100% 高度
+		// 平分：井占上半截、封面只在下半截，未加载态就是黑+占位色两块。
+		// 播放页的 stageFrame 也是绝对四边贴死，同一个理由。
+		ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+			Background(theme.IslandInk)
 		if player != nil {
-			ui.Video(c, player).Fill().Fit(ui.Contain)
+			ui.Video(c, player).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+				Fit(ui.Contain)
 		}
 		if player == nil || !player.Ready() {
 			a.watchCover(c, room, r, player != nil)
@@ -130,7 +143,7 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 		// 信息与控件收成一条底栏，遮罩就是它本身；常态不显示，hover 或
 		// 键盘聚焦才出现。墙上因此只剩画面和 active 那颗绿点。
 		if tile.Hovered() || tile.FocusVisible() {
-			a.watchBar(c, room, active)
+			a.watchBar(c, room, active, r.W)
 		}
 		a.watchState(c, room, sess, player)
 	})
@@ -204,16 +217,24 @@ func (a *App) watchLiveDot(c *ui.Context, key string) {
 		PassThrough()
 }
 
-// watchCover 是没有画面时的底：真封面（可裁）或渐变占位。
+// watchCover 是没有画面时的底：真封面（可裁）或首页卡片同款占位。
+//
+// 每层都绝对铺满整格：和视频井一样不能走流式 Fill，否则会被平分。
 func (a *App) watchCover(c *ui.Context, room Streamer, r watch.Rect, connecting bool) {
 	if bmp := media.Default.Bitmap(room.CoverURL, r.W); bmp != nil {
-		ui.Image(c, bmp).Fill().Fit(ui.Cover)
+		ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
 	} else {
-		ui.Box(c).Fill().Background(ui.Oklch(0.42, 0.10, room.Hue+180))
+		// 和首页卡片同一套占位（coverArt）：中性底 + 中心柔光。
+		// 原来按房间色相画色块，冷启动缓存里还没有封面时整面墙先亮一片绿，
+		// 和真封面的质感完全对不上。
+		ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).Children(func() {
+			coverArt(c, r.W, r.H)
+		})
 	}
 	if connecting {
 		// 有播放器但还没首帧：只压一层很淡的暗，不挡住“正在接通”的提示。
-		ui.Box(c).Fill().Background(theme.MediaScrimSoft)
+		ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+			Background(theme.MediaScrimSoft)
 	}
 }
 
@@ -223,7 +244,7 @@ func (a *App) watchCover(c *ui.Context, room Streamer, r watch.Rect, connecting 
 // 第二行：直接复用播放页控制台的结构——44 高玻璃条、左侧播放/刷新/音量，
 // 右侧放大/移出。弹幕、清晰度、线路、小窗、两种全屏都精简掉。
 // 只有 hover / 键盘聚焦时构建。
-func (a *App) watchBar(c *ui.Context, room Streamer, active bool) {
+func (a *App) watchBar(c *ui.Context, room Streamer, active bool, w float32) {
 	bar := ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(84).
 		Background(theme.MediaScrimTile).Padding(6, 10, 6, 10)
 	bar.Children(func() {
@@ -246,18 +267,21 @@ func (a *App) watchBar(c *ui.Context, room Streamer, active bool) {
 						TextColor(theme.MediaTextDim).SingleLine()
 				})
 			})
-			a.watchControlBar(c, room, active)
+			a.watchControlBar(c, room, active, w)
 		})
 	})
 }
 
 // watchControlBar 是播放页 playerControls 的精简版。
 //
-// 玻璃条、44 高、16 圆角、左右两组和 playerControls 同一套；只是去掉
-// 弹幕组、清晰度/线路下拉、小窗和两种全屏，右边只留放大和移出。
-func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool) {
-	m := metricsFor(c)
-	bar := ui.Row(c).Height(44).Padding(7, 14, 7, 14).Radius(16).FillWidth().
+// 玻璃条比播放页小一档：34 高、12 圆角、24 热区 + 16 图标、音量条 64。
+// 结构和左右两组不变，只是去掉弹幕组、清晰度/线路下拉、小窗和两种全屏，
+// 右边只留放大和移出。
+func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float32) {
+	s := watchBarSizeFor(w)
+	m := s.controls
+	bar := ui.Row(c).Height(s.rowH).Padding(s.padY, s.padX, s.padY, s.padX).
+		Radius(s.radius).FillWidth().
 		Border(1, playerBarBorder).AlignItems(ui.Center)
 	if c.Preferences().ReduceTransparency {
 		bar.Background(playerBarBg)
@@ -283,7 +307,7 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool) {
 			if playing {
 				playIcon, playLabel = iconPause, "暂停"
 			}
-			a.playerIconBtn(c, playIcon, playerIconSize, false, playLabel, func() {
+			a.iconBtnSized(c, playIcon, m.iconSize, m.iconHit, false, playLabel, func() {
 				if active {
 					a.togglePlayback()
 					return
@@ -298,7 +322,7 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool) {
 					s.player.Play()
 				}
 			})
-			a.playerIconBtn(c, iconSync, playerIconSize, false, "重新加载", func() {
+			a.iconBtnSized(c, iconSync, m.iconSize, m.iconHit, false, "重新加载", func() {
 				if active {
 					a.retryStream()
 					return
@@ -316,15 +340,55 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool) {
 
 		// 右：放大 / 移出。放大就是进播放页，移出就是离开观测盒。
 		ui.Row(c).Gap(m.rightGap).AlignItems(ui.Center).Children(func() {
-			a.playerIconBtn(c, iconFullscreen, playerIconSize, false, "放大观测 "+room.Name, func() {
+			a.iconBtnSized(c, iconFullscreen, m.iconSize, m.iconHit, false, "放大观测 "+room.Name, func() {
 				a.watchActivate(room)
 				a.Router.Push(routePlayer)
 			})
-			a.playerIconBtn(c, iconX, playerIconSize, false, "移出观测 "+room.Name, func() {
+			a.iconBtnSized(c, iconX, m.iconSize, m.iconHit, false, "移出观测 "+room.Name, func() {
 				a.watchRemove(room)
 			})
 		})
 	})
+}
+
+// watchBarSize 是格子里控制条的一档尺寸。
+//
+// 播放页那套（44 高 / 30 热区 / 24 图标 / 96 滑条）只在格子够大时沿用；
+// 12 格时一格只有三百来像素宽，同样的条子会占掉近半格，压得画面透不过气。
+type watchBarSize struct {
+	rowH, radius, padY, padX float32
+	controls                 controlMetrics
+}
+
+func watchBarSizeFor(w float32) watchBarSize {
+	switch {
+	case w >= 520:
+		return watchBarSize{
+			rowH: 44, radius: 16, padY: 7, padX: 14,
+			controls: controlMetrics{
+				leftGap: 12, rightGap: 12, volumeW: 96, showPercent: true,
+				iconSize: playerIconSize, iconHit: playerIconHit,
+			},
+		}
+	case w >= 300:
+		return watchBarSize{
+			rowH: watchBarRowH, radius: watchBarRadius, padY: 4, padX: 8,
+			controls: controlMetrics{
+				leftGap: 6, rightGap: 6, volumeW: watchVolumeW, showPercent: true,
+				iconSize: watchIconSize, iconHit: watchIconHit,
+			},
+		}
+	default:
+		// 再窄一档：百分比让位、滑条收到 40，否则左组会顶到右组，
+		// 放大和移出被挤出格。
+		return watchBarSize{
+			rowH: watchBarRowH, radius: watchBarRadius, padY: 4, padX: 8,
+			controls: controlMetrics{
+				leftGap: 4, rightGap: 4, volumeW: 40, showPercent: false,
+				iconSize: watchIconSize, iconHit: watchIconHit,
+			},
+		}
+	}
 }
 
 // watchMutedVolume 是非 active 格的音量组：这格没在出声，但条上显示的是
@@ -334,8 +398,8 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool) {
 // 听不到反馈，激活是唯一的即时反馈；但改的始终只是这格，别的格一动不动。
 func (a *App) watchMutedVolume(c *ui.Context, m controlMetrics, room Streamer) {
 	volume := a.watchVolume(watchKey(room))
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(0, 0, 0, 6).Children(func() {
-		a.playerIconBtn(c, iconVolumeMute, playerIconSize, false, "取消静音", func() {
+	ui.Row(c).Gap(m.leftGap).AlignItems(ui.Center).Children(func() {
+		a.iconBtnSized(c, iconVolumeMute, m.iconSize, m.iconHit, false, "取消静音", func() {
 			a.watchActivate(room)
 			a.watchSyncActiveAudio()
 		})
@@ -368,8 +432,10 @@ func (a *App) watchMutedVolume(c *ui.Context, m controlMetrics, room Streamer) {
 			})
 		})
 		if m.showPercent {
+			// 玻璃条是恒定暗面，不能用跟配色走的 TextSecondary：
+			// 浅色主题里那是深墨，数字直接消失。
 			ui.Text(c, fmt.Sprintf("%d%%", int(volume*100+0.5))).
-				FontSize(theme.TextXS).TextColor(theme.TextSecondary).
+				FontSize(theme.TextXS).TextColor(theme.MediaTextDim).
 				FontFeatures("tnum").Width(36).TextAlign(ui.End)
 		}
 	})

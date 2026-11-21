@@ -37,8 +37,10 @@ type persisted struct {
 	Palette       string   `json:"palette,omitempty"`
 	ThemeMode     string   `json:"themeMode,omitempty"` // system / dark / light
 	PlatformOrder []string `json:"platformOrder,omitempty"`
-	// FollowsSectionOrder 是关注页一级分区的显示顺序
+	// FollowsSectionOrder 是关注页一级分区的显示顺序，
+	// FollowsSection 是上次停在哪一区（用身份串，顺序拖过也不会串）。
 	FollowsSectionOrder []string        `json:"followsSectionOrder,omitempty"`
+	FollowsSection      string          `json:"followsSection,omitempty"`
 	Follows             *[]string       `json:"follows,omitempty"`       // 旧格式：只有「平台|昵称」
 	FollowRecords       *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
 	Subs                *[]Subscription `json:"subscriptions,omitempty"`
@@ -154,6 +156,7 @@ func (a *App) saveState() {
 		ThemeMode:           a.ThemeMode,
 		PlatformOrder:       a.PlatformOrder,
 		FollowsSectionOrder: a.followsSectionOrder(),
+		FollowsSection:      followsSectionID(a.FollowsSection),
 		FollowRecords:       &follows,
 		Subs:                &subs,
 		WatchRooms:          &watchRooms,
@@ -190,6 +193,9 @@ func (a *App) restore() {
 	}
 	if len(p.FollowsSectionOrder) > 0 {
 		a.FollowsSectionOrder = normalizeFollowsSectionOrder(p.FollowsSectionOrder)
+	}
+	if validFollowsSectionID(p.FollowsSection) {
+		a.FollowsSection = followsSectionOf(p.FollowsSection)
 	}
 	switch {
 	case p.FollowRecords != nil:

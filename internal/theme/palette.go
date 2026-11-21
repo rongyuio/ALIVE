@@ -412,8 +412,13 @@ func (s spec) buildWith(l ladder) Palette {
 	p.AccentSofter = withAlpha(p.Accent, 0.07)
 	p.AccentGlow = withAlpha(p.Accent, 0.20)
 
-	// 状态色三支。色相是语义，明度跟着当前配色的最坏表面走。
-	p.StatusOnline, p.StatusOnlineInk, p.StatusOnlineLine = buildStatus(statusOnline, s.Dark, l, p.FillSecondary)
+	// 状态色。色相是语义：成功 / 危险跟着日夜和配色推导明度。
+	//
+	// 在线绿是例外：它是固定值，日夜和各配色共用同一支。这颗绿只压在
+	// 画面和墨底上（封面上的点、岛上的环、观测墙的点），底本来就是暗的；
+	// 跟着浅色主题压深只会变成另一种深绿，和深色主题对不上。
+	live := statusOnlineColor()
+	p.StatusOnline, p.StatusOnlineInk, p.StatusOnlineLine = live, live, live
 	p.Success, p.SuccessInk, p.SuccessLine = buildStatus(statusSuccess, s.Dark, l, p.FillSecondary)
 	p.Danger, p.DangerInk, p.DangerLine = buildStatus(statusDanger, s.Dark, l, p.FillSecondary)
 
@@ -446,10 +451,19 @@ type statusSpec struct {
 }
 
 var (
-	statusOnline  = statusSpec{hue: 150, darkL: 0.72, darkC: 0.160, lightL: 0.58, lightC: 0.150}
+	// 在线绿只有深色那一支：浅色主题也用它，见 build 里的说明。
+	statusOnline  = statusSpec{hue: 150, darkL: 0.72, darkC: 0.160}
 	statusSuccess = statusSpec{hue: 145, darkL: 0.72, darkC: 0.150, lightL: 0.58, lightC: 0.140}
 	statusDanger  = statusSpec{hue: 35, darkL: 0.62, darkC: 0.180, lightL: 0.52, lightC: 0.180}
 )
+
+// statusOnlineColor 返回固定的在线绿：fill / ink / line 同值。
+//
+// 三支原本的差别来自对不同表面的对比度推导；固定之后只压在墨底和画面上，
+// 不需要再为「当字用」留一支更深的。
+func statusOnlineColor() ui.Color {
+	return oklch(statusOnline.darkL, statusOnline.darkC, statusOnline.hue)
+}
 
 // buildStatus 返回 fill / ink / line。fill 和 line 都以"在 FillSecondary 上
 // 看得见"为底线；ink 按正文那一档推，保证当文字时够读。

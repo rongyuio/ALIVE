@@ -193,3 +193,32 @@ func TestDanmuPanelOpenStatePersists(t *testing.T) {
 		t.Error("面板收起状态没有恢复，重启后又是展开")
 	}
 }
+
+// 关注页停在哪个一级分区要记住：下次打开还是悲鸣观测，不该回到关注主播。
+func TestFollowsSectionPersists(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+
+	app := NewMockApp()
+	app.selectFollowsSection(followsSectionWatch)
+	app.saveState()
+
+	path := statePath()
+	if path == "" {
+		t.Fatal("拿不到状态文件路径")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("状态文件没有落盘：%s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	restored := NewMockApp()
+	if restored.FollowsSection != followsSectionWatch {
+		t.Fatalf("重启后停在 %d，期望悲鸣观测", restored.FollowsSection)
+	}
+}

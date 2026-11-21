@@ -632,6 +632,9 @@ func (a *App) playerControls(c *ui.Context) {
 // 跟着粗 10%，一排里粗细不齐，而且换图标就得重量一次。
 const playerIconSize float32 = 24
 
+// playerIconHit 是控制条图标按钮的点击热区；观测墙用同一套按钮但缩到 24。
+const playerIconHit float32 = 30
+
 // controlMetrics 是控制条在当前窗口宽度下的尺寸。
 //
 // 控制条的尺寸分 @media (max-width: 1100px) / (max-width: 980px) 两档：
@@ -640,11 +643,17 @@ const playerIconSize float32 = 24
 type controlMetrics struct {
 	leftGap, rightGap float32
 	volumeW           float32
+	iconSize          float32
+	iconHit           float32
 	showPercent       bool
 }
 
 func metricsFor(c *ui.Context) controlMetrics {
-	m := controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, showPercent: true}
+	m := controlMetrics{
+		leftGap: 12, rightGap: 12, volumeW: 96,
+		iconSize: playerIconSize, iconHit: playerIconHit,
+		showPercent: true,
+	}
 	winW, _ := c.Size()
 	switch {
 	case winW <= 980:
@@ -675,7 +684,7 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 		if a.Volume <= 0 {
 			muteLabel = "取消静音"
 		}
-		a.playerIconBtn(c, muteIcon, playerIconSize, false, muteLabel, a.toggleMute)
+		a.iconBtnSized(c, muteIcon, m.iconSize, m.iconHit, false, muteLabel, a.toggleMute)
 
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
 			Cursor(ui.CursorPointer).Label("音量")
@@ -892,7 +901,15 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value string, open *
 // size 是图标字号。label 就是 aria-label：既是无障碍名，也让自动化
 // 能按名字点到这颗按钮——自绘 Box 不进无障碍树，没有 Label 就只能靠坐标猜。
 func (a *App) playerIconBtn(c *ui.Context, ico *ui.SVG, size float32, active bool, label string, on func()) {
-	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label(label)
+	a.iconBtnSized(c, ico, size, playerIconHit, active, label, on)
+}
+
+// iconBtnSized 是同一颗图标按钮的可缩放版本。
+//
+// 热区和字号一起给：观测墙的一格只有三百来像素宽，播放页的 30 热区 +
+// 24 图标会把整格塞满，那边按 24 / 16 画。
+func (a *App) iconBtnSized(c *ui.Context, ico *ui.SVG, size, hit float32, active bool, label string, on func()) {
+	btn := ui.Box(c).Size(hit, hit).Center().Cursor(ui.CursorPointer).Label(label)
 	if btn.Clicked() {
 		on()
 	}

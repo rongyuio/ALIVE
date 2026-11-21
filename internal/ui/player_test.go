@@ -13,6 +13,7 @@ import (
 
 // 控制条的三档尺寸：
 // 常态间距 12、滑条 96，≤1100 间距收 8、滑条 90，≤980 滑条 72 且百分比让位。
+// 图标只有一档（24 / 热区 30），观测墙另有一套更小的，不走 metricsFor。
 // 间距只有一档：弹幕组曾经比别的控件紧 2px（10 对 12），整条控制条的节奏
 // 就多出一个看不出来但能感觉到的断点，现在全条统一。
 // 这几档是纯数值，用 tester 直接读，不依赖真实窗口。
@@ -22,12 +23,12 @@ func TestControlMetrics(t *testing.T) {
 		w, h int
 		want controlMetrics
 	}{
-		{"宽屏", 1440, 900, controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, showPercent: true}},
-		{"1101 仍是宽屏", 1101, 900, controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, showPercent: true}},
-		{"1100 收到第一档", 1100, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 90, showPercent: true}},
-		{"981 仍是第一档", 981, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 90, showPercent: true}},
-		{"980 收到第二档", 980, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 72, showPercent: false}},
-		{"最小窗口", 900, 600, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 72, showPercent: false}},
+		{"宽屏", 1440, 900, controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, iconSize: 24, iconHit: 30, showPercent: true}},
+		{"1101 仍是宽屏", 1101, 900, controlMetrics{leftGap: 12, rightGap: 12, volumeW: 96, iconSize: 24, iconHit: 30, showPercent: true}},
+		{"1100 收到第一档", 1100, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 90, iconSize: 24, iconHit: 30, showPercent: true}},
+		{"981 仍是第一档", 981, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 90, iconSize: 24, iconHit: 30, showPercent: true}},
+		{"980 收到第二档", 980, 900, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 72, iconSize: 24, iconHit: 30, showPercent: false}},
+		{"最小窗口", 900, 600, controlMetrics{leftGap: 8, rightGap: 8, volumeW: 72, iconSize: 24, iconHit: 30, showPercent: false}},
 	}
 
 	for _, tc := range cases {

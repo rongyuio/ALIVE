@@ -80,7 +80,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 		onOpen()
 	}
 	card.ContextMenu(func(m *ui.Menu) {
-		if onWatch != nil && m.Item("收进悲鸣观测").Chosen() {
+		if onWatch != nil && m.Item("悲鸣观测").Chosen() {
 			onWatch()
 		}
 	})

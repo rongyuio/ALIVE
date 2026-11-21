@@ -332,7 +332,7 @@ func TestListeningShrinkDoesNotJitter(t *testing.T) {
 // 被 body 的圆角裁掉大半，剩一小截弧挂在圆的右下角——那不是「绿点被收进
 // 去」，那是一颗没擦干净的脏点。
 //
-// 判据用像素：绿点取当前配色的 StatusOnline（状态色现在按配色推导），
+// 判据用像素：绿点取当前配色的 StatusOnline（在线绿是固定值，日夜同色），
 // 扫整条岛。展开态必须找得到，收起态必须一颗都没有——中间不许出现
 // 「半颗」，那正是残弧的形状。
 func TestListeningHidesLiveDot(t *testing.T) {
@@ -680,7 +680,7 @@ func TestIslandWatchActiveFollowButtonClicks(t *testing.T) {
 	}
 }
 
-// 墙上 active 时，收藏左边那颗按钮取消 active：声音收掉、岛回到时钟，
+// 墙上 active 时，收藏右边那颗按钮取消 active：声音收掉、岛回到时钟，
 // 但不离开这一屏，也不把这一间从墙上移出去。
 func TestIslandWatchActiveCancelButton(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(2))
@@ -733,5 +733,66 @@ func TestIslandWatchActiveClickOpensActiveRoom(t *testing.T) {
 	}
 	if watchKey(app.Player) != watchKey(room) {
 		t.Fatalf("进的是 %q，期望 active 那一间 %q", watchKey(app.Player), watchKey(room))
+	}
+}
+
+// 在线绿不随日夜变：浅色主题里岛上那颗点也必须是深色主题那一支。
+func TestLiveDotIgnoresThemeMode(t *testing.T) {
+	dark := theme.Find("inkwhite-night").StatusOnline
+	count := func(tt *ui.Tester) int {
+		img := tt.Image()
+		n := 0
+		for y := 0; y < 60; y++ {
+			for x := 600; x < 840; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				if absInt(int(r>>8)-int(dark.R)) < 26 &&
+					absInt(int(g>>8)-int(dark.G)) < 26 &&
+					absInt(int(b>>8)-int(dark.B)) < 26 {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	for _, tc := range []struct{ palette, mode string }{
+		{"inkwhite-night", themeModeDark},
+		{"inkwhite-day", themeModeLight},
+	} {
+		app := NewMockApp()
+		app.PaletteID = tc.palette
+		app.ThemeMode = tc.mode
+		app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+		app.Router.Push(routePlayer)
+		tt := ui.NewTester(app.Shell, 1440, 900)
+		tt.Frame()
+		if n := count(tt); n == 0 {
+			t.Errorf("%s: 岛上没有深色主题的在线绿", tc.palette)
+		}
+	}
+}
+
+// 墙上 active 时右侧两颗按钮的顺序：收藏在左，取消发声在最右。
+func TestIslandFollowLeftOfCancel(t *testing.T) {
+	app, tt := newWatchMock(t, watchTestRooms(2))
+	room := app.WatchRooms[0]
+	app.WatchActive = watchKey(room)
+	app.Player = room
+	app.Follows = []FollowRecord{{
+		Platform: room.Platform, RoomID: room.RoomID, Name: room.Name,
+	}}
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	star, ok := tt.Find("取消关注")
+	if !ok {
+		t.Fatalf("没有关注键：texts=%q", tt.Texts())
+	}
+	cancel, ok := tt.Find("取消观测发声")
+	if !ok {
+		t.Fatalf("没有取消发声键：texts=%q", tt.Texts())
+	}
+	if star.X > cancel.X {
+		t.Fatalf("收藏在右、取消在左：收藏 X=%.1f，取消 X=%.1f", star.X, cancel.X)
 	}
 }

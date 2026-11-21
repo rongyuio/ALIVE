@@ -328,7 +328,7 @@ func TestCardAddsToWatchBox(t *testing.T) {
 	if err := tt.RightClick("直播间:" + room.Name); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.ChooseMenuItem("收进悲鸣观测"); err != nil {
+	if err := tt.ChooseMenuItem("悲鸣观测"); err != nil {
 		t.Fatal(err)
 	}
 	if !added {
@@ -671,5 +671,108 @@ func TestWatchTwelveRoomsOnWall(t *testing.T) {
 		if _, ok := tt.Find(watchTileLabel(room)); !ok {
 			t.Fatalf("第 %d 间没有上墙", i+1)
 		}
+	}
+}
+
+// 控制条上的「重新加载」对未开播的格子也要真的重开：watchRestart 不清
+// offline，watchOpenSession 会在门口直接返回，按钮原来一直是空点。
+func TestWatchReloadReopensOfflineSession(t *testing.T) {
+	rooms := watchTestRooms(1)
+	app, tt := newWatchMock(t, rooms)
+	key := watchKey(rooms[0])
+	s := &wallSession{
+		key: key, room: rooms[0], offline: true, err: "主播暂时没有开播", failures: 3,
+	}
+	app.watch.init()
+	app.watch.sessions[key] = s
+	tt.Frame()
+	r, ok := tt.Find(watchTileLabel(rooms[0]))
+	if !ok {
+		t.Fatal("找不到格子")
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	if err := tt.Click("重新加载"); err != nil {
+		t.Fatal(err)
+	}
+	if s.offline {
+		t.Fatal("点「重新加载」后格子仍是未开播态")
+	}
+	if s.failures != 0 {
+		t.Fatalf("手动重试没有重置退避计数：failures=%d", s.failures)
+	}
+}
+
+// 12 格时格子只有三百来像素宽，控制条要比播放页小一档：
+// 热区 24、滑条 64，不能再用 30 热区 + 96 滑条。
+func TestWatchControlsAreCompact(t *testing.T) {
+	rooms := watchTestRooms(watch.MaxRooms)
+	_, tt := newWatchMock(t, rooms)
+	r, ok := tt.Find(watchTileLabel(rooms[1]))
+	if !ok {
+		t.Fatal("找不到第二格")
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	for _, label := range []string{
+		"播放", "重新加载", "取消静音",
+		"放大观测 " + rooms[1].Name, "移出观测 " + rooms[1].Name,
+	} {
+		b, ok := tt.Find(label)
+		if !ok {
+			t.Fatalf("找不到 %q", label)
+		}
+		if b.W > 24.5 || b.H > 24.5 {
+			t.Errorf("%q 热区 %.0f×%.0f，超过 24", label, b.W, b.H)
+		}
+	}
+	v, ok := tt.Find("音量")
+	if !ok {
+		t.Fatal("找不到音量条")
+	}
+	if v.W > 64.5 {
+		t.Errorf("音量条宽 %.0f，超过 64", v.W)
+	}
+}
+
+// 没有封面时的占位必须铺满整格。
+//
+// 原来井、视频、封面三个 Fill 层在格子里是流式兄弟，MyGo 的 flex 收缩把它们
+// 平分成几段：上半截是媒体黑，下半截才是占位色，未加载态看起来像两块拼的。
+func TestWatchPlaceholderFillsTile(t *testing.T) {
+	rooms := watchTestRooms(4)
+	_, tt := newWatchMock(t, rooms)
+	r, ok := tt.Find(watchTileLabel(rooms[0]))
+	if !ok {
+		t.Fatal("找不到第一格")
+	}
+	img := tt.Image()
+	cx := int(r.X + r.W/2)
+	top := img.RGBAAt(cx, int(r.Y+r.H*0.2))
+	bottom := img.RGBAAt(cx, int(r.Y+r.H*0.8))
+	if top != bottom {
+		t.Fatalf("占位没有铺满：上 %v，下 %v", top, bottom)
+	}
+	if top.R < 20 && top.G < 20 && top.B < 20 {
+		t.Fatalf("占位顶上还是媒体黑 %v", top)
+	}
+}
+
+// 没有封面时的占位要和首页卡片同一套（coverArt）：中性底 + 中心柔光，
+// 不是按房间色相算出来的色块。冷启动时缓存里还没有封面，墙上不能先亮
+// 一片绿。
+func TestWatchPlaceholderMatchesCoverArt(t *testing.T) {
+	rooms := watchTestRooms(4)
+	_, tt := newWatchMock(t, rooms)
+	r, ok := tt.Find(watchTileLabel(rooms[0]))
+	if !ok {
+		t.Fatal("找不到第一格")
+	}
+	img := tt.Image()
+	// 20% / 20% 已经在中心柔光半径之外，读到的是占位底色。
+	got := img.RGBAAt(int(r.X+r.W*0.2), int(r.Y+r.H*0.2))
+	want := theme.BgTertiary
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Fatalf("占位底色 %v，期望首页封面占位的 %v", got, want)
 	}
 }

@@ -42,8 +42,8 @@ var (
 )
 
 // 状态色三支：fill 用于点、底色和低透明度叠加；ink 用于文字和图标；
-// line 用于边框、指示器。由 Apply 按当前配色写入——色相是语义，明度跟着
-// 日夜和配色推导，浅色主题不再出现 1.3:1 的绿点。
+// line 用于边框、指示器。成功 / 危险由 Apply 按当前配色写入——色相是语义，
+// 明度跟着日夜和配色推导。在线绿是固定值，日夜同一支。
 var (
 	StatusOnline, StatusOnlineInk, StatusOnlineLine ui.Color
 	Success, SuccessInk, SuccessLine                ui.Color

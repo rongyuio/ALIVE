@@ -504,7 +504,12 @@ func (a *App) watchReload(room Streamer) {
 		return
 	}
 	a.watchRestart(s, "")
-	s.retryAt = time.Now()
+	// watchRestart 只关引擎、清错误，不动 offline；不清这一位，下一句
+	// watchOpenSession 会在门口直接返回，按钮就是空点。手动重试同时把
+	// 退避清零：用户点的这一次不该再等上一轮攒出来的 2 分钟。
+	s.offline = false
+	s.failures = 0
+	s.retryAt = time.Time{}
 	a.watchOpenSession(s)
 }
 

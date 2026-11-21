@@ -380,7 +380,7 @@ func clamp01(v float32) float32 {
 }
 
 // islandButtonsW 是右侧按钮组占的宽度：收藏一颗，观测墙上 active 时
-// 收藏左边多一颗「取消 active」。
+// 收藏右边多一颗「取消 active」。
 //
 // 量宽度和画布局都必须用这同一个数：两边各算一次，增删按钮时文字列就会
 // 和画出来的按钮对不上。
@@ -482,7 +482,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 	// 否则头像滑过去时会从字上碾过去。展开态 4 + 32 + 10 = 46，而头像在
 	// 收起时最右也只到 0 + 34 = 34，中间始终留着那 12px。
 	textX := islandPlayerPadX + islandPlayerAvatar + islandPlayerGap
-	// 右侧按钮组：常态只有收藏一颗；观测墙上 active 时收藏左边多一颗
+	// 右侧按钮组：常态只有收藏一颗；观测墙上 active 时收藏右边多一颗
 	// 「取消 active」，文字列要让出这 36px，否则岛宽不变、标题先被挤没。
 	buttonsW := islandPlayerFollowW
 	if canCancel {
@@ -493,8 +493,13 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 	if textW < 0 {
 		textW = 0
 	}
-	followX := openW - islandBodyInset - islandPlayerPadX - islandPlayerFollowW
-	cancelX := followX - islandPlayerGap - islandPlayerFollowW
+	// 最右一颗固定是「取消 active」；收藏贴在它左边。没有取消键时
+	// 收藏自己占最右，位置和以前一样。
+	edgeX := openW - islandBodyInset - islandPlayerPadX - islandPlayerFollowW
+	followX, cancelX := edgeX, edgeX
+	if canCancel {
+		followX = edgeX - islandPlayerGap - islandPlayerFollowW
+	}
 
 	// 文字列：垂直居中，两行固定，SingleLine 保证它不会自己换行。
 	text := ui.Column(c).Absolute().Top(0).Bottom(0).Left(textX).Width(textW).
@@ -549,7 +554,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 		}
 	}
 
-	// 取消 active：只在墙上 active 时出现，放在收藏左边。
+	// 取消 active：只在墙上 active 时出现，放在收藏右边（最右）。
 	if canCancel {
 		cancel := ui.Box(c).Absolute().Left(cancelX).Top((islandContentH-islandPlayerFollowW)/2).
 			Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
