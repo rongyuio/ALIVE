@@ -1,10 +1,14 @@
 package live
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -14,6 +18,7 @@ import (
 
 	blivedmmsg "github.com/Akegarasu/blivedm-go/message"
 	blivedmpacket "github.com/Akegarasu/blivedm-go/packet"
+	"github.com/andybalholm/brotli"
 	"github.com/coder/websocket"
 	bilibiliLive "github.com/rongyuio/bilibili/live"
 )
@@ -28,6 +33,10 @@ const (
 	// 超过这么久没收到任何帧就认为连接已死。
 	biliDanmuReadTO   = 90 * time.Second
 	biliDanmuMaxFrame = 8 << 20
+	// 单帧解压后的上限与压缩嵌套层数：B 站只发一层，超出的按坏帧处理。
+	// 没有上限的话，一条压缩炸弹就能把内存吃光。
+	biliDanmuMaxBody  = 8 << 20
+	biliDanmuMaxDepth = 2
 	biliDanmuDialTO   = 12 * time.Second
 	// 断线退避：1s 起，最多 30s；连接稳住 10s 后下一次重新从 1s 开始。
 	biliDanmuMaxBack = 30 * time.Second
@@ -36,6 +45,8 @@ const (
 	biliDanmuProto  = 3
 	biliDanmuOrigin = "https://live.bilibili.com"
 	biliDanmuRefer  = "https://live.bilibili.com/"
+	// 协议头固定 16 字节：packLen(4) + headerLen(2) + ver(2) + op(4) + seq(4)。
+	biliDanmuHeaderLen = 16
 )
 
 // biliMaxHosts 最多尝试几个弹幕节点：host_list 通常有 4–6 个，
@@ -302,7 +313,7 @@ func (s *biliDanmaku) readLoop(conn *websocket.Conn, token string) error {
 			return nil
 		}
 		readCtx, cancel := context.WithTimeout(s.ctx, biliDanmuReadTO)
-		_, data, err := conn.Read(readCtx)
+		typ, data, err := conn.Read(readCtx)
 		cancel()
 		if err != nil {
 			if s.ctx.Err() != nil {
@@ -310,19 +321,138 @@ func (s *biliDanmaku) readLoop(conn *websocket.Conn, token string) error {
 			}
 			return fmt.Errorf("读取帧: %w", err)
 		}
-		s.handleFrame(data)
+		// B 站弹幕只有二进制帧。文本帧不是协议的一部分，按二进制切长度
+		// 只会切出错位的数据，直接丢弃这一帧。
+		payload, err := biliFramePayload(typ, data)
+		if err != nil {
+			slog.Debug("B 站弹幕忽略非二进制帧", "room", s.roomID, "error", err)
+			continue
+		}
+		if err := s.handleFrame(payload); err != nil {
+			return fmt.Errorf("解析帧: %w", err)
+		}
 	}
 }
 
-// handleFrame 解析一帧（可能含多个包，压缩包会被库递归解开）。
-func (s *biliDanmaku) handleFrame(data []byte) {
-	for _, p := range blivedmpacket.Slice(data) {
-		for _, inner := range p.Parse() {
-			if inner.Operation == uint32(blivedmpacket.Notification) {
-				s.handleCommand(inner.Body)
-			}
+// biliFramePayload 只放行二进制帧。
+func biliFramePayload(typ websocket.MessageType, data []byte) ([]byte, error) {
+	if typ != websocket.MessageBinary {
+		return nil, fmt.Errorf("帧类型 %d 不是二进制", typ)
+	}
+	return data, nil
+}
+
+// biliSplitFrames 按协议头把一条 WS 消息切成完整的帧。
+//
+// 不直接用 blivedmpacket.Slice：那个函数无边界检查——声明长度大于剩余
+// 字节会越界切片，packLen 为 0 会让 cursor 原地踏步、无限循环。这里先
+// 校验头再切，坏帧返回错误交给上层重连。
+func biliSplitFrames(data []byte) ([][]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("弹幕帧为空")
+	}
+	var frames [][]byte
+	for cursor := 0; cursor < len(data); {
+		rest := len(data) - cursor
+		if rest < biliDanmuHeaderLen {
+			return nil, fmt.Errorf("弹幕帧头不足：剩余 %d 字节", rest)
+		}
+		packLen := int(binary.BigEndian.Uint32(data[cursor : cursor+4]))
+		headerLen := int(binary.BigEndian.Uint16(data[cursor+4 : cursor+6]))
+		if packLen < biliDanmuHeaderLen || packLen > rest {
+			return nil, fmt.Errorf("弹幕帧长度非法：声明 %d，剩余 %d", packLen, rest)
+		}
+		if headerLen < biliDanmuHeaderLen || headerLen > packLen {
+			return nil, fmt.Errorf("弹幕帧头长度非法：%d（帧长 %d）", headerLen, packLen)
+		}
+		frames = append(frames, data[cursor:cursor+packLen])
+		cursor += packLen
+	}
+	return frames, nil
+}
+
+// biliUnpackFrame 把一帧拆成业务包，解压由本包自己做。
+//
+// 不能把解压后的字节交回 blivedmpacket.Slice：那个函数对内层帧不做任何
+// 边界检查，packLen==0 时 cursor 原地踏步、永不返回——recover 接不住死循环。
+// 解压结果先过 biliSplitFrames，再逐帧递归（B 站只会压一层，深度有上限）。
+func biliUnpackFrame(frame []byte, depth int) ([]blivedmpacket.Packet, error) {
+	if depth > biliDanmuMaxDepth {
+		return nil, fmt.Errorf("弹幕压缩嵌套过深")
+	}
+	p := blivedmpacket.DecodePacket(frame)
+	switch p.ProtocolVersion {
+	case blivedmpacket.Plain, blivedmpacket.Popularity:
+		return []blivedmpacket.Packet{p}, nil
+	case blivedmpacket.Zlib:
+		zr, err := zlib.NewReader(bytes.NewReader(p.Body))
+		if err != nil {
+			return nil, fmt.Errorf("zlib 弹幕帧: %w", err)
+		}
+		defer zr.Close()
+		body, err := readBiliBody(zr)
+		if err != nil {
+			return nil, fmt.Errorf("zlib 弹幕帧: %w", err)
+		}
+		return biliUnpackAll(body, depth+1)
+	case blivedmpacket.Brotli:
+		body, err := readBiliBody(brotli.NewReader(bytes.NewReader(p.Body)))
+		if err != nil {
+			return nil, fmt.Errorf("brotli 弹幕帧: %w", err)
+		}
+		return biliUnpackAll(body, depth+1)
+	default:
+		return nil, fmt.Errorf("未知弹幕协议版本 %d", p.ProtocolVersion)
+	}
+}
+
+// biliUnpackAll 校验并展开一段（可能是解压后的）帧序列。
+func biliUnpackAll(body []byte, depth int) ([]blivedmpacket.Packet, error) {
+	frames, err := biliSplitFrames(body)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]blivedmpacket.Packet, 0, len(frames))
+	for _, f := range frames {
+		packets, err := biliUnpackFrame(f, depth)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, packets...)
+	}
+	return out, nil
+}
+
+// readBiliBody 读出解压内容，并卡住上限。
+func readBiliBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, biliDanmuMaxBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > biliDanmuMaxBody {
+		return nil, fmt.Errorf("解压后超过 %d 字节", biliDanmuMaxBody)
+	}
+	return body, nil
+}
+
+// handleFrame 解析一条 WS 消息（可能含多个包，压缩包会被逐层展开）。
+func (s *biliDanmaku) handleFrame(data []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("弹幕帧解析崩溃: %v", r)
+		}
+	}()
+
+	packets, err := biliUnpackAll(data, 0)
+	if err != nil {
+		return err
+	}
+	for _, inner := range packets {
+		if inner.Operation == uint32(blivedmpacket.Notification) {
+			s.handleCommand(inner.Body)
 		}
 	}
+	return nil
 }
 
 // handleCommand 处理一条业务消息（JSON 形如 {"cmd":"DANMU_MSG",...}）。

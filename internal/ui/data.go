@@ -192,6 +192,12 @@ func (a *App) onPlatformChanged() {
 }
 
 func (a *App) loadCategories(platform string) {
+	// 当前平台的分区树现在由这次调用负责：重试路径会先把标记清掉，
+	// 这里立刻填回来，否则下一帧 ensureLiveData 又会发一次同样的请求。
+	// 加载失败时标记保持 true，自动预取不反复冲击接口，重试仍是用户显式触发的。
+	if platform == a.Platform && a.liveLoaded != nil {
+		a.liveLoaded[platform] = true
+	}
 	provider, ok := live.ProviderFor(live.Platform(platform))
 	if !ok {
 		// 该平台还没接入：保持空态，不显示假数据。
@@ -274,6 +280,14 @@ func (a *App) loadRooms() {
 	platform := a.Platform
 	key := a.feedKey()
 
+	// 每次 loadRooms 都作废更早的在途请求，包括下面命中缓存直接返回的那次。
+	//
+	// 不推进序号的话，先前那个没有缓存的分区 A 的响应回来时 seq 仍然相等：
+	// a.Rooms 会被换成 A 的列表（A 失败时还会在新分区上写 A 的 ErrText），
+	// 之后 loadMoreRooms 按当前 key 把第二页拼到 A 的房间后面，污染缓存。
+	a.liveSeq++
+	seq := a.liveSeq
+
 	// 缓存命中时先渲染缓存：切回看过的分区是瞬时的，不闪骨架、不等网络。
 	// 60s 内直接返回；过期则保留缓存内容，后台静默刷新。
 	cached, hit := a.feedCache[key]
@@ -294,8 +308,6 @@ func (a *App) loadRooms() {
 		a.ListHasMore = false
 		a.ErrText = ""
 	}
-	a.liveSeq++
-	seq := a.liveSeq
 	win := a.Win
 
 	go func() {
@@ -306,7 +318,9 @@ func (a *App) loadRooms() {
 			return
 		}
 		win.Update(func() {
-			if seq != a.liveSeq || platform != a.Platform {
+			// 除了序号和平台，还要比列表 key：同一个序号下 feedKey 也可能已经
+			// 变了（比如只改了三级分区、还没触发新的加载），旧列表不能写回来。
+			if seq != a.liveSeq || platform != a.Platform || key != a.feedKey() {
 				return
 			}
 			a.ListLoading = false

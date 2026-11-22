@@ -657,6 +657,29 @@ func (a *App) bodyPadX(c *ui.Context) float32 {
 	return 14
 }
 
+// retryLive 是错误条和空态两处「重试」的共同实现。
+//
+// 分区树加载失败时 Groups 为空，currentCategoryID() 返回 ""，只调 loadRooms
+// 会在判空处直接 return，一个请求都不发；而 liveLoaded 早已是 true，
+// ensureLiveData 每帧都跳过它。结果就是点了「重试」什么也没发生，首页永远
+// 停在空态。所以没有分区树时先重拉分区树，并清掉已加载标记，让整条加载
+// 流程重新走一遍。
+func (a *App) retryLive() {
+	a.ErrText = ""
+	if !a.LiveMode {
+		a.Loading = true
+		return
+	}
+	if a.currentCategoryID() == "" {
+		if a.liveLoaded != nil {
+			delete(a.liveLoaded, a.Platform)
+		}
+		a.loadCategories(a.Platform)
+		return
+	}
+	a.loadRooms()
+}
+
 // errorBar 是加载失败的提示条。
 //
 // 尺寸与配色：padding 10 14、圆角 12、background color-mix(danger 8%, bg-secondary)，
@@ -673,12 +696,7 @@ func (a *App) errorBar(c *ui.Context) {
 				retry.Background(theme.FillSecondary)
 			}
 			if retry.Clicked() {
-				a.ErrText = ""
-				if a.LiveMode {
-					a.loadRooms()
-				} else {
-					a.Loading = true
-				}
+				a.retryLive()
 			}
 			retry.Children(func() {
 				ui.Icon(c, iconSync).FontSize(12).TextColor(theme.DangerInk)
@@ -877,12 +895,7 @@ func (a *App) emptyGrid(c *ui.Context) {
 				retry.Background(theme.FillSecondary)
 			}
 			if retry.Clicked() {
-				a.ErrText = ""
-				if a.LiveMode {
-					a.loadRooms()
-				} else {
-					a.Loading = true
-				}
+				a.retryLive()
 			}
 			retry.Children(func() {
 				ui.Text(c, "重新加载").FontSize(theme.TextSM).FontWeight(600).

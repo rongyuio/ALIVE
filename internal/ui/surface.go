@@ -40,7 +40,11 @@ func (s surface) String() string {
 // 判据是"谁真正握着这一路"：
 //
 //  1. WatchActive —— 墙上点过、正在出声的那一格；
-//  2. media.roomKey —— 媒体层正在放的那一路；
+//  2. media.roomKey —— 媒体层正在放的那一路。只认活着的会话：后台收听时
+//     player 一定非 nil（background 也只会由「有引擎」的两条路置上），取流
+//     途中 loading 为真；三者都没有就是这一轮已经落了终态（取流失败 /
+//     未开播），把 roomKey 当焦点会让岛停在「后台收听」，点回去还是
+//     同一张错误页；
 //  3. 正在播放页上时，a.Player —— 那一屏画的就是它。这一条只在路由是
 //     播放页时成立：示例数据没有房间号，roomKey 拼不出来；而离开播放页
 //     之后 a.Player 还留着上一间，拿它兜底会让岛在声音已经停了之后继续
@@ -49,7 +53,8 @@ func (a *App) focusKey() string {
 	if a.WatchActive != "" {
 		return a.WatchActive
 	}
-	if a.media.roomKey != "" {
+	if a.media.roomKey != "" &&
+		(a.media.player != nil || a.media.loading || a.media.background) {
 		return a.media.roomKey
 	}
 	if a.Router != nil && a.Router.Path() == routePlayer && a.Player.Name != "" {

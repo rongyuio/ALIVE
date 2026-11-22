@@ -712,15 +712,23 @@ func douyinPBReadFields(data []byte) ([]douyinPBField, error) {
 				return nil, fmt.Errorf("protobuf: 长度解析失败（字段 %d）", num)
 			}
 			i += m
-			end := i + int(l)
-			if end > len(data) {
+			// 先做无符号比较：l ≥ 2^63 时 int(l) 会变成负数，end 落在 i 之前，
+			// 下面的 end > len(data) 就拦不住，data[i:end] 直接越界 panic。
+			if l > uint64(len(data)-i) {
 				return nil, fmt.Errorf("protobuf: 字段 %d 越界（需要 %d，剩余 %d）", num, l, len(data)-i)
 			}
+			end := i + int(l)
 			field.Bytes = data[i:end]
 			i = end
 		case douyinPBWireFixed64:
+			if len(data)-i < 8 {
+				return nil, fmt.Errorf("protobuf: 字段 %d fixed64 越界（剩余 %d）", num, len(data)-i)
+			}
 			i += 8
 		case douyinPBWireFixed32:
+			if len(data)-i < 4 {
+				return nil, fmt.Errorf("protobuf: 字段 %d fixed32 越界（剩余 %d）", num, len(data)-i)
+			}
 			i += 4
 		default:
 			return nil, fmt.Errorf("protobuf: 不支持的 wire type %d（字段 %d）", wire, num)

@@ -37,29 +37,33 @@ func (a *App) shellKeys(c *ui.Context) {
 		return
 	}
 
-	// 下面几个都是开关，按住不放不该连续触发
-	repeat := c.ShortcutRepeated()
+	// 下面几个都是开关，按住不放不该连续触发。
+	//
+	// ShortcutRepeated 说的是「刚刚命中的那个键是不是自动重复」，所以必须
+	// 先调 Shortcut 再读它。提前读出来拿到的是本帧更早的快捷（或上一帧）
+	// 留下的状态，通常恒为 false，闸门形同虚设：按住空格时每个自动重复
+	// 都会被当成一次新按下。
 	if c.Shortcut(0, ui.KeySpace) || c.Shortcut(0, ui.KeyK) {
-		if !repeat {
+		if !c.ShortcutRepeated() {
 			a.Playing = !a.Playing
 		}
 		return
 	}
 	if c.Shortcut(0, ui.KeyF) {
-		if !repeat {
+		if !c.ShortcutRepeated() {
 			a.toggleFullscreen()
 		}
 		return
 	}
 	if c.Shortcut(0, ui.KeyM) {
-		if !repeat {
+		if !c.ShortcutRepeated() {
 			a.toggleMute()
 		}
 		return
 	}
 	// Shift + / 就是 ?
 	if c.Shortcut(ui.Shift, ui.KeySlash) {
-		if !repeat {
+		if !c.ShortcutRepeated() {
 			a.ShortcutsOpen = !a.ShortcutsOpen
 		}
 		return

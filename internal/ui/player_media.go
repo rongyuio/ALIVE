@@ -337,9 +337,14 @@ func (a *App) closeMedia() {
 // 断流重连、房间记号全部保留。解码不停——回来时画面只差一帧，声音一秒不断；
 // 代价是后台单核 7.0–9.8%（硬解，1080p60，见 decisions/0009）。
 //
-// 没有引擎时不做事：还在取流的路上就离开播放页，那一路会被 closeMedia 收掉，
-// 不该在这里留一个「假装在听」的态。判据是引擎而不是播放器指针——没有引擎，
-// 就没有声音可留。
+// 没有引擎时不做事：还在取流的路上就离开播放页时，那一路可能正是后台收听
+// 重开的一轮（登录成功、断流重连），loading 非零说明它还在路上，不能在这里
+// 掐掉。判据是引擎而不是播放器指针——没有引擎，就没有声音可留。
+//
+// 但这一轮已经落了终态（取流失败 / 未开播，loading=false、player=nil）时不能
+// 就这么走：roomKey 留着会让焦点指着一个没有引擎的房间，surface 却是 none，
+// 岛于是永远画成「后台收听」，点回去还是同一张错误页（surfaces.md 不变量 2/5）。
+// 这时候把这一轮和焦点一起收掉，和 closeMedia 对齐。
 func (a *App) detachMedia() {
 	m := &a.media
 	if m.background {
@@ -347,6 +352,22 @@ func (a *App) detachMedia() {
 	}
 	e := m.engine()
 	if e == nil {
+		if m.loading {
+			return
+		}
+		key := m.roomKey
+		if key == "" {
+			return
+		}
+		m.reset()
+		m.roomKey = ""
+		if a.WatchActive == key {
+			a.WatchActive = ""
+			a.WatchPending = ""
+		}
+		if a.Player.Name != "" && watchKey(a.Player) == key {
+			a.Player = Streamer{}
+		}
 		return
 	}
 	// 离开播放页：按新位置重新求一次呈现尺寸。墙上 active 是格子，别的页面
@@ -541,6 +562,19 @@ func (a *App) ensureMedia(c *ui.Context) {
 	key := s.Platform + "|" + s.RoomID
 	if key == a.media.roomKey {
 		return
+	}
+
+	// 这一间在墙上可能已经有一路静音预览。放着不管就会为同一间房再开一路
+	// 引擎（违反「一间房至多一个引擎」）；退出播放页时 watchReleaseActive 还会
+	// 把新的一路写进同一个 key，旧引擎失去唯一引用，mpv 线程活到进程退出。
+	//
+	// 墙上 active 那一间不走这条：PlayerPage 已经用 watchAdoptActive 把它的
+	// 会话交给了媒体层（会话条目随之删除）；交接没成立时也由 PlayerPage 关掉。
+	// WatchActive 还等于 key 说明交接正在进行，这里不能抢着关。
+	if a.WatchActive != key {
+		if old := a.watch.sessions[key]; old != nil {
+			a.watchCloseSession(old)
+		}
 	}
 
 	a.media.reset()
@@ -760,6 +794,10 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) b
 		Width:     upstream.Width,
 		Height:    upstream.Height,
 		FrameRate: upstream.FrameRate,
+		// 起播先静音，音量由 adoptPlayback 按 a.Volume 推给播放器。不这么做，
+		// mpv 会按默认 100% 音量先出声：主线程忙一下、adopt 晚到几十毫秒，
+		// 用户就听到一声不该存在的满音量。
+		StartSilent: true,
 	}
 	go func() {
 		// 引擎不挂在这一轮的取流 ctx 上：观测墙和播放页会交接同一个引擎，
@@ -951,8 +989,14 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 		return
 	}
 	// 同上：引擎寿命归播放器，不归取流 ctx。交接给墙上的格子时不能被取消。
+	//
+	// StartSilent 是必须的：下面等的是「新路出了画面 / 出了声音」，那本身就
+	// 证明它已经在出声。不带它，新路从 loadfile 起就是 mpv 默认的 100% 音量，
+	// 等 adoptSwap 第一次 SetVolume 时已经晚了——每次续期都会有两路叠音，
+	// 用户静音时也漏，画面 8 秒不出就响满 8 秒。
 	e, err := openNative(context.Background(), selected.URL, playback.Options{
 		Headers: selected.Headers, Width: selected.Width, Height: selected.Height, FrameRate: selected.FrameRate,
+		StartSilent: true,
 	})
 	if err != nil {
 		fail(err)

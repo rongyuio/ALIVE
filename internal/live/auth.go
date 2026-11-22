@@ -316,6 +316,18 @@ func (a *qrAuth) verify() {
 
 	user, err := a.drv.verifyQR(ctx)
 	if err != nil {
+		// 只有平台明确说「这个会话不认了」才删登录态。verifyQR 是真实网络
+		// 请求，断网、超时、5xx 都会返回普通 error；把它们当失效处理，
+		// 等于离线启动一次就静默删掉用户还能用的登录，和 renewOnce
+		// 「续不上就下次再试，绝不删会话」的约定相反。验证不上就先保留，
+		// 状态标成「稍后重试」。
+		if !errors.Is(err, errSessionInvalid) {
+			slog.Info("登录态校验失败，保留本地会话", "platform", a.platform, "error", err)
+			a.update(a.currentSeq(), func(s *AuthState) {
+				s.Status = "登录态校验失败，稍后重试"
+			})
+			return
+		}
 		slog.Info("登录态已失效", "platform", a.platform, "error", err)
 		a.drv.logoutQR()
 		removeAuthSession(a.platform)

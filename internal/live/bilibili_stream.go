@@ -306,10 +306,13 @@ func biliStreamHeaders(roomID string) []string {
 // web_location，而网页端会带这三个，带上之后响应里的档位才全。
 const biliPlayInfoURL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
 
-// biliRequest 按网页端参数请求一次 getRoomPlayInfo。
-func (p *bilibiliProvider) biliRequest(ctx context.Context, realID, qn int64) (*bilibiliLive.GetRoomPlayInfoResult, error) {
-
-	return biblib.Execute[*bilibiliLive.GetRoomPlayInfoResult](ctx, p.api,
+// biliRequestFn 是 getRoomPlayInfo 的实际请求实现。
+//
+// 抽成包级变量只为了测试能构造「HTTP 200 但 data 缺失」这一形状：库的
+// Execute 这时返回 (nil, nil) 而不是错误，调用方必须自己判 nil。生产代码
+// 永远走默认实现。
+var biliRequestFn = func(ctx context.Context, api *biblib.Client, realID, qn int64) (*bilibiliLive.GetRoomPlayInfoResult, error) {
+	return biblib.Execute[*bilibiliLive.GetRoomPlayInfoResult](ctx, api,
 		"GET", biliPlayInfoURL,
 		bilibiliLive.GetRoomPlayInfoParam{
 			RoomID: realID,
@@ -337,6 +340,11 @@ func (p *bilibiliProvider) biliRequest(ctx context.Context, realID, qn int64) (*
 	)
 }
 
+// biliRequest 按网页端参数请求一次 getRoomPlayInfo。
+func (p *bilibiliProvider) biliRequest(ctx context.Context, realID, qn int64) (*bilibiliLive.GetRoomPlayInfoResult, error) {
+	return biliRequestFn(ctx, p.api, realID, qn)
+}
+
 // biliFetchPlayInfo 取房间的档位骨架：档位名、分辨率、线路链。
 //
 // **不解析任何播放地址。** 地址由 StreamForPlayback 按需单独取，一次只解析
@@ -351,6 +359,15 @@ func (p *bilibiliProvider) biliFetchPlayInfo(ctx context.Context, realID int64) 
 	probe, err := p.biliRequest(ctx, realID, 0)
 	if err != nil {
 		return nil, p.wrap("取流信息", err)
+	}
+	// 库在 HTTP 200 但响应里没有 data 时返回 (nil, nil)：这不是错误，是
+	// 「上游没给取流信息」。按错误交给上层显示错误态——取流跑在后台
+	// goroutine 上，这里少一个判断就是整个客户端被 nil 解引用带走。
+	if probe == nil {
+		return nil, &UpstreamError{
+			Platform: Bilibili, Op: "取流信息",
+			Message: "平台没有返回取流信息",
+		}
 	}
 
 	out := &biliPlayInfo{QNDesc: map[int64]string{}, Live: probe.LiveStatus == 1}
@@ -433,6 +450,13 @@ func (p *bilibiliProvider) biliTierURLs(ctx context.Context, realID, qn int64) (
 	res, err := p.biliRequest(ctx, realID, qn)
 	if err != nil {
 		return nil, err
+	}
+	// 同 biliFetchPlayInfo：data 缺失时库返回 (nil, nil)，判 err 不够。
+	if res == nil {
+		return nil, &UpstreamError{
+			Platform: Bilibili, Op: "取流",
+			Message: "平台没有返回这一档的取流信息",
+		}
 	}
 	if res.PlayURLInfo == nil || res.PlayURLInfo.PlayURL == nil {
 		return nil, nil

@@ -726,6 +726,14 @@ func (a *App) watchActivate(room Streamer) {
 	}
 	if a.media.roomKey != "" && a.media.roomKey != key {
 		a.watchReleaseActive()
+		if a.media.roomKey != "" {
+			// 没交接成功：旧 active 还在重新加载（媒体层握着房间、引擎还没
+			// 出来），release 第一行就返回了，既没 cancel 也没推进 seq。
+			// 和 watchDeactivate 同一条收尾：把这一轮取流作废，否则结果回来
+			// 仍会被 applyMedia 接纳，在旧格子里按 a.Volume 出声，而焦点和
+			// 墙上的控件都已经在新的那一格上了。
+			a.closeMedia()
+		}
 	}
 	if old != "" && old != key {
 		if s := a.watch.sessions[old]; s != nil && s.player != nil {
@@ -822,6 +830,12 @@ func (a *App) watchReleaseActive() {
 	// 这里补 SetPresentSize 正是“active 变非 active 又变一次”的来源。
 	// 音量记回这格名下：它已经不在 a.media 了，之后只认自己这份。
 	a.watch.volumes[key] = a.Volume
+	// 同一间房只能有一个会话：直接覆盖会把旧条目连同它的引擎一起漏掉，
+	// 墙和媒体层都不再持有它，没有任何地方能再关。正常路径下 G1 已经从
+	// ensureMedia 那一侧堵住了重复（认领前先收掉墙上的会话），这里兜底。
+	if old := a.watch.sessions[key]; old != nil && old != s {
+		a.watchCloseSession(old)
+	}
 	a.watch.sessions[key] = s
 
 	// 把 a.media 清空，但不 Close 播放器——它已经归墙上了。
@@ -940,8 +954,17 @@ func (a *App) watchDropActive() {
 	if a.media.roomKey == key {
 		a.closeMedia()
 	}
-	if s := a.watch.sessions[key]; s != nil {
-		a.watchCloseSession(s)
+	// 房间还在盒里时，closeMedia 已经把引擎交还成墙上的静音预览；在这里
+	// 无条件再关一次会把刚交还的会话连引擎一起删掉，回墙就得重新取流。
+	// 会话存亡由"还有没有表面在显示它"推导：不在盒里才真的收掉。
+	if !a.watchHas(key) {
+		if s := a.watch.sessions[key]; s != nil {
+			a.watchCloseSession(s)
+		}
+	} else if s := a.watch.sessions[key]; s != nil && s.player != nil {
+		// 还在盒里、但没被媒体层接管（取流途中，或已经退回墙）：只收声，
+		// 画面继续做静音预览。
+		s.player.SetVolume(0)
 	}
 	a.invalidateWindows()
 }

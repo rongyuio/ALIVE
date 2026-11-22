@@ -2,6 +2,7 @@ package live
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -64,6 +65,14 @@ func (d *biliAuthDriver) pollQR(ctx context.Context, key string) (qrPoll, error)
 	if err != nil {
 		return qrPoll{}, err
 	}
+	// 库在 HTTP 200、code 0、data 缺失时返回 (nil, nil)。这不是「扫码状态」，
+	// 按上游没给数据处理；不判空就是后台 goroutine 里的 nil 解引用。
+	if poll == nil {
+		return qrPoll{}, &UpstreamError{
+			Platform: Bilibili, Op: "扫码登录",
+			Message: "平台没有返回扫码状态",
+		}
+	}
 	switch poll.Code {
 	case 86101: // 未扫码
 		return qrPoll{state: qrPending}, nil
@@ -99,9 +108,25 @@ func (d *biliAuthDriver) verifyQR(ctx context.Context) (authUser, error) {
 func (d *biliAuthDriver) navUser(ctx context.Context) (authUser, error) {
 	nav, err := d.lg.GetNavInfo(ctx)
 	if err != nil {
+		// 库把业务非零 code 包成 Error：-101 是「账号未登录」，这才是会话
+		// 真的不认了。其它错误（断网、超时、5xx、解码失败）只是这次没验
+		// 上，原样返回普通 error，交给 verify 保留本地会话。
+		var apiErr biblib.Error
+		if errors.As(err, &apiErr) && apiErr.Code == -101 {
+			return authUser{}, errSessionInvalid
+		}
 		return authUser{}, err
 	}
-	if nav == nil || !nav.IsLogin {
+	if nav == nil {
+		// 库在 HTTP 200、code 0、data 缺失时返回 (nil, nil)。这是畸形响应，
+		// 不是平台明确说「不认这个会话」；按普通错误处理，让 verify 保留本地
+		// 会话，而不是登出删档。
+		return authUser{}, &UpstreamError{
+			Platform: Bilibili, Op: "取账号信息",
+			Message: "平台没有返回账号信息",
+		}
+	}
+	if !nav.IsLogin {
 		return authUser{}, errSessionInvalid
 	}
 	return authUser{

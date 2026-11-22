@@ -3,6 +3,7 @@ package live
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -324,7 +325,11 @@ func (s *huyaDanmaku) readLoop(conn *websocket.Conn, payload []byte) error {
 			}
 			return fmt.Errorf("读取帧: %w", err)
 		}
-		s.handleMessage(data)
+		// 坏帧只丢这一帧：WS 本身有消息边界，丢一条不影响后续帧，
+		// 重连反而会因为服务端持续下发同一类帧而空转。
+		if err := s.handleMessage(data); err != nil {
+			slog.Debug("虎牙弹幕帧解析失败", "room", s.roomID, "error", err)
+		}
 	}
 }
 
@@ -335,21 +340,32 @@ func (s *huyaDanmaku) readLoop(conn *websocket.Conn, payload []byte) error {
 //	外层: int32(tag0)=7, bytes(tag1)
 //	  内层: int32(tag1)=nested 消息类型, bytes(tag2)
 //	    载荷: 各类型自己的 TARS 结构
-func (s *huyaDanmaku) handleMessage(data []byte) {
+//
+// 返回错误表示这一帧的字节已经损坏（长度为负、越界等）；控制帧不是错误，
+// 原样忽略并返回 nil。
+func (s *huyaDanmaku) handleMessage(data []byte) error {
 	outer := newHuyaTarsReader(data)
-	if typ := outer.readInt32Tag(0, -1); typ != huyaDanmuOuterType {
-		return
+	// 先找外层 tag0：控制帧没有它，属于正常情况；跳过字段失败才是坏帧。
+	head, err := outer.find(0)
+	if err != nil {
+		if errors.Is(err, errHuyaTarsTagNotFound) {
+			return nil
+		}
+		return fmt.Errorf("tars: 外层帧损坏: %w", err)
+	}
+	if typ := outer.intFromHead(head, -1); typ != huyaDanmuOuterType {
+		return nil
 	}
 	inner, err := outer.readBytesTag(1)
 	if err != nil {
-		return
+		return fmt.Errorf("tars: 业务帧载荷: %w", err)
 	}
 
 	r := newHuyaTarsReader(inner)
 	nested := r.readInt32Tag(1, -1)
 	payload, err := r.readBytesTag(2)
 	if err != nil {
-		return
+		return fmt.Errorf("tars: 业务帧内容: %w", err)
 	}
 
 	switch nested {
@@ -359,6 +375,7 @@ func (s *huyaDanmaku) handleMessage(data []byte) {
 		// 与参考实现一样忽略：这些帧没有可对照的字段布局，按猜测解只会往面板里塞错内容。
 		// 6213 是贵族名单（只有 uid、头像、爵位字节，没有昵称），本身也拼不出「谁进场了」。
 	}
+	return nil
 }
 
 // handleChat 解析聊天弹幕。
@@ -758,8 +775,6 @@ func (w *huyaTarsWriter) writeStructEnd()            { w.putHead(0, huyaTarsStru
 type huyaTarsReader struct {
 	buf []byte
 	pos int
-	// lastSize 记录最近一次整数读取的值，供 skipField 跳过字节数组时复用长度
-	lastSize int
 }
 
 func newHuyaTarsReader(buf []byte) *huyaTarsReader { return &huyaTarsReader{buf: buf} }
@@ -770,7 +785,8 @@ type huyaTarsHead struct {
 }
 
 func (r *huyaTarsReader) takeHead() (huyaTarsHead, error) {
-	if r.pos >= len(r.buf) {
+	// pos 可能被非法长度推成负数；只查上界的话 r.buf[r.pos] 直接越界 panic。
+	if r.pos < 0 || r.pos >= len(r.buf) {
 		return huyaTarsHead{}, fmt.Errorf("tars: 数据不足")
 	}
 	b := r.buf[r.pos]
@@ -787,29 +803,38 @@ func (r *huyaTarsReader) takeHead() (huyaTarsHead, error) {
 	return huyaTarsHead{tag: tag, typ: typ}, nil
 }
 
+// errHuyaTarsTagNotFound 区分「字段不存在」和「数据损坏」：前者是可选字段
+// 缺失，调用方按默认值处理即可；后者必须当成坏帧报出去。
+var errHuyaTarsTagNotFound = errors.New("tars: 找不到 tag")
+
 // find 从当前位置向后找 tag 匹配的字段，途中跳过其它字段。
-// 找不到时回退到起点（对齐 crate 的 TarsTagNotFoundErr 行为）。
+// 找不到时回退到起点（对齐 crate 的 TarsTagNotFoundErr 行为）；
+// 跳过字段失败说明数据已损坏，如实返回错误，不伪装成「字段不存在」。
 func (r *huyaTarsReader) find(tag uint8) (huyaTarsHead, error) {
 	start := r.pos
 	for r.pos < len(r.buf) {
 		head, err := r.takeHead()
 		if err != nil {
-			break
+			r.pos = start
+			return huyaTarsHead{}, fmt.Errorf("tars: 找 tag=%d 时头部损坏: %w", tag, err)
 		}
 		if head.tag == tag && head.typ != huyaTarsStructEnd {
 			return head, nil
 		}
 		if err := r.skipField(head.typ); err != nil {
-			break
+			r.pos = start
+			return huyaTarsHead{}, fmt.Errorf("tars: 找 tag=%d 时跳过 tag=%d 失败: %w", tag, head.tag, err)
 		}
 	}
 	r.pos = start
-	return huyaTarsHead{}, fmt.Errorf("tars: 找不到 tag=%d", tag)
+	return huyaTarsHead{}, fmt.Errorf("%w=%d", errHuyaTarsTagNotFound, tag)
 }
 
 func (r *huyaTarsReader) skipField(typ uint8) error {
 	advance := func(n int) error {
-		if r.pos+n > len(r.buf) {
+		// 负数长度会把 pos 推到缓冲区之前：find 的 r.pos < len 仍然成立，
+		// 下一轮 takeHead 就越界 panic。长度来自不可信报文，必须挡。
+		if n < 0 || r.pos+n > len(r.buf) {
 			return fmt.Errorf("tars: 跳过失败")
 		}
 		r.pos += n
@@ -843,12 +868,17 @@ func (r *huyaTarsReader) skipField(typ uint8) error {
 		r.pos += 4
 		return advance(size)
 	case huyaTarsSimpleList:
-		// 元素类型头读完忽略，长度是下一个顺序读到的整数
+		// 元素类型头读完忽略，长度是紧随其后的整数。
+		// 不能复用「上一次整数读取」的结果：readInt32 遇到 tag 不匹配会回退
+		// 且不更新那个值，复用会把旧值（可能是负数）当长度，把 pos 推飞。
 		if _, err := r.takeHead(); err != nil {
 			return err
 		}
-		_ = r.readInt32(0, 0)
-		return advance(r.lastSize)
+		size := r.readInt32(0, -1)
+		if size < 0 {
+			return fmt.Errorf("tars: 字节数组长度异常 %d", size)
+		}
+		return advance(int(size))
 	case huyaTarsMap:
 		count := int(r.readInt32(0, 0))
 		for i := 0; i < count*2; i++ {
@@ -951,7 +981,6 @@ func (r *huyaTarsReader) intFromHead(head huyaTarsHead, def int32) int32 {
 	default:
 		return def
 	}
-	r.lastSize = int(v)
 	return int32(v)
 }
 
