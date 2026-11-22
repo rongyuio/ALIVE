@@ -140,11 +140,16 @@ func (a *App) islandListening() bool {
 // 长度是从中心向两侧长出来的——这是灵动岛的手感来源。
 func (a *App) Island(c *ui.Context) {
 	winW, _ := c.Size()
-	player := a.Router != nil && a.Router.Path() == routePlayer
-	listening := a.islandListening()
-	// 观测墙上的 active 就是那一间单直播间：岛展开显示它，环是流光，
-	// 和播放页同一套形态（见 islandRings）。
-	wallActive := a.onWatchWall() && !player && a.WatchActive != ""
+	// 岛的形态只由焦点与表面推导（见 surface.go 的 islandFormOf）：
+	// 以前这里各自算一遍 player / listening / wallActive，于是"声音在响
+	// 但岛是时钟"这种组合能存在。
+	form := a.islandFormOf()
+	player := form == islandFull
+	// 墙上焦点和后台收听都走"展开的岛"那一套内容（主播信息 + 关注键 +
+	// 可点回这一路），区别只在目标宽度与环：墙上是整条 + 流光，后台收听
+	// 是缩成圆 + 呼吸环。
+	wallActive := form == islandTile
+	listening := form == islandListening || wallActive
 
 	if player {
 		a.enterPlayerIsland()
@@ -536,21 +541,37 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 	// （点收藏等于点整块岛），头像虽然不可点，压在热区上面同样会挡住它。
 	// 顺序因此是 文字 → 头像 → 热区 → 按钮。
 	if listening {
+		// 点岛回到"这一路属于哪个表面"：
+		//
+		//   - 焦点那一间还在观测盒里，而且人不在墙上 → 回墙。用户离开的
+		//     正是那面墙，那里还有它的格子；直接跳进播放页等于替他做了一个
+		//     没要求的决定。
+		//   - 其余（不在盒里，或者本来就在墙上）→ 回播放页。
+		//
+		// 两条路都只是换路由：attachMedia / watchShow 各自把呈现尺寸求对。
+		key := a.focusKey()
+		target := routePlayer
+		if key != "" && a.watchHas(key) && !a.onWatchWall() {
+			target = routeFollows
+		}
 		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 			Cursor(ui.CursorPointer).Label("回到直播间")
 		if hit.Hovered() {
 			hit.Background(ui.RGBA(255, 255, 255, 0.06))
 		}
 		if hit.Clicked() {
-			// 进的是 active 那一间：a.Player 可能被别处改过，墙上真正在
-			// 出声的房间才是这一下该打开的目标。
-			if key := a.WatchActive; key != "" {
+			// 目标永远是焦点那一间：a.Player 可能被别处改过，真正在出声的
+			// 房间才是这一下该打开的那一个。
+			if key != "" {
 				if room, ok := a.watchRoom(key); ok {
 					a.Player = room
 				}
 			}
-			// 回播放页只走路由：attachMedia 在 PlayerPage 里把全尺寸呈现打开。
-			a.Router.Push(routePlayer)
+			if target == routeFollows {
+				// 回墙要落在观测分区上，否则关注页会停在"关注主播"。
+				a.selectFollowsSection(followsSectionWatch)
+			}
+			a.pushRoute(target)
 		}
 	}
 

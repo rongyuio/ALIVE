@@ -335,6 +335,10 @@ type App struct {
 	ErrText string
 	// 冷启动的读屏播报只发一次：每帧 Announce 会把读屏变成复读机
 	bootAnnounced bool
+
+	// routeTransitionUntil 是表面之间连续过渡的结束时刻；零值表示当前
+	// 不播页面过渡。由 pushRoute 置、tickRouteTransition 收尾。
+	routeTransitionUntil time.Time
 }
 
 // CategoryGroup 是一级分区及其下的二级分区。
@@ -500,6 +504,9 @@ func (a *App) Shell(c *ui.Context) {
 	root := ui.Box(c).Fill()
 	a.applyTheme(c, root)
 	c.SetTheme(theme.Theme())
+
+	// 表面之间的连续过渡到点收尾：恢复成"不播页面过渡"。
+	a.tickRouteTransition(time.Now())
 
 	// 各平台登录头像提前进缓存：切平台换头像时才不会先画灰人再跳图。
 	a.syncAuthAvatars()

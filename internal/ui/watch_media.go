@@ -69,6 +69,9 @@ type wallMedia struct {
 	volumes map[string]float32
 	// tickPending 表示墙的心跳定时器已经排上，避免每帧重复排。
 	tickPending bool
+	// hiddenSince 是墙变成不可见的时刻；零值表示墙可见。超过
+	// watchRetention 之后 watchReap 回收非焦点会话。
+	hiddenSince time.Time
 }
 
 func (m *wallMedia) init() {
@@ -244,6 +247,21 @@ func (a *App) watchPlayer(key string) *ui.VideoPlayer {
 func (a *App) watchShow(rects map[string]watch.Rect) {
 	a.watch.init()
 	a.watch.rects = rects
+	// 墙又可见了：保留窗口从头计。
+	a.watch.hiddenSince = time.Time{}
+	// 焦点跟着声音走：媒体层正在放的那一间如果在盒里，它就是 active。
+	//
+	// 以前只有"在墙上点过一格"才会置 active，于是"列表进播放页 → 回首页 →
+	// 进墙"之后整面墙都在静音预览、声音却在响，没有一格有绿点，岛还是时钟。
+	// 焦点是标量，它该由"谁在出声"决定，不该由"从哪条路进来的"决定。
+	if a.WatchActive == "" && a.media.roomKey != "" && a.watchHas(a.media.roomKey) {
+		a.WatchActive = a.media.roomKey
+		if a.Player.Name == "" {
+			if room, ok := a.watchRoom(a.media.roomKey); ok {
+				a.Player = room
+			}
+		}
+	}
 	seen := make(map[string]bool, len(a.WatchRooms))
 	for _, room := range a.WatchRooms {
 		key := watchKey(room)
@@ -257,9 +275,13 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 			continue
 		}
 		w, h := watchSize(r)
-		if key == a.WatchActive && a.media.roomKey == key {
-			// active 的引擎在 a.media 里，呈现尺寸由媒体层统一求值。从播放页
-			// 接管过来时它是全尺寸，回到墙上必须收回格子；值没变时不会重推。
+		if a.media.roomKey == key {
+			// 这一间已经由媒体层持有（从列表进过播放页、或从墙上接管过去
+			// 又退回来）。墙只负责把它画在格子里，不再建第二个会话——
+			// 以前判据只看 active，于是同一间房会有两个引擎在解同一路流，
+			// 其中一个还没有任何地方能关掉它。
+			//
+			// 呈现尺寸仍由媒体层统一求值（presentSizeFor）：墙上就是格子。
 			a.applyPresent()
 			continue
 		}
@@ -293,15 +315,46 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 	a.watchSyncActiveAudio()
 }
 
-// watchHide 在墙不可见时调用：关掉所有非 active 会话，active 继续出声。
+// watchRetention 是墙不可见后会话的保留窗口。
+//
+// "看不见"和"关掉"是两个决定，中间留一段时间：去首页瞄一眼就回来，整面墙
+// 还是活的，直接出画；超过这段才回收。以前两者焊在一起，离开几秒回来 11 格
+// 同时重新取流，按实测 224ms–4.3s 不等。
+//
+// 30 秒是取舍：够一次"看一眼就回来"，又不会在用户真的去干别的时一直占着
+// 12 路解码。代价写在 doc/decisions/0012。
+const watchRetention = 30 * time.Second
+
+// watchHide 在墙不可见时调用：标记不可见，回收交给保留窗口。
+//
+// 不在这里关会话：可见性不是资源策略。焦点那一路本来就该继续出声，其余
+// 的在窗口内保持解码，窗口到期由 watchReap 收掉。
 func (a *App) watchHide() {
 	a.watch.init()
+	if a.watch.hiddenSince.IsZero() {
+		a.watch.hiddenSince = time.Now()
+	}
+}
+
+// watchReap 在墙持续不可见超过保留窗口后回收非焦点会话。
+//
+// 每拍调用，幂等：窗口没到什么都不做，收完把标记清掉，下次隐藏重新计时。
+func (a *App) watchReap(now time.Time) {
+	a.watch.init()
+	if a.watch.hiddenSince.IsZero() {
+		return
+	}
+	if now.Sub(a.watch.hiddenSince) < watchRetention {
+		return
+	}
+	focus := a.focusKey()
 	for _, s := range a.watch.sessions {
-		if s.key == a.WatchActive {
+		if s.key == focus {
 			continue
 		}
 		a.watchCloseSession(s)
 	}
+	a.watch.hiddenSince = time.Time{}
 }
 
 func (a *App) watchCloseSession(s *wallSession) {
@@ -561,6 +614,7 @@ func watchDeadReason(ready, playing, buffering, ended bool, pos time.Duration,
 //
 // active 若由 a.media 持有，不在这里驱动——playerMedia 自己的心跳管它。
 func (a *App) watchTick(now time.Time) {
+	a.watchReap(now)
 	if len(a.watch.sessions) == 0 {
 		return
 	}
@@ -741,7 +795,10 @@ func (a *App) watchReleaseActive() {
 	}
 	key := m.roomKey
 	if !a.watchHas(key) {
-		a.closeMedia()
+		// 不在盒里：真的关掉。不能回头调 closeMedia——它会判"在不在盒里"，
+		// 而这里已经知道答案了，绕回去只是多一层判断。
+		a.media.reset()
+		a.media.roomKey = ""
 		return
 	}
 	a.watch.init()

@@ -94,6 +94,14 @@ func (a *App) PlayerPage(c *ui.Context) {
 		shell.Children(func() {
 			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
+				// 这一块是焦点会话在全尺寸表面上的那一份。从墙上放大进来时
+				// 它拿同一个身份，于是从格子那块矩形长过来（surface_motion.go）。
+				// 卡片进播放页也走这条路：封面长成舞台。
+				if key := a.focusKey(); key != "" {
+					stage.Transition(ui.ElementTransition{
+						Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
+					})
+				}
 				// 悬浮 chrome 的自动隐藏：先按指针位置和空闲时长算出这一帧
 				// 的显隐，拖窗条和 chrome 都跟着它走。
 				a.syncChromeIdle(c, stage)

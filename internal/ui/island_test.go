@@ -444,6 +444,10 @@ func TestPlayerIslandCollapsedIsCircle(t *testing.T) {
 func TestListeningAvatarFillsContentBox(t *testing.T) {
 	app := NewMockApp()
 	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+	// 后台收听一定同时有 roomKey 和 background：前者是"这一路是谁"，
+	// 后者是"它没有全尺寸视图"。只设 background 的夹具不真实，焦点会拼
+	// 不出来。
+	app.media.roomKey = "douyu|1"
 	app.media.background = true
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Advance(3 * time.Second)

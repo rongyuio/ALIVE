@@ -103,12 +103,18 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 		Cursor(ui.CursorPointer).Focusable().
 		Label(watchTileLabel(room))
 	tile.InsetShadow(0, 1, 0, 0, theme.TopLight)
+	// 这一格是"同一间房"在墙上的那一份。进播放页时舞台拿同一个身份，
+	// 于是画面从这块矩形长到整屏，而不是硬切（见 surface_motion.go）。
+	tile.Transition(ui.ElementTransition{
+		Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
+	})
 	if tile.Clicked() {
 		a.watchActivate(room)
 	}
 	if tile.DoubleClicked() {
 		a.watchActivate(room)
-		a.Router.Push(routePlayer)
+		// 同一间房从格子长到整屏：走连续过渡，不硬切。
+		a.pushRoute(routePlayer)
 	}
 	tile.Drag(key)
 	_, dropOver = ui.DragOver[string](tile)
@@ -342,7 +348,7 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float
 		ui.Row(c).Gap(m.rightGap).AlignItems(ui.Center).Children(func() {
 			a.iconBtnSized(c, iconFullscreen, m.iconSize, m.iconHit, false, "放大观测 "+room.Name, func() {
 				a.watchActivate(room)
-				a.Router.Push(routePlayer)
+				a.pushRoute(routePlayer)
 			})
 			a.iconBtnSized(c, iconX, m.iconSize, m.iconHit, false, "移出观测 "+room.Name, func() {
 				a.watchRemove(room)

@@ -280,23 +280,53 @@ func (a *App) kickMediaTick() {
 	}
 }
 
-// closeMedia 是离开播放页时的清理入口。
+// closeMedia 是「结束这一路的声音焦点」的入口。
+//
+// 关闭的语义只有一条规则：焦点结束，会话是否存活由"还有没有表面在显示
+// 它"推导——
+//
+//   - 这一间还在观测盒里 → 会话存活，退回墙上的静音预览。用户只是不想听
+//     了，不是想关掉这一格；
+//   - 不在盒里 → 彻底关闭，引擎一起收掉。
+//
+// 以前这里无条件关引擎，于是"从墙上放大进去再按 X"回到墙上那格是黑的，
+// 要重新取流；而同一间房还在盒里这件事，本来就已经说明了它该留着。
 //
 // 先把代号推进（reset 里的 cancelSession 会做），再清 roomKey：正在路上的
 // 取流结果回来时已经找不到对应的那一轮，只会被丢弃并关掉自己的资源。
 func (a *App) closeMedia() {
+	key := a.media.roomKey
 	// 明确退出播放页：弹幕一起断，聊天记录不跨会话保留。
-	// 观测盒里的房间还在，回墙上是一格封面，不是一条假装还活着的连接。
-	if a.WatchActive != "" && a.WatchActive == a.media.roomKey {
-		a.WatchActive = ""
-		a.WatchPending = ""
-	}
+	// 观测盒里的房间还在，回墙上是一格静音预览，不是一条假装还活着的连接。
 	a.closeDanmaku()
 	a.media.danmuRetryAt = time.Time{}
 	a.DanmuLog = nil
 	a.Danmu = nil
 	a.panelSeen = 0
 	a.panelPending = 0
+
+	if key != "" && a.watchHas(key) {
+		// 房间还在盒里：把引擎移回墙上的会话，静音但不停播。
+		a.watchReleaseActive()
+		if a.media.roomKey == key {
+			// 这一路还没有引擎（取流还在路上），release 没有东西可交接。
+			// 必须把这一轮取流收掉：只清焦点、留着 roomKey 的话，下一帧
+			// watchShow 会看到"媒体层有房间、焦点空着"，把焦点认领回来，
+			// 声音就永远停不掉。
+			a.media.reset()
+			a.media.roomKey = ""
+		}
+		if a.WatchActive == key {
+			a.WatchActive = ""
+			a.WatchPending = ""
+		}
+		return
+	}
+
+	if a.WatchActive != "" && a.WatchActive == key {
+		a.WatchActive = ""
+		a.WatchPending = ""
+	}
 	a.media.reset()
 	a.media.roomKey = ""
 }
