@@ -39,6 +39,7 @@
 | [0010-switch-content-still.md](decisions/0010-switch-content-still.md) | 切平台 / 分区时内容层不动：两个位移根因、六条帧级不变量、动效只留在控件上 | 给首页/关注页内容加动效、改骨架、或再报「切换闪/抖」之前 |
 | [0011-watch-wall.md](decisions/0011-watch-wall.md) | 悲鸣观测：12 间硬上限、不降画质、不按带宽准入、同引擎交接、弹幕只属于播放页 | 动观测墙、加格数、讨论降档/带宽/弹幕保活之前 |
 | [0012-surface-model.md](decisions/0012-surface-model.md) | 一个会话集合 + 三个正交轴；关闭语义统一为「结束焦点」；资源策略与可见性分离；过渡分三处判断 | 想加一条表面之间的路径、想改 `background`/`WatchActive`、想给内容层加回动画之前 |
+| [0013-letterbox-backdrop.md](decisions/0013-letterbox-backdrop.md) | 黑边区的模糊底：B 站两端有没有这一层的实测、backdrop 材质为什么赢过元素 `.Blur()`、成本闸门与拉窗那一帧 | 改 `stageFrame`、动 `MediaBackdrop*` 令牌、或想把模糊铺到观测墙之前 |
 
 ### reference
 

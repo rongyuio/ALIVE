@@ -173,11 +173,14 @@ type Cache struct {
 	// 窗口在拖动时宽度连续变化，目标宽度每过一个 8 像素档位就是新 key；
 	// 新纹理解码完成前如果返回 nil，整片封面会退回占位色，看起来就是闪。
 	// 用上一张纹理顶着（Fit 会等比缩放到新尺寸），画面连续，解码完再换新图。
-	last   map[string]*ui.Bitmap
-	bytes  int64
-	win    *mygo.Window
-	scale  float64 // 设备像素 / DIP，决定解码尺寸
-	client *http.Client
+	last  map[string]*ui.Bitmap
+	bytes int64
+	win   *mygo.Window
+	scale float64 // 设备像素 / DIP，决定解码尺寸
+	// scaleChecked 是上一次问屏幕的时间。窗口拖到另一块 DPI 不同的显示器后，
+	// 解码密度必须跟着变；每张图都问一次屏幕太贵，按这个间隔节流。
+	scaleChecked time.Time
+	client       *http.Client
 
 	// diskDir 是头像的磁盘缓存目录；空串表示只走内存（测试、拿不到配置目录）。
 	// 封面永远不进磁盘，见包注释。
@@ -232,8 +235,11 @@ func (c *Cache) SetDiskDir(dir string) {
 	c.mu.Unlock()
 }
 
+// scaleCheckInterval 是重新询问窗口所在显示器 DPI 的最小间隔。
+const scaleCheckInterval = 500 * time.Millisecond
+
 // SetWindow 让缓存拿到窗口：图片就绪后用它触发重绘。
-// 顺便记下设备缩放——解码尺寸要按它换算成物理像素，窗口开着时不会变。
+// 顺便记下设备缩放——解码尺寸要按它换算成物理像素。
 func (c *Cache) SetWindow(w *mygo.Window) {
 	c.mu.Lock()
 	c.win = w
@@ -242,6 +248,49 @@ func (c *Cache) SetWindow(w *mygo.Window) {
 	}
 	c.mu.Unlock()
 	c.sweepOnce.Do(func() { go c.sweep() })
+}
+
+// scaleForBounds 返回与窗口重叠面积最大的那块显示器的缩放。
+//
+// 不能一直用主屏：用户把窗口拖到另一块 DPI 不同的屏上，解码密度要跟着变，
+// 否则封面和头像会被拉大糊掉，或者白解一张过大的图。面积最大而不是「左上角
+// 落在哪块」，窗口横跨两块屏时才有确定答案。
+func scaleForBounds(b mygo.Rectangle, displays []mygo.Display) float64 {
+	best, bestArea := 0.0, -1
+	for _, d := range displays {
+		r := d.Bounds
+		w := min(r.X+r.Width, b.X+b.Width) - max(r.X, b.X)
+		h := min(r.Y+r.Height, b.Y+b.Height) - max(r.Y, b.Y)
+		area := max(w, 0) * max(h, 0)
+		if area > bestArea {
+			best, bestArea = d.ScaleFactor, area
+		}
+	}
+	return best
+}
+
+// refreshScale 在窗口落到另一块显示器后更新解码密度。
+//
+// 双屏 DPI 不同是常态：窗口从 150% 的屏拖到 100% 的屏，按旧密度解码出来的
+// 封面和头像会被拉大、发糊；反过来则是白解一张更大的图。只在真正换屏后
+// 改一次，同一块屏上不会每帧重算。
+func (c *Cache) refreshScale(now time.Time) {
+	c.mu.Lock()
+	if c.win == nil || now.Sub(c.scaleChecked) < scaleCheckInterval {
+		c.mu.Unlock()
+		return
+	}
+	c.scaleChecked = now
+	w := c.win
+	c.mu.Unlock()
+
+	scale := scaleForBounds(w.Bounds(), mygo.Screen.Displays())
+	if scale <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.scale = scale
+	c.mu.Unlock()
 }
 
 // Bitmap 返回 url 在显示宽度 width（DIP）下对应的纹理；
@@ -275,6 +324,7 @@ func (c *Cache) bitmap(url string, width float32, persist bool) *ui.Bitmap {
 	if url == "" {
 		return nil
 	}
+	c.refreshScale(time.Now())
 	target := c.targetPixels(width)
 	key := cacheKey(url, target)
 	now := time.Now()

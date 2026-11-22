@@ -535,13 +535,21 @@ func (a *App) applyConfig(d configData) importSummary {
 	// 清晰度 / 线路按房间存：只有当前这一路能接住导入值，没有房间时
 	// 丢掉——把它们塞回全局正是串台的来源。
 	if key := a.choiceKey(); key != "" {
+		changed := false
 		if d.Quality != "" {
 			a.setRoomQuality(key, d.Quality)
 			sum.Prefs = true
+			changed = true
 		}
 		if d.Line != "" {
 			a.setRoomLine(key, d.Line, "")
 			sum.Prefs = true
+			changed = true
+		}
+		// 正在播的就是这一间：把新档位 / 新线路真正接到流上。只写房间记录
+		// 的话，播放页芯片显示导入的档位，画面还是旧的那一路。
+		if changed && a.media.roomKey == key {
+			a.startStream(true)
 		}
 	}
 	if d.Volume != nil {

@@ -148,19 +148,20 @@ func (p *bilibiliProvider) StreamForPlayback(ctx context.Context, roomID, line, 
 	}
 
 	realID, _ := strconv.ParseInt(out.RoomID, 10, 64)
-	urls, err := p.biliTierURLs(ctx, realID, target.QN)
+	// 从目标档往下逐档试：服务端不按请求的 qn 下发（匿名会话常见——
+	// current_qn 恒为 250）时，继续往低档找，而不是把「这一档没有地址」
+	// 直接甩给用户。菜单里还有更低档，播比不播重要。
+	picked, pickedURL, err := biliResolveDown(info.Tiers, target, line, func(qn int64) ([]biliPlayURL, error) {
+		return p.biliTierURLs(ctx, realID, qn)
+	})
 	if err != nil {
 		return out, Variant{}, err
 	}
-	// 选中线路上有候选就用它，没有就退回这一档最好的那条。
-	u, ok := biliPickByLine(urls, strings.TrimSpace(line))
-	if !ok {
-		return out, Variant{}, &UpstreamError{
-			Platform: Bilibili, Op: "取流",
-			Message: "这一档没有可播放的地址",
-		}
+	if picked.QN != target.QN {
+		slog.Info("B 站取流降级", "room", out.RoomID, "want_qn", target.QN, "got_qn", picked.QN)
 	}
-	selected := biliTierVariant(out.RoomID, *target, info.QNDesc, u)
+
+	selected := biliTierVariant(out.RoomID, *picked, info.QNDesc, pickedURL)
 
 	// 把解析出来的地址填回菜单对应项：调用方拿着 Stream 切档时不必再请求。
 	for i := range out.Variants {
@@ -169,6 +170,37 @@ func (p *bilibiliProvider) StreamForPlayback(ctx context.Context, roomID, line, 
 		}
 	}
 	return out, selected, nil
+}
+
+// biliResolveDown 从 target 档往下逐档解析地址，返回第一个真的能播的档。
+//
+// fetch 返回某一档的可播地址；空切片表示服务端没按这一档下发。只往下降，
+// 不会为了凑一个地址反而升档——用户选的是上限，不是下限。
+func biliResolveDown(tiers []biliTier, target *biliTier, line string, fetch func(qn int64) ([]biliPlayURL, error)) (*biliTier, biliPlayURL, error) {
+	var firstErr error
+	for i := range tiers {
+		tier := &tiers[i]
+		if tier.QN > target.QN {
+			continue
+		}
+		urls, err := fetch(tier.QN)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if u, ok := biliPickByLine(urls, strings.TrimSpace(line)); ok {
+			return tier, u, nil
+		}
+	}
+	if firstErr != nil {
+		return nil, biliPlayURL{}, firstErr
+	}
+	return nil, biliPlayURL{}, &UpstreamError{
+		Platform: Bilibili, Op: "取流",
+		Message: "这一档及更低的档位都没有可播放的地址",
+	}
 }
 
 // biliStreamSkeleton 取房间详情 + 档位骨架（无地址）。

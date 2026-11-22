@@ -50,7 +50,10 @@ func (s surface) String() string {
 //     之后 a.Player 还留着上一间，拿它兜底会让岛在声音已经停了之后继续
 //     展开（从墙上放大再按 X 就是这样）。
 func (a *App) focusKey() string {
-	if a.WatchActive != "" {
+	// WatchActive 也要认活着的会话：点一格离线/取流失败的格子，它确实
+	// 成了焦点，但没有引擎、没有声音。无条件返回会让岛画出「后台收听」，
+	// 点回去还是同一张未开播提示——和 media.roomKey 那条是同一个洞。
+	if a.WatchActive != "" && a.watchFocusAlive(a.WatchActive) {
 		return a.WatchActive
 	}
 	if a.media.roomKey != "" &&
@@ -61,6 +64,24 @@ func (a *App) focusKey() string {
 		return watchKey(a.Player)
 	}
 	return ""
+}
+
+// watchFocusAlive 报告墙上这一格还有没有声音，或正在来的声音。
+//
+// 媒体层握着它时看引擎和 loading；退回墙上的看这一格自己的会话。
+// 离线、取流失败、以及失败的终态都不算——没有声音就不该出现在岛上
+// （doc/architecture/surfaces.md 不变量 5）。
+func (a *App) watchFocusAlive(key string) bool {
+	if a.media.roomKey == key {
+		return a.media.player != nil || a.media.loading
+	}
+	s := a.watch.sessions[key]
+	if s == nil {
+		// 交接间隙里可能还没有会话记录：这时别把岛闪回时钟。
+		// 有记录但既没引擎也不在取流，才是真的没有声音。
+		return true
+	}
+	return s.player != nil || s.loading
 }
 
 // surfaceFor 求某个会话此刻的可见表面。

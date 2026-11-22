@@ -517,7 +517,10 @@ func (a *App) watchFail(s *wallSession, msg string) {
 	s.failures++
 	s.retryAt = time.Now().Add(watchBackoff(s.failures))
 	if s.key == a.WatchActive {
-		a.WatchPending = ""
+		// 焦点是「谁在出声」。引擎已经关了还留着绿点，岛却按「没有引擎」
+		// 回时钟，两个地方各说各话。这里把焦点一起收掉：绿点消失、岛回
+		// 时钟、a.Player/a.Playing 复位，和 surfaces.md 不变量 5 一致。
+		a.watchDeactivate()
 	}
 	a.invalidateWindows()
 }
@@ -536,7 +539,8 @@ func (a *App) watchOffline(s *wallSession) {
 	s.err = "主播暂时没有开播"
 	s.firstFrame = false
 	if s.key == a.WatchActive {
-		a.WatchPending = ""
+		// 下播就是没有声音：焦点跟着收掉，绿点和岛一起消失。
+		a.watchDeactivate()
 	}
 	a.invalidateWindows()
 }
@@ -756,6 +760,14 @@ func (a *App) watchActivate(room Streamer) {
 		} else if s := a.watch.sessions[key]; s != nil && s.player == nil && !s.loading {
 			a.watchReload(s.room)
 		}
+		return
+	}
+	// 这一格已知没有声音（离线 / 取流失败，也没有引擎在跑）：点击只重试，
+	// 不抢焦点。抢了会先亮绿点、展开岛，等这一路再失败又一起收掉——一次
+	// 没有意义的闪动，还会把原来的声音焦点弄丢。
+	if s := a.watch.sessions[key]; s != nil && s.player == nil && !s.loading &&
+		(s.offline || s.err != "") {
+		a.watchReload(s.room)
 		return
 	}
 	a.watch.init()

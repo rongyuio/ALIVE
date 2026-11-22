@@ -308,6 +308,11 @@ type App struct {
 	chromePtrOver bool // 指针是否还停在画面上
 	chromeFull    bool // 上一帧是否处于全屏：进出全屏要先把 chrome 亮出来
 
+	// 上一帧的窗口内容尺寸。窗口刚变过的那一帧，stage 的 LayoutBounds 还是
+	// 旧布局，拿它判黑边会晚一帧——拖窗时黑边区就会闪一下纯黑。
+	stageWinW float32
+	stageWinH float32
+
 	// 关注页一级分区的显示顺序（可拖动换位，落盘）
 	FollowsSectionOrder []string
 

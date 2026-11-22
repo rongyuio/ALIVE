@@ -45,6 +45,9 @@ type Room struct {
 	Viewers  int64
 	Area     string // 二级分区名，直接用于卡片上的分类胶囊
 	Live     bool
+	// Background 是主播自己设的房间背景图，也是 B 站播放页黑边底的来源
+	// （网页 H5 的 room_info.app_background）。为空时播放页回落到 Cover。
+	Background string
 }
 
 // Page 是一页直播间。

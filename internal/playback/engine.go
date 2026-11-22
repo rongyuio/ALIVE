@@ -112,6 +112,57 @@ func (g *audioGate) allow(pos time.Duration, now time.Time) bool {
 	return false
 }
 
+// destroyWaitBudget 是等待上一路 mpv 销毁完成的上限。
+//
+// 正常情况下 video.Player.Close 的清理是毫秒级；这个上限只防「销毁线程卡住
+// 把整个应用一起拖住」，不是给慢启动留的余量。
+const destroyWaitBudget = 5 * time.Second
+
+var (
+	destroyMu sync.Mutex
+	destroyCh = map[uint64]<-chan struct{}{}
+	destroyID uint64
+)
+
+// noteDestroy 登记一路正在销毁的引擎。Open 创建新实例前会等这些通道关闭，
+// 保证上一个实例的 AO / mpv 真正释放完——两个实例的销毁和初始化交叠时，
+// 新实例会打不开音频、video-sync=audio 的时钟直接停住。
+func noteDestroy(done <-chan struct{}) {
+	destroyMu.Lock()
+	destroyID++
+	id := destroyID
+	destroyCh[id] = done
+	destroyMu.Unlock()
+	go func() {
+		<-done
+		destroyMu.Lock()
+		delete(destroyCh, id)
+		destroyMu.Unlock()
+	}()
+}
+
+// waitDestroys 等所有正在销毁的引擎结束，最多 destroyWaitBudget。
+func waitDestroys() {
+	destroyMu.Lock()
+	chans := make([]<-chan struct{}, 0, len(destroyCh))
+	for _, c := range destroyCh {
+		chans = append(chans, c)
+	}
+	destroyMu.Unlock()
+	if len(chans) == 0 {
+		return
+	}
+	deadline := time.NewTimer(destroyWaitBudget)
+	defer deadline.Stop()
+	for _, c := range chans {
+		select {
+		case <-c:
+		case <-deadline.C:
+			return
+		}
+	}
+}
+
 // Open 打开一路直播并开始播放。
 //
 // 返回时 mpv 已经收到 loadfile，首帧要等 Frame 第一次给出画面。
@@ -119,6 +170,8 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 	if upstream == "" {
 		return nil, fmt.Errorf("%w: 上游地址为空", ErrUnsupported)
 	}
+	// 上一个实例可能还在释放 AO / mpv；等它真正结束再建新的。
+	waitDestroys()
 	lib, err := libraryPath()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
@@ -163,6 +216,10 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 			_ = e.Close()
 		case <-p.Done():
 		}
+		// ctx 分支里 Close 只是发起销毁，真正的 workers.Wait + mpv_destroy
+		// 在 video.Player 自己的 goroutine 里。Done 必须等它结束，否则
+		// 「Done 表示这一路彻底停下」这句注释就是假的。
+		<-p.Done()
 		close(e.done)
 	}()
 	return e, nil
@@ -368,6 +425,8 @@ func (e *Engine) Close() error {
 	e.closed = true
 	e.mu.Unlock()
 	e.p.Close()
+	// 登记给下一次 Open：新实例要等这一路的 mpv / AO 真正释放完。
+	noteDestroy(e.p.Done())
 	return nil
 }
 

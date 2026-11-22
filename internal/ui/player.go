@@ -111,7 +111,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 					stage.Cursor(ui.CursorNone)
 				}
 				stage.Children(func() {
-					a.stageFrame(c)
+					a.stageFrame(c, stage)
 					a.danmuLayer(c)
 					// 状态层压在画面和弹幕之上、chrome 之下：它是 z-index 15，
 					// 控制条和顶栏是 20。
@@ -308,12 +308,24 @@ func (a *App) leavePlayer() {
 //
 // 有播放器就画真流，没有（还在转封装、或者房间没开播）就先用封面顶着，
 // 这样版式不会跳。
-func (a *App) stageFrame(c *ui.Context) {
+func (a *App) stageFrame(c *ui.Context, stage ui.Element) {
 	// 四边贴死：只写 Fill 的话元素会按自己的比例排，容器比 16:9 高时
 	// 底下就空出一条黑边（控制条会浮在那条黑边上）。
 	// contain 是有意选的：宁可留黑边也不裁、不拉伸，
 	// 弹幕层再盖到黑边上去。
 	p := a.media.player
+	// 封面只在这两种时候出现：播放器还没开，或者开了但首帧没到。
+	var cover *ui.Bitmap
+	if p == nil || !p.Ready() {
+		if w, _ := c.Size(); w > 0 {
+			cover = media.Default.Bitmap(a.currentCover(), w)
+		}
+	}
+	// 黑边底必须排在画面之前。它是一张**静态**图：抓一帧、缩小、模糊，
+	// 之后就不再变（见 doc/decisions/0013）。
+	if vw, vh := stageSourceSize(p, cover); a.backdropShown(c, stage, vw, vh) {
+		a.stageBackdrop(c, p, cover)
+	}
 	if p != nil {
 		// Video 元素必须一直在：视频只有在被显示时才会往下走，藏起来
 		// 或干脆不画，解码就停，首帧永远等不到。
@@ -324,12 +336,123 @@ func (a *App) stageFrame(c *ui.Context) {
 		// 播放器已经开出来了，但首帧还没到——此时 Video 是一块纯黑。
 		// 拿封面盖住，看起来是「正在起播」而不是「播坏了」。
 	}
-	w, _ := c.Size()
-	if bmp := media.Default.Bitmap(a.currentCover(), w); bmp != nil {
-		ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
+	if cover != nil {
+		ui.Image(c, cover).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
 	}
 	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 		Background(theme.MediaScrimSoft)
+}
+
+// stageBackdrop 在黑边区铺一层**静态**模糊底。
+//
+// 配方直接照 B 站的实现（2026-11-23 从 room-player 与 mobile-player 的
+// bundle 里读出来的，不是看着调的）：
+//
+//	background-image: url(<主播设的房间背景图，没有就用封面>)
+//	background-size: cover;  background-position: center;
+//	filter: blur(35px);
+//	+ 一层 rgba(0,0,0,.5) 压暗（H5 的 .background-cover）
+//
+// 两个和「看起来像」有关、但容易漏掉的细节：
+//
+//   - B 站的底是**平台给的一张静态图**（room_info.background / app_background），
+//     不是视频帧。它不跟着画面动——所以每帧只是画一张贴图。
+//   - 模糊会把元素边缘之外的透明吸进来，四周出现一圈发白的渐变。H5 用
+//     transform: scale(1.2) 把图放大 20% 盖住它。这里同样让底图过扫。
+func (a *App) stageBackdrop(c *ui.Context, p *ui.VideoPlayer, cover *ui.Bitmap) {
+	bmp := cover
+	if url := a.currentBackdrop(); url != "" {
+		if w, _ := c.Size(); w > 0 {
+			bmp = backdropBitmap(url, w*(1+theme.MediaBackdropOverscan))
+		}
+	}
+	if bmp == nil {
+		return
+	}
+	// 过扫：底图铺得比舞台大一圈，模糊把边缘吃掉之后四边仍然是满的。
+	// 这是 H5 的 scale(1.2)：元素本身仍占舞台那么大，只是内容被放大了。
+	pad := theme.MediaBackdropOverscan
+	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().Children(func() {
+		ui.Image(c, bmp).Absolute().Top(-pad).Left(-pad).Right(-pad).Bottom(-pad).
+			Fit(ui.Cover)
+	}).Blur(theme.MediaBackdropBlur)
+	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().
+		Background(theme.MediaBackdropScrim)
+}
+
+// backdropBitmap 取一张背景图。测试里换成直接给图，不联网。
+var backdropBitmap = func(url string, width float32) *ui.Bitmap {
+	return media.Default.Bitmap(url, width)
+}
+
+// currentBackdrop 是这一间该铺的背景图：主播设的优先，没有就用封面。
+//
+// B 站 H5 的顺序就是这样（room_info.app_background → cover → 兜底图），
+// 它把背景图当房间身份的一部分，封面只是退路。
+func (a *App) currentBackdrop() string {
+	s := a.current()
+	if s.BackdropURL != "" {
+		return s.BackdropURL
+	}
+	return s.CoverURL
+}
+
+// stageSourceSize 是背景层要用的那一帧的尺寸：有画面就是视频帧，起播前是封面。
+func stageSourceSize(p *ui.VideoPlayer, cover *ui.Bitmap) (w, h float32) {
+	if p != nil && p.Ready() {
+		iw, ih := p.Size()
+		return float32(iw), float32(ih)
+	}
+	if cover != nil {
+		iw, ih := cover.Size()
+		return float32(iw), float32(ih)
+	}
+	return 0, 0
+}
+
+// backdropShown 决定这一帧画不画模糊底。
+//
+// 稳态按舞台的黑边宽度判（backdropNeeded），两条例外也要画：
+//
+//   - 窗口刚变过：这一帧的布局还是旧的，按旧尺寸判会晚一帧，拖窗时黑边
+//     区就闪一下纯黑。多画一帧模糊比闪一下便宜。
+//   - 舞台还没有上一帧的布局（刚进页面）：尺寸未知，先画。
+func (a *App) backdropShown(c *ui.Context, stage ui.Element, vw, vh float32) bool {
+	if vw <= 0 || vh <= 0 {
+		return false
+	}
+	ww, wh := c.Size()
+	resized := ww != a.stageWinW || wh != a.stageWinH
+	a.stageWinW, a.stageWinH = ww, wh
+	if resized {
+		return true
+	}
+	b := stage.LayoutBounds()
+	if b.W <= 0 || b.H <= 0 {
+		return true
+	}
+	return backdropNeeded(b.W, b.H, vw, vh)
+}
+
+// letterbox 返回舞台四边因等比 contain 留下的黑边宽度，DIP。
+// 视频比舞台宽时是上下两条，否则是左右两条。
+func letterbox(stageW, stageH, videoW, videoH float32) (top, right, bottom, left float32) {
+	if stageW <= 0 || stageH <= 0 || videoW <= 0 || videoH <= 0 {
+		return 0, 0, 0, 0
+	}
+	if videoW*stageH > stageW*videoH {
+		bar := (stageH - stageW*videoH/videoW) / 2
+		return bar, 0, bar, 0
+	}
+	bar := (stageW - stageH*videoW/videoH) / 2
+	return 0, bar, 0, bar
+}
+
+// backdropNeeded 判断黑边是否宽到值得开一层模糊底。窄于
+// theme.MediaBackdropMinBar 的多半是取整余量，为它开一层全屏模糊不值。
+func backdropNeeded(stageW, stageH, videoW, videoH float32) bool {
+	top, right, bottom, left := letterbox(stageW, stageH, videoW, videoH)
+	return max(max(top, bottom), max(left, right)) >= theme.MediaBackdropMinBar
 }
 
 // stageOverlay 是画面上的状态层。状态一共五种：拉流中、断流重连、

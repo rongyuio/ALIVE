@@ -475,16 +475,17 @@ func convertRooms(rooms []live.Room) []Streamer {
 	out := make([]Streamer, 0, len(rooms))
 	for i, r := range rooms {
 		out = append(out, Streamer{
-			Platform:  string(r.Platform),
-			RoomID:    r.RoomID,
-			Name:      r.Nickname,
-			Title:     r.Title,
-			Category:  r.Area,
-			Viewers:   int(r.Viewers),
-			Live:      r.Live,
-			Hue:       float32(i * 37 % 360),
-			CoverURL:  r.Cover,
-			AvatarURL: r.Avatar,
+			Platform:    string(r.Platform),
+			RoomID:      r.RoomID,
+			Name:        r.Nickname,
+			Title:       r.Title,
+			Category:    r.Area,
+			Viewers:     int(r.Viewers),
+			Live:        r.Live,
+			Hue:         float32(i * 37 % 360),
+			CoverURL:    r.Cover,
+			AvatarURL:   r.Avatar,
+			BackdropURL: r.Background,
 		})
 	}
 	return out

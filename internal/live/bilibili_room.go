@@ -19,6 +19,8 @@ type biliRoomRef struct {
 	UID int64
 	// Title 来自 get_info，详情接口缺字段时用它兜底
 	Title string
+	// Background 是主播设的房间背景图，也在 get_info 里。详情接口不返回它。
+	Background string
 }
 
 // biliUIDTTL 取得很长：uid 不会变，只有房间被转手这种极端情况才会过期。
@@ -53,7 +55,7 @@ func (p *bilibiliProvider) RoomInfo(ctx context.Context, roomID string) (Room, e
 				Platform: Bilibili, Op: "房间信息", Message: "上游没有返回主播 uid",
 			}
 		}
-		return biliRoomRef{UID: int64(info.UID), Title: info.Title}, nil
+		return biliRoomRef{UID: int64(info.UID), Title: info.Title, Background: info.Background}, nil
 	})
 	if err != nil {
 		return Room{}, err
@@ -92,8 +94,17 @@ func (p *bilibiliProvider) RoomInfo(ctx context.Context, roomID string) (Room, e
 		Area:     firstNonEmpty(item.AreaV2Name, item.AreaName),
 		// 只有 live_status==1 才算直播中；2 是轮播，界面按未开播处理
 		Live: item.LiveStatus == 1,
+		// 房间背景图：主播自己设的那张。B 站播放页拿它铺黑边底
+		// （H5 的 room_info.app_background 就是这个字段，网页端叫 background）。
+		Background: biliBackground(ref.Background),
 	}, nil
 }
+
+// biliBackground 是房间背景图的地址。
+//
+// 和封面不同，这里不追加 @480w：背景要放大到整个舞台、还要被重度模糊，
+// 太小的源图放大后会糊成一块。原图多大就多大，反正只下载一次。
+func biliBackground(raw string) string { return httpsURL(raw) }
 
 // 编译期确认 B 站满足 RoomInfoer。
 var _ RoomInfoer = (*bilibiliProvider)(nil)

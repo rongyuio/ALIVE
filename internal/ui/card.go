@@ -26,6 +26,9 @@ type Streamer struct {
 	// 真封面和头像；为空或还没下载完时回落到渐变占位
 	CoverURL  string
 	AvatarURL string
+	// BackdropURL 是主播设的房间背景图，播放页拿它铺黑边底（B 站的做法）。
+	// 为空时回落到 CoverURL。
+	BackdropURL string
 }
 
 // cardLineHeight 是 MyGo 文本的默认行高：字号 × 4/3。

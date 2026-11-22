@@ -108,6 +108,22 @@ var (
 	MediaTrackFill  = ui.RGBA(255, 255, 255, 0.26)
 	MediaHairStrong = ui.RGBA(255, 255, 255, 0.24)
 	MediaScrimSoft  = ui.RGBA(0, 0, 0, 0.22)
+
+	// 黑边区的模糊底。数值不是估的，是 2026-11-23 从 B 站播放器 bundle 里
+	// 读出来的（room-player.prod.min.js 的 capture-video-bg、H5 的
+	// .bgBlur / .background-cover），逐条对应：
+	//
+	//	filter: blur(35px)         → MediaBackdropBlur
+	//	transform: scale(1.2)      → MediaBackdropOverscan
+	//	background: rgba(0,0,0,.5) → MediaBackdropScrim
+	//
+	// 35 是 CSS 像素的绝对值，不随窗口伸缩——B 站也没让它伸缩。
+	MediaBackdropBlur     float32 = 35
+	MediaBackdropOverscan float32 = 0.2 // 四周各外扩 20%，抵消模糊吸进来的透明边
+	MediaBackdropScrim            = ui.RGBA(0, 0, 0, 0.5)
+	// MediaBackdropMinBar 是「值得画」的最小黑边：比它窄的多半是 16:9 在
+	// 非整像素窗口下的取整余量，为 1–2 DIP 开一层全屏模糊不值。
+	MediaBackdropMinBar float32 = 2
 	// MediaScrimTile 是观测墙格子底部信息条的压暗层：0.66 才压得住
 	// 亮场景的直播画面，同时不把整块画面盖死。
 	MediaScrimTile = ui.RGBA(6, 7, 9, 0.66)
