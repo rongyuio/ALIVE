@@ -844,7 +844,7 @@ func TestPresentSizeFor(t *testing.T) {
 	}{
 		{"播放页全尺寸", routePlayer, true, watch.Rect{}, false, presentSize{}},
 		{"墙上 active 用格子", routeFollows, true, watch.Rect{W: 700, H: 394}, true,
-			presentSize{W: 1169, H: 720}},
+			presentSize{W: 1280, H: 720}},
 		{"别的页面后台收听", routeHome, false, watch.Rect{}, false, presentSize{W: 160, H: 90}},
 	}
 	for _, tc := range cases {

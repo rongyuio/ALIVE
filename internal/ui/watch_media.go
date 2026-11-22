@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -201,27 +202,29 @@ func (a *App) watchRoom(key string) (Streamer, bool) {
 	return Streamer{}, false
 }
 
+// 画布尺寸从「高是 18 的倍数」的格子里取：高 18k、宽 32k，比例正好
+// 16:9，宽高都是偶数。mpv 按这个尺寸开画布，比例和格子差一点点，多出来
+// 的部分就会被它补成黑边、再被上屏那一层放大到格子上。
+const (
+	watchStep = 18
+	watchMinK = 10 // 320×180
+	watchMaxK = 40 // 1280×720
+)
+
 // watchSize 把格子 DIP 换成渲染像素：2 倍留 DPI 余量，上限 1280×720。
 // 源流不降档；这只是呈现尺寸。
+//
+// 画布必须和格子一样是精确的 16:9。旧实现按格子的浮点宽高各乘 2 再取整，
+// 得到 1008×566 这种比例，mpv 会把 16:9 的流补出黑边；上屏再 Contain 回
+// 16:9 的格子，黑边就落在格子四边上——日间模式里每格一圈 1 物理像素的黑
+// 线，非常显眼。撞到 1280 上限时更糟：旧实现先把 w 夹到 1280 再做除法，
+// h 根本没缩，宽格子会拿到 1.71 甚至 1.49 的画布，黑边宽到几十像素。
+// 所以高度落到最近的 18 的倍数上，比例就精确了。墙上的格子统一 16:9
+// （见 watchAspect），只用高度推宽高两项。
 func watchSize(r watch.Rect) (int, int) {
-	w := int(r.W * 2)
-	h := int(r.H * 2)
-	if w < 320 {
-		w = 320
-	}
-	if h < 180 {
-		h = 180
-	}
-	if w > 1280 {
-		w = 1280
-		h = h * 1280 / w
-		w = 1280
-	}
-	if h > 720 {
-		w = w * 720 / h
-		h = 720
-	}
-	return w, h
+	k := int(math.Round(float64(r.H) * 2 / watchStep))
+	k = min(max(k, watchMinK), watchMaxK)
+	return 32 * k, watchStep * k
 }
 
 func (a *App) watchPlayer(key string) *ui.VideoPlayer {
