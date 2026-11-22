@@ -134,6 +134,7 @@ func (a *App) searchPopover(c *ui.Context) {
 		ui.Icon(c, iconSearch).FontSize(15).TextColor(theme.TextTertiary)
 		ui.TextInputBase(c, &a.SearchQuery).FontSize(theme.TextSM).Grow(1).
 			Placeholder(searchPlaceholder(a.viewPlatform())).PlaceholderColor(theme.TextTertiary).
+			Label("搜索直播间").
 			AutoFocus().
 			OnTextKey(a.searchKey)
 		// 加载中转圈；不在加载且有关键词时才给清空按钮

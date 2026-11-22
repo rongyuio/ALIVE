@@ -17,9 +17,12 @@ var shortcuts = []struct{ key, action string }{
 
 // shortcutsOverlay 是 ? 唤出的快捷键说明：居中弹层，点空白或 Esc 关掉。
 func (a *App) shortcutsOverlay(c *ui.Context) {
+	// 和数据同步面板同一套：Modal 让窗口级快捷键等待，否则遮罩盖住整屏时
+	// Space / K / F / M 仍会穿到 Shell 的 shellKeys，对背后正在播的那一路
+	// 生效。Esc 由这一层自己消费，handleEscape 里的分支留作兜底。
 	bg := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(0, 0, 0, 0.55)).Center().Label("关闭快捷键说明")
-	if bg.Clicked() {
+		Background(ui.RGBA(0, 0, 0, 0.55)).Center().Modal().Label("关闭快捷键说明")
+	if bg.Clicked() || bg.OverlayShortcut(0, ui.KeyEscape) {
 		a.ShortcutsOpen = false
 	}
 	bg.Children(func() {

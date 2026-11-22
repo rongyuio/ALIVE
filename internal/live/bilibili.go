@@ -184,6 +184,15 @@ func (p *bilibiliProvider) Search(ctx context.Context, keyword string) ([]Room, 
 	if err != nil {
 		return nil, p.wrap("搜索", err)
 	}
+	// 库在 HTTP 200 且 data 缺失 / 为 null 时返回 (nil, nil)。搜索跑在界面
+	// 后台 goroutine 上，下面任何一次 result.Result 都是 nil 解引用，
+	// panic 没有 recover，会带走整个进程。
+	if result == nil {
+		return nil, &UpstreamError{
+			Platform: Bilibili, Op: "搜索",
+			Message: "上游没有返回搜索结果",
+		}
+	}
 
 	// 上游偶发返回 code=0、numResults>0 但 result 为空（限流/瞬态）。
 	// 直接透给 UI 会显示「无结果」，等一小会儿重试一次。
@@ -193,7 +202,7 @@ func (p *bilibiliProvider) Search(ctx context.Context, keyword string) ([]Room, 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		if retry, err := p.sc.CategorySearch(ctx, param); err == nil {
+		if retry, err := p.sc.CategorySearch(ctx, param); err == nil && retry != nil {
 			result = retry
 		}
 	}

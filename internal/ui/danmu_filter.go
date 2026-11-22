@@ -68,6 +68,7 @@ func (a *App) danmuFilterInput(c *ui.Context) {
 	field.Children(func() {
 		ui.Icon(c, iconFilter).FontSize(13).TextColor(ui.RGBA(255, 255, 255, 0.4))
 		ui.TextInputBase(c, &a.DanmuFilterQuery).FontSize(theme.TextXS).Grow(1).
+			Label("弹幕屏蔽词").
 			Placeholder("输入关键词，回车添加").
 			PlaceholderColor(theme.MediaTextFaint).
 			OnTextKey(a.danmuFilterKey)

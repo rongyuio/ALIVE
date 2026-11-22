@@ -185,8 +185,15 @@ func (a *App) Island(c *ui.Context) {
 
 	// 高度恒为 theme.IslandH（38），和首页那枚眼睛岛一模一样。
 	// 展开只让宽度往两边长，高度一像素都不动——这是灵动岛的死规矩。
+	//
+	// 岛自己带 DragWindow：它挂在 Shell 根下、在顶栏之后构建，是 Navbar
+	// （frameless 窗口唯一的拖窗入口）的兄弟。MyGo 的命中链只取指针下最上
+	// 层的元素和它的祖先，不会穿到兄弟，所以指针落在岛的非交互区域（时钟、
+	// 头像、文字、留白）时，顶栏的 DragWindow 根本不在链里——顶栏正中就成了
+	// 拖不动、双击也不最大化的死区。根元素当拖窗目标，岛里的热区和按钮仍
+	// 是更深一层的命中目标，点击照常归它们；只有装饰层让位给拖窗。
 	island := ui.Box(c.Key("island")).Label("灵动岛").Absolute().Top(islandTop).
-		Height(theme.IslandH).Radius(theme.RadiusFull)
+		Height(theme.IslandH).Radius(theme.RadiusFull).DragWindow()
 
 	// 收缩用 Smooth、展开用 Snappy。
 	//
@@ -409,8 +416,9 @@ func islandPlayerContentW(c *ui.Context, s Streamer, winW, buttonsW float32) flo
 // islandPlayerWidth 把量出的两行文字宽度换成岛的目标宽度。
 //
 // 组成：body 内缩 × 2 + 左右内边距 + 头像 + 两段间距 + 较宽的那行文字 +
-// 文字缓冲 + 右侧按钮组。结果再钳进 [下限, 上限] 和窗口一半：顶栏两侧还有
-// 平台 tab 与图标格，岛不能把它们盖掉；内容再短也不能缩到文字列只剩一条缝。
+// 文字缓冲 + 右侧按钮组。结果再钳进 [下限, 上限] 和顶栏中间真正可用的宽度：
+// 顶栏两端还有平台 tab 与工具格，岛不能把它们盖掉；内容再短也不能缩到文字
+// 列只剩一条缝。
 //
 // 宽度只在这几个数之间确定，不依赖当前帧的动画值——同一份内容永远得到
 // 同一个目标宽度，弹簧怎么回弹都不会改变最终长度。
@@ -421,7 +429,17 @@ func islandPlayerWidth(titleW, metaW, winW, buttonsW float32) float32 {
 	}
 	w := 2*islandBodyInset + 2*islandPlayerPadX + islandPlayerAvatar +
 		2*islandPlayerGap + textW + islandPlayerTextSlack + buttonsW
-	if limit := winW * 0.5; limit < w {
+	limit := winW * 0.5
+	if winW >= islandMinWindowW {
+		// 只按窗口一半钳是不够的：MinWidth=900、长标题取 360 时，岛占
+		// 270..630，而窄断点下最后一枚平台 tab 到 296、搜索按钮从 617 起。
+		// 岛是顶层命中目标，盖住的那一截点击会落进岛根，tab 和搜索都收不到。
+		// 改成按两端固定组的实际占宽来算，岛居中，所以两侧对称留。
+		if side := winW - 2*islandNavReserve(winW); side < limit {
+			limit = side
+		}
+	}
+	if limit < w {
 		w = limit
 	}
 	if w > islandPlayerMaxW {
@@ -431,6 +449,32 @@ func islandPlayerWidth(titleW, metaW, winW, buttonsW float32) float32 {
 		w = islandPlayerMinW
 	}
 	return w
+}
+
+// islandMinWindowW 是应用窗口的最小宽度，与 main.go 的 MinWidth 一致。
+//
+// 更窄的窗口只存在于合成视图的测试里；那时顶栏两组本身已经挨在一起，
+// 再按固定组宽钳岛没有意义，保留原来的「窗口一半」规则。
+const islandMinWindowW float32 = 900
+
+// islandNavReserve 是顶栏两端固定控件各自占掉的宽度（含外侧 padding 与 gap）。
+//
+// 数值与 home.go 的 Navbar 布局同一套：窄断点（≤1240）pad 10 / gap 8 /
+// tab 56 / 窗口按钮 34；宽断点 pad 14 / gap 14 / tab 64 / 窗口按钮 40。
+// 左组 = 轨道 padding 3×2 + 五个 tab（关注 + 四平台）；右组 = 工具胶囊
+// （3×2 内边距、四颗 chromeH 按钮、三个 4px 间距）+ 10px 间距 + 三枚窗口
+// 按钮（3×2 内边距 + 两个 2px 间距）。两组末尾各留一个顶栏 gap。
+// 岛居中，左右对称地让，所以取更宽的一侧。按钮数按最宽形态算：播放页的
+// activeTab 必然是某个平台，搜索与登录头像都在。
+func islandNavReserve(winW float32) float32 {
+	pad, gap := float32(14), float32(14)
+	tabW, captionW := float32(64), float32(40)
+	if winW <= 1240 {
+		pad, gap, tabW, captionW = 10, 8, 56, 34
+	}
+	left := pad + 6 + tabW*5 + gap
+	right := pad + (6 + chromeH*4 + 4*3) + 10 + (6 + 3*captionW + 2*2) + gap
+	return max(left, right)
 }
 
 // islandPlayerMeta 是岛上的第二行：平台 · 主播 · 房间号。

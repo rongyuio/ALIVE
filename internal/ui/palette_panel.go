@@ -75,6 +75,17 @@ func (a *App) themeWantsDark(systemDark bool) bool {
 // 同色系日夜成对存在（青柠 · 夜 / 青柠 · 日），所以只切换同一色的另一半，
 // 不把用户选的色系换掉。跟随系统时每帧按系统外观校正，系统切主题不用重启。
 func (a *App) syncThemeMode(systemDark bool) {
+	// 全屏时 Shell 整块跳过 Navbar，配色 / 登录按钮（两个浮层的锚点）
+	// 一起消失；开关状态却留在 App 上，退出全屏后 PopoverBase 看到
+	// open 仍为 true，浮层会在没有点击的情况下自己弹回来。Navbar 对
+	// SearchOpen 有「按钮不在就收掉」的处理，全屏这条路以前漏了。
+	// syncThemeMode 是 Shell 每帧必经、且不依赖顶栏的入口，清理放在
+	// 这里才能在顶栏缺席的帧里也执行到。
+	if a.playerFullscreen() {
+		a.PaletteOpen = false
+		a.AuthOpen = false
+	}
+
 	a.systemDark = systemDark
 	want := a.themeWantsDark(systemDark)
 	cur := theme.Find(a.PaletteID)

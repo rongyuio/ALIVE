@@ -306,11 +306,19 @@ func (a *qrAuth) restore() {
 	a.state.LoggedIn = true
 	a.state.Name = sess.Name
 	a.state.Avatar = sess.Avatar
+	// 代次在启动校验的那一刻就定下来：goroutine 什么时候被调度不由这里
+	// 决定，等 verify 自己读 seq 时用户可能已经退出登录了。
+	seq := a.seq
 	a.mu.Unlock()
-	go a.verify()
+	go a.verifyAt(seq)
 }
 
-func (a *qrAuth) verify() {
+// verify 从当前代次发起一次校验。
+func (a *qrAuth) verify() { a.verifyAt(a.currentSeq()) }
+
+// verifyAt 在后台确认存下来的会话还有效。seq 是发起这次校验时的代次；
+// 请求在飞的时候用户可能已经退出 / 换了号，那之后返回的结果整份作废。
+func (a *qrAuth) verifyAt(seq int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -323,9 +331,14 @@ func (a *qrAuth) verify() {
 		// 状态标成「稍后重试」。
 		if !errors.Is(err, errSessionInvalid) {
 			slog.Info("登录态校验失败，保留本地会话", "platform", a.platform, "error", err)
-			a.update(a.currentSeq(), func(s *AuthState) {
+			a.update(seq, func(s *AuthState) {
 				s.Status = "登录态校验失败，稍后重试"
 			})
+			return
+		}
+		// 失效判定也只对发起它的那一轮有效：用户已经退出 / 换了号时，
+		// 这里再清一次会把新一轮刚建立的状态一起带走。
+		if !a.isCurrent(seq) {
 			return
 		}
 		slog.Info("登录态已失效", "platform", a.platform, "error", err)
@@ -333,18 +346,37 @@ func (a *qrAuth) verify() {
 		removeAuthSession(a.platform)
 		a.stopRenew()
 		a.mu.Lock()
-		a.state = AuthState{Platform: a.platform}
+		if a.seq == seq {
+			a.state = AuthState{Platform: a.platform}
+		}
 		a.mu.Unlock()
 		a.notify()
 		return
 	}
-	a.saveSession(user)
-	a.update(a.currentSeq(), func(s *AuthState) {
-		s.LoggedIn = true
-		s.Name = user.Name
-		s.Avatar = user.Avatar
-	})
+	if !a.commitVerify(seq, user) {
+		return
+	}
 	a.scheduleRenew()
+}
+
+// commitVerify 把校验成功的结果写回状态；代次变了就整份丢弃。
+//
+// 落盘和状态更新放在同一把锁里：Logout 要么发生在这之前（seq++，这里直接
+// 退出，不会再写回已被删掉的会话），要么发生在这之后（它会把刚写的文件
+// 再删掉）。两步分在锁外做，中间那条缝就是「退出后又亮回来」。
+func (a *qrAuth) commitVerify(seq int, user authUser) bool {
+	a.mu.Lock()
+	if a.seq != seq {
+		a.mu.Unlock()
+		return false
+	}
+	a.saveSession(user)
+	a.state.LoggedIn = true
+	a.state.Name = user.Name
+	a.state.Avatar = user.Avatar
+	a.mu.Unlock()
+	a.notify()
+	return true
 }
 
 // cookieRenewCheckInterval 是两次续期检查之间的间隔。
@@ -398,6 +430,10 @@ func (a *qrAuth) renewOnce(ctx context.Context) {
 	if !ok || sess.Cookies == "" {
 		return
 	}
+	// 捕获代次：续期请求在飞的时候用户可能退出登录（Logout 会 seq++ 并删
+	// 会话文件）。回来时不再核对，就会把服务端仍有效的票据重新写回磁盘，
+	// 下次启动 restore 又把账号点亮——和 verify 那条是同一个形状。
+	seq := a.currentSeq()
 	c, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cookies, token, changed, err := applyRenew(c, a.renewer, sess)
@@ -413,6 +449,24 @@ func (a *qrAuth) renewOnce(ctx context.Context) {
 	if !changed {
 		return
 	}
+	if !a.commitRenew(seq, cookies, token, sess) {
+		slog.Info("续期期间登录态已变化，丢弃结果", "platform", a.platform)
+		return
+	}
+	slog.Info("cookie 已续期", "platform", a.platform)
+}
+
+// commitRenew 在登录代次未变时把续期结果写回驱动并落盘。
+//
+// 检查、写驱动、落盘放在同一把锁里：Logout 也要拿这把锁推进代次，所以
+// 要么续期先完成、随后 Logout 把会话删掉；要么 Logout 先完成、这里整份
+// 丢弃。两种顺序都不会留下「界面已登出、磁盘上还躺着有效会话」的裂缝。
+func (a *qrAuth) commitRenew(seq int, cookies, token string, sess authSession) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.seq != seq {
+		return false
+	}
 	a.drv.loadCookies(cookies)
 	sess.Cookies = cookies
 	if token != "" {
@@ -422,7 +476,7 @@ func (a *qrAuth) renewOnce(ctx context.Context) {
 		}
 	}
 	a.writeSession(sess)
-	slog.Info("cookie 已续期", "platform", a.platform)
+	return true
 }
 
 // RenewNow 立刻续期一次登录票据，跳过到期闸门。
@@ -437,6 +491,7 @@ func (a *qrAuth) RenewNow(ctx context.Context) error {
 	if !a.Auth().LoggedIn {
 		return errNoRenewNeeded{"当前是游客"}
 	}
+	seq := a.currentSeq()
 
 	// 有会话文件就沿用（带 UID / 昵称 / refresh token），cookie 以驱动
 	// 当前持有的为准——它可能比文件新。
@@ -458,15 +513,9 @@ func (a *qrAuth) RenewNow(ctx context.Context) error {
 	if cookies == "" || cookies == sess.Cookies {
 		return errNoRenewNeeded{"续期没有返回新票据"}
 	}
-	a.drv.loadCookies(cookies)
-	sess.Cookies = cookies
-	if token != "" {
-		sess.RefreshToken = token
-		if r, ok := a.drv.(interface{ setRefreshToken(string) }); ok {
-			r.setRefreshToken(token)
-		}
+	if !a.commitRenew(seq, cookies, token, sess) {
+		return errNoRenewNeeded{"续期期间登录态已变化"}
 	}
-	a.writeSession(sess)
 	slog.Info("cookie 已强制续期", "platform", a.platform)
 	return nil
 }

@@ -401,13 +401,14 @@ func (p *bilibiliProvider) biliFetchPlayInfo(ctx context.Context, realID int64) 
 	return out, nil
 }
 
-// biliStreamSuffixQN 从 base_url 的流名后缀推断真实档位。
+// biliStreamSuffixQN 从 base_url 的流名后缀推断这个分支名过去对应的档位。
 //
-// 逐档接口的 current_qn 不可靠：请求 10000 时服务端可能回 current_qn=250，
-// 但 base_url 里的流名后缀（_bluray / _2500 / _prohevc）是这条流真实的身份。
-// 用它判断档位，比信 current_qn 准——不信它，原画档会拿到蓝光的流。
+// 只作旁证，不能拿来否决服务端的档位声明：同一个后缀在不同房间、不同编码
+// 分支下会指向不同档位。仓库实测的 master（见 bilibili_line_test.go 的
+// fixture）把 BILI-QN=10000 / 原画 / 1080x1920 挂在 live_demo_bluray 上，
+// 同一条直播的蓝光档才是 _400——_bluray 是分支名，不是档位承诺。
 //
-// 认不出来返回 0，调用方保持原有判断。
+// 认不出来返回 0。
 func biliStreamSuffixQN(url string) int64 {
 	lower := strings.ToLower(url)
 	if i := strings.IndexByte(lower, '?'); i >= 0 {
@@ -436,16 +437,13 @@ func biliStreamSuffixQN(url string) int64 {
 
 // biliTierURLs 请求某一档，只收「服务端真的按这档下发」的地址。
 //
-// 判据是三者任一与请求的 qn 相符：
-//   - current_qn 是这条码流标称的档位；
-//   - expected_qn 是服务端准备下发的档位；
-//   - base_url 的流名后缀（_bluray / _2500 / _prohevc）是这条流的真实身份。
+// 判据是 current_qn 必须等于请求的 qn，且地址上的 expected_qn（降档承诺，
+// 有的话）也必须等于 qn。current_qn 说明服务端按这档回，expected_qn 说明
+// 它准备按这档下发；两者才是档位证据。
 //
-// 只看 current_qn 不够：实测登录态请求 10000 时，服务端回的 current_qn 仍是
-// 250，而 base_url 是 _bluray（蓝光档）。结果原画档拿到了蓝光的流，菜单和
-// 实际画面对不上。后缀是唯一和实际内容绑定的字段。
-//
-// 后缀也认不出来时退回 current_qn 判断，保持原有行为。
+// 流名后缀（_bluray / _2500 / _prohevc）只记日志、不参与判定。后缀描述的是
+// 编码 / 分支，不是档位：实测 master 把原画挂在 _bluray 分支上，把它当成
+// 蓝光(400) 会删掉原画档唯一合法的地址。
 func (p *bilibiliProvider) biliTierURLs(ctx context.Context, realID, qn int64) ([]biliPlayURL, error) {
 	res, err := p.biliRequest(ctx, realID, qn)
 	if err != nil {
@@ -474,10 +472,12 @@ func (p *bilibiliProvider) biliTierURLs(ctx context.Context, realID, qn int64) (
 					if full == "" {
 						continue
 					}
-					// 流名后缀能认出档位时，以它为准：current_qn 和
-					// expected_qn 都可能被服务端写成同一个值。
+					// 后缀只作旁证：_bluray 是分支名，master 实测把原画
+					// （BILI-QN=10000）挂在它上面。拿它推翻服务端 current_qn
+					// 明确声明的档位，会把原画唯一合法的地址删掉，整档变成
+					// 「没有可播放的地址」。地址里有签名 token，不进日志。
 					if suffix := biliStreamSuffixQN(full); suffix > 0 && suffix != qn {
-						continue
+						slog.Debug("B 站流名后缀与档位不符，以服务端声明为准", "qn", qn, "suffix_qn", suffix)
 					}
 					if expected := biliExpectedQN(full); expected > 0 && expected != qn {
 						continue

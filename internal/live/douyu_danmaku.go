@@ -96,10 +96,23 @@ func (s *douyuDanmaku) Close() {
 	})
 }
 
-func (s *douyuDanmaku) setConn(conn net.Conn) {
+// setConn 挂上新连接，报告是否挂上。
+//
+// 挂载和 ctx 检查必须在同一把锁里：Close 的顺序是先 cancel 再 closeConn，
+// 若它恰好落在 douyuDial 返回与 setConn 之间，closeConn 看到的是 nil，
+// 新连接没人关；挂上之后读循环也不看 ctx，只要房间还在推消息就会一直读、
+// 一直 onMessage，违反「Close 之后不会再有任何回调」。这里发现 ctx 已
+// 取消就把新连接自己关掉，不留给读循环。
+func (s *douyuDanmaku) setConn(conn net.Conn) bool {
 	s.mu.Lock()
+	if s.ctx.Err() != nil {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return false
+	}
 	s.conn = conn
 	s.mu.Unlock()
+	return true
 }
 
 func (s *douyuDanmaku) closeConn() {
@@ -152,7 +165,10 @@ func (s *douyuDanmaku) connectAndRead() error {
 	if err != nil {
 		return err
 	}
-	s.setConn(conn)
+	if !s.setConn(conn) {
+		// 连接在 dial 返回后、挂载前被 Close 收走了：不进读循环。
+		return nil
+	}
 	defer func() {
 		s.mu.Lock()
 		if s.conn == conn {
@@ -188,6 +204,11 @@ func (s *douyuDanmaku) connectAndRead() error {
 	}()
 
 	for {
+		// Close 之后不能再读、更不能回调：每轮开头和投递前都认一次 ctx。
+		// 读 deadline 只能让 Read 醒过来，挡不住「包读成功、回调还没发」这一段。
+		if s.ctx.Err() != nil {
+			return nil
+		}
 		// deadline 既让 Close 及时生效，也能识别「服务端静默」的半死连接
 		_ = conn.SetReadDeadline(time.Now().Add(douyuReadTimeout))
 
@@ -197,6 +218,9 @@ func (s *douyuDanmaku) connectAndRead() error {
 				return nil
 			}
 			return err
+		}
+		if s.ctx.Err() != nil {
+			return nil
 		}
 		s.handlePacket(conn, packet)
 	}

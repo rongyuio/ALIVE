@@ -545,19 +545,47 @@ func (p *douyuProvider) douyuResolveQuality(ctx context.Context, roomID string, 
 // 而且票据的 exp 可能还差好几天，本地完全看不出来。整站取流失败就是这么来的
 // （2026-11-21）。所以带登录态吃 403 时：先强制续期换一张票，再不行就按
 // 游客取流——看播比维持登录态重要。
+//
+// 但要区分「这张票被拒」和「旧票的 403 迟到」：并发取流里另一路可能已经
+// 续期成功，回来的 403 针对的是请求发出时的旧票。票已经换了就直接用新票
+// 重试，不降级、不记冷却。
 func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate int, cdn string) (*douyuPlayData, error) {
 	if strings.TrimSpace(roomID) == "" {
 		return nil, fmt.Errorf("live: 斗鱼房间号为空")
 	}
 
 	login := p.douyuLoginActive()
+	// 记下这次失败请求实际用的票。请求在飞的时候另一路可能已经续期成功，
+	// 403 回来时 authCookieString() 已经不是这张票了；判断要不要重试、
+	// 要不要降级，都得拿「这张票现在还在不在用」为准，而不是 renew 入口
+	// 那一刻读到的票——那会把刚续好的账号当成冷却失败。
+	usedCookie := p.authCookieString()
 	data, err := p.douyuPlayAttempts(ctx, roomID, rate, cdn, login)
 	if err == nil || !login || !errors.Is(err, ErrBlocked) {
 		return data, err
 	}
 
-	slog.Info("斗鱼取流被登录态拒绝，尝试刷新票据", "room", roomID, "rate", rate, "cdn", cdn)
-	if rerr := p.douyuRenewAuth(ctx); rerr == nil {
+	// ticketSwapped 报告现在用的是不是另一张可用的登录票。
+	ticketSwapped := func() bool {
+		cur := p.authCookieString()
+		return cur != usedCookie && douyuCookieHasLogin(cur)
+	}
+
+	renewed := ticketSwapped()
+	if renewed {
+		slog.Info("斗鱼取流被旧票拒绝，票据已经换新，按登录态重试", "room", roomID, "rate", rate, "cdn", cdn)
+	} else {
+		slog.Info("斗鱼取流被登录态拒绝，尝试刷新票据", "room", roomID, "rate", rate, "cdn", cdn)
+		if rerr := p.douyuRenewAuth(ctx); rerr == nil {
+			renewed = true
+		} else if errors.Is(rerr, errDouyuRenewCooling) && ticketSwapped() {
+			// 冷却来自并发的另一路：它已经把票换好了，同样值得直接重试。
+			renewed = true
+		}
+	}
+	lastTried := usedCookie
+	if renewed {
+		lastTried = p.authCookieString()
 		data, err = p.douyuPlayAttempts(ctx, roomID, rate, cdn, true)
 		if err == nil {
 			return data, nil
@@ -573,7 +601,12 @@ func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate i
 		slog.Info("斗鱼游客兜底也失败", "room", roomID, "rate", rate, "cdn", cdn, "error", gerr)
 		return nil, err
 	}
-	p.douyuMarkGuest()
+	// 只有当前这张登录票真的被 403 拒过，才有证据说它失效。票在窗口里被
+	// 换掉却没来得及用新票试（例如续期冷却返回后 ctx 已取消），此时降级
+	// 会把一张可能可用的账号整体切到游客十分钟，没有证据支持。
+	if last := p.authCookieString(); last == lastTried && douyuCookieHasLogin(last) {
+		p.douyuMarkGuest()
+	}
 	return guest, nil
 }
 

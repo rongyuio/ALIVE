@@ -29,9 +29,13 @@ func (a *App) openSyncPanel() {
 // 局域网共享（二维码、一键导入）还没做，所以两个页签里各自只有一条本地
 // 文件的路；补局域网时在对应 actionRow 里加按钮即可。
 func (a *App) syncOverlay(c *ui.Context) {
+	// Modal 让窗口级快捷键等待：否则遮罩挡住指针，Space / F / M 仍会
+	// 穿透到 Shell 末尾的 shellKeys，对背后正在播的那一路生效。
+	// Esc 也由这一层自己消费，和 PopoverBase / DialogBase 的层级一致，
+	// 不再依赖 handleEscape 恰好先看 SyncOpen。
 	bg := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(4, 5, 7, 0.72)).Center().Label("关闭数据同步")
-	if bg.Clicked() {
+		Background(ui.RGBA(4, 5, 7, 0.72)).Center().Modal().Label("关闭数据同步")
+	if bg.Clicked() || bg.OverlayShortcut(0, ui.KeyEscape) {
 		a.SyncOpen = false
 	}
 

@@ -329,10 +329,9 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float
 				}
 			})
 			a.iconBtnSized(c, iconSync, m.iconSize, m.iconHit, false, "重新加载", func() {
-				if active {
-					a.retryStream()
-					return
-				}
+				// active 不总在媒体层：取流中 / 未开播的 active 只是墙上的
+				// pending 会话，retryStream 会因为 media.roomKey=="" 直接
+				// 返回。watchReload 自己分这两条路。
 				a.watchReload(room)
 			})
 			if active {

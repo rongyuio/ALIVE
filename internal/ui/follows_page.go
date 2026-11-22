@@ -289,6 +289,10 @@ func (a *App) selectFollowsSection(i int) {
 // 只列「确实有关注主播」的平台，顺序跟顶栏 tab 一致；数字放进悬停提示里，
 // 常态这一行只留筛选。
 func (a *App) followsPlatformRow(c *ui.Context) {
+	// 某平台的最后一条关注删掉后，这枚 chip 会消失；选中值必须跟着收拢，
+	// 否则滑块按「找不到匹配项」落回「全部」，列表却还按那个已经不存在
+	// 的平台过滤：一块 accent 滑块压在未选中色的「全部」上，下面是空列表。
+	a.clampFollowsPlatform()
 	followsIDs := append([]string{""}, a.followsPlatforms()...)
 	followsNames := make([]string, len(followsIDs))
 	for i, id := range followsIDs {
@@ -387,10 +391,17 @@ func (a *App) subscribeFeed(c *ui.Context) {
 	}
 	if a.LiveMode {
 		a.ensureSubFeed()
+		sub := a.activeSub(chips[a.SubIndex])
 		if a.SubErr != "" {
-			a.errorBar(c)
+			a.errorBar(c, a.SubErr, a.retrySubFeed)
 		}
-		a.grid(c, a.SubRooms, &a.SubList, a.loadMoreSubRooms)
+		a.grid(c, a.SubRooms, &a.SubList, a.loadMoreSubRooms, gridView{
+			loading:     a.SubLoading,
+			loadingMore: a.SubLoadingMore,
+			hasMore:     a.SubHasMore,
+			platform:    sub.PlatformID,
+			retry:       a.retrySubFeed,
+		})
 		return
 	}
 	a.grid(c, a.feedFor(a.activeSub(chips[a.SubIndex])), &a.SubList, nil)
@@ -720,6 +731,20 @@ func (a *App) followsPlatforms() []string {
 		}
 	}
 	return out
+}
+
+// clampFollowsPlatform 把平台筛选收拢到「当前确实有关注的平台」里，
+// 和 clampSubIndex 一个思路：筛选项消失时，选中值不能留在已删除的平台上。
+func (a *App) clampFollowsPlatform() {
+	if a.FollowsPlatform == "" {
+		return
+	}
+	for _, id := range a.followsPlatforms() {
+		if id == a.FollowsPlatform {
+			return
+		}
+	}
+	a.FollowsPlatform = ""
 }
 
 // followsList 是关注页在当前平台筛选和搜索词下显示的主播。

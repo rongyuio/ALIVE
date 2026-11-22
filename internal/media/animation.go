@@ -100,15 +100,24 @@ func (c *Cache) doneAnimation(key, url string, frames []*ui.Bitmap, delays []tim
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.anims[key] = &animation{frames: frames, delays: delays, total: total}
-	// 首帧同时进纹理表：Bitmap/Ready 这类只看纹理的调用照常工作。
-	if old, ok := c.textures[key]; ok && old.bmp != frames[0] {
+	// 纹理记账覆盖整组帧：sweep / LRU / ReleaseTexturesExcept 都按
+	// texture.bytes 从 c.bytes 里减，只记首帧会让动图内存对 64MB 上限
+	// 不可见，回收时反而把账减成负数。替换同一 key 时旧账整份退出。
+	var size int64
+	for _, b := range frames {
+		w, h := ui.ImageSize(b)
+		size += int64(w) * int64(h) * 4
+	}
+	if old, ok := c.textures[key]; ok {
 		c.bytes -= old.bytes
 	}
-	w, h := ui.ImageSize(frames[0])
-	c.textures[key] = &texture{bmp: frames[0], url: url, used: now, bytes: int64(w) * int64(h) * 4}
+	// 首帧同时进纹理表：Bitmap/Ready 这类只看纹理的调用照常工作。
+	c.textures[key] = &texture{bmp: frames[0], url: url, used: now, bytes: size}
+	c.bytes += size
 	c.last[url] = frames[0]
 	c.loading[url] = false
 	delete(c.failed, url)
+	c.evictTextureLocked()
 }
 
 // EmoteFrame 返回表情当前应显示的帧。
@@ -123,6 +132,11 @@ func (c *Cache) EmoteFrame(url string, width float32, now time.Time) (bmp *ui.Bi
 	c.mu.Lock()
 	a, ok := c.anims[key]
 	if ok {
+		// 动图命中不经过 bitmap()，这里不刷新 used 的话，一直在屏幕上
+		// 播的表情也会被 sweep 当成闲置纹理回收，下一帧整段 GIF 重新解码。
+		if t := c.textures[key]; t != nil {
+			t.used = now
+		}
 		a2 := a
 		c.mu.Unlock()
 		bmp, wait = a2.frameAt(now)

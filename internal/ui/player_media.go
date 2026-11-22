@@ -308,6 +308,18 @@ func (a *App) closeMedia() {
 	if key != "" && a.watchHas(key) {
 		// 房间还在盒里：把引擎移回墙上的会话，静音但不停播。
 		a.watchReleaseActive()
+		// 交还墙上那一刻，引擎还是播放页的全尺寸呈现（present=0,0）。而
+		// watchReleaseActive 会把新会话的 renderW/H 按格子尺寸**预填**，
+		// watchShow 的推送判据是「renderW/H 与这一帧的格子不一致」——预填之后
+		// 两端恒等，永远不会补推。于是这一格长期按源分辨率（1080p/2K）解码
+		// 渲染，违反 surfaces.md 不变量 4，也超出墙的并发预算。
+		//
+		// 清零让下一帧 watchShow 发现差异后按格子物理像素补推一次。呈现尺寸
+		// 仍只从 presentSizeFor 求解（surface_invariants_test 守着这一条），
+		// 这里只改会话记录，不自己调 SetPresentSize。
+		if s := a.watch.sessions[key]; s != nil && s.player != nil {
+			s.renderW, s.renderH = 0, 0
+		}
 		if a.media.roomKey == key {
 			// 这一路还没有引擎（取流还在路上），release 没有东西可交接。
 			// 必须把这一轮取流收掉：只清焦点、留着 roomKey 的话，下一帧
@@ -348,6 +360,14 @@ func (a *App) closeMedia() {
 func (a *App) detachMedia() {
 	m := &a.media
 	if m.background {
+		// 已经在后台时也要按当前位置重求一次呈现尺寸。
+		//
+		// 墙上 active 由媒体层持有时，watchAdoptActive(true) 已经把 background
+		// 置真，watchShow 又把 present 求成了格子物理像素。从墙切到首页/关注页
+		// 时，presentSizeFor 里的「无视图 → 160×90」必须补上——早退会把它整段
+		// 跳过，引擎继续按格子像素解码（软解时像素量最多差 64 倍）。值没变时
+		// applyPresent 自己会跳过，不会每帧重推。
+		a.applyPresent()
 		return
 	}
 	e := m.engine()
@@ -563,6 +583,15 @@ func (a *App) ensureMedia(c *ui.Context) {
 	if key == a.media.roomKey {
 		return
 	}
+
+	// 真正换台：播放意图回到「在播」。
+	//
+	// a.Playing 是焦点会话的视图状态，不是全局设置。上一个房间暂停过（或
+	// 点过岛的「取消观测发声」）之后它还是 false，新一路接上时 adoptPlayback
+	// 会照着它 Pause()，于是从列表点开的新房间停在暂停态：没画面、没声音、
+	// 控制条显示「播放」。同一间房的重新起播（热切换、断流重连）不会走到
+	// 这里（roomKey 相同就早退了），用户的暂停态照旧保留。
+	a.Playing = true
 
 	// 这一间在墙上可能已经有一路静音预览。放着不管就会为同一间房再开一路
 	// 引擎（违反「一间房至多一个引擎」）；退出播放页时 watchReleaseActive 还会
@@ -956,6 +985,15 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 	fail := func(err error) {
 		logStage(sess.id, sess.start, "swap-failed", "reason", reason, "error", errClass(err))
 		runOnMain(sess.win, func() {
+			// 过期会话的失败不能记到新会话头上。
+			//
+			// 换房间 / closeMedia 会 cancelSession 推进代号，旧一路的
+			// fetchStream 随后带着 context.Canceled 回来。照常累加
+			// swapFailures 会污染新会话的退避：新会话自己的热切换再失败一次
+			// 就凑满阈值，把刚起来的一路整轮重开（loading 覆盖层 + 断音）。
+			if sess.ctx.Err() != nil || a.media.seq != sess.seq {
+				return
+			}
 			a.media.refreshing = false
 			a.media.swapFailures++
 			if a.media.swapFailures >= swapMaxFailures {

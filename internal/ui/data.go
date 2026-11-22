@@ -516,6 +516,10 @@ func (a *App) syncSearch() {
 	a.searchQuery, a.searchPlatform = q, platform
 	a.SearchHit = 0
 	seq := a.searchSeq.Add(1)
+	// 查询词或平台已经变了：上一份结果不属于这一次查询。这段窗口至少
+	// 220ms 防抖加一次网络往返，留着旧结果时列表画的是上一个词的房间，
+	// 按 Enter 打开的也是上一个词的首条命中。
+	a.SearchResults = nil
 
 	if q == "" {
 		a.SearchResults, a.SearchLoading, a.SearchErr = nil, false, ""
@@ -647,6 +651,7 @@ func (a *App) fetchSubPage(platform, areaID, key string, seq, page int) {
 				}
 				return
 			}
+			a.SubErr = ""
 			rooms := convertRooms(pageData.Rooms)
 			if page == 1 {
 				a.SubRooms = rooms
@@ -671,6 +676,36 @@ func (a *App) fetchSubPage(platform, areaID, key string, seq, page int) {
 			}
 		})
 	}()
+}
+
+// retrySubFeed 重发当前订阅项的第一页。
+//
+// ensureSubFeed 用 subKey 记住「这一项已经发起过」，首屏失败后不会自己
+// 再发第二次；所以重试不能只清 SubErr，必须亲手把第一页再发一遍并推进
+// 代次，让在途的旧响应作废。成功后 fetchSubPage 会清掉 SubErr。
+func (a *App) retrySubFeed() {
+	a.SubErr = ""
+	// 视图测试没有窗口：只清错误，不发真实请求，也不留后台 goroutine。
+	if a.Win == nil || !a.LiveMode {
+		return
+	}
+	chips := a.subChips()
+	if a.SubIndex < 0 || a.SubIndex >= len(chips) {
+		return
+	}
+	sub := a.activeSub(chips[a.SubIndex])
+	if sub.CategoryID == "" {
+		return
+	}
+	if _, ok := live.ProviderFor(live.Platform(sub.PlatformID)); !ok {
+		a.SubErr = "该平台暂未接入"
+		return
+	}
+	key := subFeedKey(sub)
+	a.subKey = key
+	a.subSeq++
+	a.SubLoading, a.SubLoadingMore = true, false
+	a.fetchSubPage(sub.PlatformID, sub.CategoryID, key, a.subSeq, 1)
 }
 
 // loadMoreSubRooms 是订阅页的触底预取。

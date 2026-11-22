@@ -177,6 +177,9 @@ type App struct {
 	DanmuPanelW  float32
 	PanelScroll  ui.ScrollState
 	panelSeen    int
+	// panelMark 是上次结算时日志里最后一条的身份。日志满 danmuLogMax 后
+	// 长度恒定，只有回看「上次看到哪一条」才能数出新弹幕（见 panelNewDanmu）。
+	panelMark    panelLineMark
 	panelPending int
 	panelStick   bool
 	// panelViewH / panelViewFull 记着上一帧列表的视口。开关全屏或拖窗口边缘
@@ -627,7 +630,7 @@ func (a *App) Home(c *ui.Context) {
 			a.categoryBar(c)
 		}
 		if a.ErrText != "" {
-			a.errorBar(c)
+			a.errorBar(c, a.ErrText, a.retryLive)
 		}
 		// 内容层单独换代：切平台 / 分区时换 key，新旧内容直接交换。
 		// 分区栏和错误条留在原地——它们是这一屏的边框，不是内容。
@@ -680,23 +683,25 @@ func (a *App) retryLive() {
 	a.loadRooms()
 }
 
-// errorBar 是加载失败的提示条。
+// errorBar 是加载失败的提示条。文案和重试动作由调用方给：
+// 首页和订阅分区各有各的错误字段与重发路径，共用一条错误条时会显示成
+// 另一个分区的文案、点重试也去重拉另一个分区。
 //
 // 尺寸与配色：padding 10 14、圆角 12、background color-mix(danger 8%, bg-secondary)，
 // 右侧一枚 30 高的重试按钮。
-func (a *App) errorBar(c *ui.Context) {
+func (a *App) errorBar(c *ui.Context, text string, onRetry func()) {
 	ui.Row(c).Padding(10, 14, 10, 14).Gap(12).Radius(theme.RadiusMD).
 		AlignItems(ui.Center).Background(theme.BgSecondary.Mix(theme.Danger, 0.08)).
 		Children(func() {
-			ui.Text(c, a.ErrText).FontSize(theme.TextSM).TextColor(theme.TextPrimary).Grow(1)
+			ui.Text(c, text).FontSize(theme.TextSM).TextColor(theme.TextPrimary).Grow(1)
 			retry := ui.Row(c).Height(30).Padding(0, 14, 0, 14).Gap(6).
 				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).Label("重试").
 				Background(theme.FillTertiary)
 			if retry.Hovered() {
 				retry.Background(theme.FillSecondary)
 			}
-			if retry.Clicked() {
-				a.retryLive()
+			if retry.Clicked() && onRetry != nil {
+				onRetry()
 			}
 			retry.Children(func() {
 				ui.Icon(c, iconSync).FontSize(12).TextColor(theme.DangerInk)
@@ -742,7 +747,20 @@ func (a *App) filterStreamers(platform, category, sub string) []Streamer {
 	return out
 }
 
-// grid 铺卡片网格。
+// gridView 是网格外层的分区状态：是否加载中、空态里的平台文案与重试动作。
+// 首页和订阅分区共用同一套网格几何，但加载态和空态入口不能共用——订阅
+// 分区曾经读首页的 ListLoading/retryLive，骨架和空态都画错分区。
+type gridView struct {
+	loading       bool
+	loadingMore   bool
+	hasMore       bool
+	platform      string
+	retry         func()
+	allCategories bool
+}
+
+// grid 铺卡片网格。可选的 view 描述这一层网格属于哪个分区；不传时按首页
+// 处理（首页是默认调用方，现有调用点都不用改签名）。
 //
 // 网格是 `grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))`：
 // 列数随可用宽度自动增减、每列等宽、内容区始终满宽。
@@ -752,7 +770,18 @@ func (a *App) filterStreamers(platform, category, sub string) []Streamer {
 // 列表交给 ui.List 做虚拟化：一次只构建可视范围内的那几行卡片。
 // 滑到第 3000 张和第 30 张的每帧成本一样——这是「一直往下滑」的前提。
 // 行高由 List 自己测量（我们的卡片高度是算出来的固定值），不用手动喂。
-func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func()) {
+func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func(), views ...gridView) {
+	view := gridView{
+		loading:       a.ListLoading,
+		loadingMore:   a.ListLoadingMore,
+		hasMore:       a.ListHasMore,
+		platform:      a.Platform,
+		retry:         a.retryLive,
+		allCategories: true,
+	}
+	if len(views) > 0 {
+		view = views[0]
+	}
 	w, _ := c.Size()
 	// 正文的左右 padding，再减掉常驻滚动条占的 10px：
 	// 列宽按可用宽度算，滚动条也不会压在最后一列上。
@@ -771,10 +800,10 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 	// 空列表与骨架不需要虚拟化：它们只有十来个元素。
 	if len(list) == 0 {
 		ui.Scroll(c).Grow(1).Children(func() {
-			if a.ListLoading {
+			if view.loading {
 				a.skeletonGrid(c, avail, cols, cardW)
 			} else {
-				a.emptyGrid(c)
+				a.emptyGrid(c, view)
 			}
 		})
 		return
@@ -792,7 +821,7 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 	}
 	ui.List(c, ls, rows+1, func(r int) {
 		if r == rows {
-			a.gridFooter(c, avail, len(list))
+			a.gridFooter(c, avail, len(list), view)
 			return
 		}
 		ui.Row(c).Gap(theme.GridGap).Children(func() {
@@ -860,11 +889,12 @@ func (a *App) skeletonGrid(c *ui.Context, avail float32, cols int, cardW float32
 	})
 }
 
-// emptyGrid 是列表的空态：标题 + 提示 + 两个按钮。
-func (a *App) emptyGrid(c *ui.Context) {
+// emptyGrid 是列表的空态：标题 + 提示 + 按钮。文案里的平台和按钮动作
+// 都跟着调用方的分区走，订阅分区不提供只属于首页的「查看全部分区」。
+func (a *App) emptyGrid(c *ui.Context, view gridView) {
 	hint := "换个分区看看，或者稍后重试。"
 	if a.LiveMode {
-		if _, ok := live.ProviderFor(live.Platform(a.Platform)); !ok {
+		if _, ok := live.ProviderFor(live.Platform(view.platform)); !ok {
 			hint = "该平台暂未接入真实数据。"
 		}
 	}
@@ -874,19 +904,21 @@ func (a *App) emptyGrid(c *ui.Context) {
 		ui.Text(c, hint).FontSize(theme.TextSM).
 			TextColor(theme.TextTertiary)
 		ui.Row(c).Gap(10).Padding(10, 0, 0, 0).Children(func() {
-			clear := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
-				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-				Label("查看全部分区").Background(theme.Accent)
-			if clear.Hovered() {
-				clear.Background(theme.AccentHover)
+			if view.allCategories {
+				clear := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
+					Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
+					Label("查看全部分区").Background(theme.Accent)
+				if clear.Hovered() {
+					clear.Background(theme.AccentHover)
+				}
+				if clear.Clicked() {
+					a.SubCatIndex = -1
+				}
+				clear.Children(func() {
+					ui.Text(c, "查看全部分区").FontSize(theme.TextSM).FontWeight(600).
+						TextColor(theme.AccentText)
+				})
 			}
-			if clear.Clicked() {
-				a.SubCatIndex = -1
-			}
-			clear.Children(func() {
-				ui.Text(c, "查看全部分区").FontSize(theme.TextSM).FontWeight(600).
-					TextColor(theme.AccentText)
-			})
 
 			retry := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
 				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
@@ -894,8 +926,8 @@ func (a *App) emptyGrid(c *ui.Context) {
 			if retry.Hovered() {
 				retry.Background(theme.FillSecondary)
 			}
-			if retry.Clicked() {
-				a.retryLive()
+			if retry.Clicked() && view.retry != nil {
+				view.retry()
 			}
 			retry.Children(func() {
 				ui.Text(c, "重新加载").FontSize(theme.TextSM).FontWeight(600).
@@ -906,18 +938,18 @@ func (a *App) emptyGrid(c *ui.Context) {
 }
 
 // gridFooter 是列表底部那行状态：加载中 / 已显示最近 N 条。
-func (a *App) gridFooter(c *ui.Context, avail float32, n int) {
+func (a *App) gridFooter(c *ui.Context, avail float32, n int, view gridView) {
 	ui.Row(c).Width(avail).Height(52).Padding(4, 0, 18, 0).Center().
 		Children(func() {
 			// 页脚的三态：加载中 / 还有下一页 / 到底了
 			switch {
-			case a.ListLoadingMore:
+			case view.loadingMore:
 				ui.Row(c).Gap(8).Center().Children(func() {
 					spinner(c, 14)
 					ui.Text(c, "正在加载更多…").FontSize(theme.TextSM).
 						TextColor(theme.TextSecondary)
 				})
-			case a.ListHasMore:
+			case view.hasMore:
 				ui.Text(c, "继续下滑加载更多").FontSize(theme.TextXS).
 					LetterSpacing(0.02).TextColor(theme.TextTertiary)
 			default:

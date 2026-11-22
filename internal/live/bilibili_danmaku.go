@@ -856,10 +856,20 @@ func biliHTTPS(raw string) string {
 }
 
 // biliHexColor 只接受 #RRGGBB 形式的颜色，其余一律返回空串。
+//
+// 不能只看长度：弹幕面板按 len==7 就会把它交给 ui.Hex，而 ui.Hex 解析失败
+// 直接 panic，打崩渲染路径。SC 的 background_color 是平台下发的普通字符串，
+// 必须在这里按 isHexColor 同样的规则逐位校验。
 func biliHexColor(raw string) string {
 	raw = strings.TrimSpace(raw)
-	if len(raw) != 7 || !strings.HasPrefix(raw, "#") {
+	if len(raw) != 7 || raw[0] != '#' {
 		return ""
+	}
+	for i := 1; i < len(raw); i++ {
+		c := raw[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return ""
+		}
 	}
 	return raw
 }

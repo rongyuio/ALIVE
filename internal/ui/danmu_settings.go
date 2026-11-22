@@ -226,7 +226,14 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, frac float32, s
 		track := ui.Box(c).Width(danmuSliderW).Height(4).Radius(theme.RadiusFull).
 			Label(label).
 			Background(theme.MediaTrack).Cursor(ui.CursorPointer)
-		if x, _, ok := track.PointerPosition(); ok && (track.Pressed() || track.Dragging()) {
+		// PointerPosition 的 over 和 Pressed 都只做几何包含：指针一纵向离开
+		// 这条 4px 轨道就一起变假。Dragged 是 press 级状态，按住期间指针跑到
+		// 元素外仍为真，x 也仍然是轨道里的局部坐标——拿它判断是否还在拖，
+		// 位置本身不拿 over 当条件。否则拖到一半就冻住，松手也不落值。
+		// 音量条（player.go）是同一套写法。
+		x, _, _ := track.PointerPosition()
+		_, _, held := track.Dragged()
+		if track.Pressed() || held {
 			f := x / danmuSliderW
 			if f < 0 {
 				f = 0

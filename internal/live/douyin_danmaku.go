@@ -416,10 +416,17 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 		slog.Debug("抖音弹幕 gzip 打开失败", "room", s.webRID, "error", err)
 		return
 	}
-	plain, err := io.ReadAll(zr)
+	// WS 的 SetReadLimit 只约束压缩后的 4MB；deflate 最大压缩比上千倍，
+	// 一帧就能让 ReadAll 申请数 GB 并把进程 OOM 掉。解压必须带上限，
+	// 多读一个字节用来判断「超限」而不是静默截断。
+	plain, err := io.ReadAll(io.LimitReader(zr, httpMaxBody+1))
 	_ = zr.Close()
 	if err != nil {
 		slog.Debug("抖音弹幕 gzip 解压失败", "room", s.webRID, "error", err)
+		return
+	}
+	if len(plain) > httpMaxBody {
+		slog.Warn("抖音弹幕解压后超过上限，整帧丢弃", "room", s.webRID, "bytes", len(plain))
 		return
 	}
 

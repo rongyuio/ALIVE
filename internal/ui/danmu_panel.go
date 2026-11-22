@@ -180,15 +180,12 @@ func (a *App) danmuPanelList(c *ui.Context) {
 		}
 	}
 
-	if n := len(a.DanmuLog) - a.panelSeen; n != 0 {
-		if n > 0 {
-			if a.panelStick {
-				a.PanelScroll.Y = math.MaxFloat32
-			} else {
-				a.panelPending += n
-			}
+	if n := a.panelNewDanmu(); n > 0 {
+		if a.panelStick {
+			a.PanelScroll.Y = math.MaxFloat32
+		} else {
+			a.panelPending += n
 		}
-		a.panelSeen = len(a.DanmuLog)
 	}
 
 	// 数据层只产出 chat 和 SC，这里不用再过滤——礼物、进场、公告
@@ -225,6 +222,59 @@ func (a *App) danmuPanelList(c *ui.Context) {
 				FontSize(theme.TextXS).FontWeight(600).TextColor(theme.AccentText)
 		})
 	}
+}
+
+// panelLineMark 是「上次结算时最后看到的那一条」的身份。
+//
+// danmuLine 带 Emotes 切片，不能整体比较；只取随每条消息变化、又足够
+// 区分相邻几条的标量。同一毫秒收到两条完全相同的弹幕时可能少记一条，
+// 但对「N 条新弹幕」这个提示没有可见影响。
+type panelLineMark struct {
+	text, nick string
+	born       time.Time
+	track      int
+}
+
+func panelMarkOf(d danmuLine) panelLineMark {
+	return panelLineMark{text: d.Text, nick: d.Nick, born: d.Born, track: d.Track}
+}
+
+// panelNewDanmu 返回自上次结算以来新收到的弹幕条数，并把结算点挪到末尾。
+//
+// 不能用 len(DanmuLog) - panelSeen 算：DanmuLog 到 danmuLogMax（300）后
+// 长度恒定，差值永远是 0，新弹幕照进，面板却既不跟随也不累计未读。
+// 这里记住上次看到的最后一条，从尾部往前找它：它后面都是新的；找不到
+// 说明它已经被挤出窗口，或者整份日志被清空换台，就把当前窗口全算新。
+func (a *App) panelNewDanmu() int {
+	log := a.DanmuLog
+	if len(log) == 0 {
+		a.panelSeen, a.panelMark = 0, panelLineMark{}
+		return 0
+	}
+
+	n := 0
+	switch {
+	case a.panelSeen == 0 || len(log) < a.panelSeen:
+		// 还没有基准，或日志短于上次结算（被清空过）：窗口里全部是新的。
+		n = len(log)
+	default:
+		found := -1
+		for i := len(log) - 1; i >= 0; i-- {
+			if panelMarkOf(log[i]) == a.panelMark {
+				found = i
+				break
+			}
+		}
+		if found >= 0 {
+			n = len(log) - 1 - found
+		} else {
+			n = len(log)
+		}
+	}
+
+	a.panelSeen = len(log)
+	a.panelMark = panelMarkOf(log[len(log)-1])
+	return n
 }
 
 // danmuPanelItem 是面板里的一条弹幕。
@@ -341,6 +391,24 @@ func chipTextColor(bg ui.Color) ui.Color {
 	return ui.Hex("#ffffff")
 }
 
+// validHexRGB 检查平台下发的是不是合法的 #RRGGBB。
+//
+// ui.Hex 遇到非十六进制字符直接 panic，而醒目留言的背景色是平台 JSON
+// 里的任意字符串（B 站只校验过长度和 '#' 前缀）。不合法就退回强调色，
+// 不能让一条 '#ZZZZZZ' 打崩整个进程。
+func validHexRGB(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 // danmuPanelSuperChat 是醒目留言那一行。
 //
 // 它比普通弹幕重一档：整行铺平台下发的背景色（压到 14% 透明度），
@@ -348,7 +416,7 @@ func chipTextColor(bg ui.Color) ui.Color {
 // 不自己编——不同档位的 SC 平台给的色本来就不一样。
 func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 	tint := theme.Accent
-	if len(d.Background) == 7 {
+	if validHexRGB(d.Background) {
 		tint = ui.Hex(d.Background)
 	}
 

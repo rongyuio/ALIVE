@@ -308,8 +308,8 @@ func configFromDTVEntries(entries map[string]json.RawMessage) configData {
 			d := danmuPrefs{
 				Font:     parsePixelSize(prefs.Settings.FontSize),
 				DurMs:    int64(math.Round(prefs.Settings.Duration)),
-				Area:     float32(prefs.Settings.Area),
-				Opacity:  float32(prefs.Settings.Opacity),
+				Area:     clampUnitRange(prefs.Settings.Area, 0.25, 1),
+				Opacity:  clampUnitRange(prefs.Settings.Opacity, 0.2, 1),
 				Color:    parseHexColor(prefs.Settings.Color),
 				Stroke:   parseHexColor(prefs.Settings.StrokeColor),
 				Colorful: prefs.Settings.Colorful,
@@ -329,7 +329,10 @@ func configFromDTVEntries(entries map[string]json.RawMessage) configData {
 		if text == "" {
 			text = strings.TrimSpace(string(entryText(raw)))
 		}
-		if v, err := strconv.ParseFloat(text, 32); err == nil {
+		// ParseFloat 认 "NaN" / "Inf"，但音量只该接受有限值：NaN 会
+		// 穿过 setVolume 的 min/max（浮点 min/max 传播 NaN），之后
+		// state.json 会一直报 "unsupported value: NaN" 并静默停止落盘。
+		if v, err := strconv.ParseFloat(text, 32); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) {
 			f := float32(v)
 			out.Volume = &f
 		}
@@ -381,13 +384,29 @@ func normalizePlatformID(raw string) string {
 }
 
 // parsePixelSize 把 "20px" 这样的字号解析成数值，认不出来就返回 0。
+//
+// 只收有限值并夹到界面滑杆的 14–30：ParseFloat 认 "Inf"，而 float32(+Inf)
+// 一旦进 DanmuFont，saveState 的 json.MarshalIndent 会一直报 unsupported
+// value，state.json 从此静默停止落盘。
 func parsePixelSize(raw string) float32 {
 	text := strings.TrimSuffix(strings.TrimSpace(raw), "px")
 	v, err := strconv.ParseFloat(text, 32)
-	if err != nil || v <= 0 {
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 		return 0
 	}
-	return float32(v)
+	return float32(min(30, max(14, v)))
+}
+
+// clampUnitRange 把导入的浮点偏好收进 [lo, hi]；非有限值返回 0（视为没给）。
+//
+// DTV 文件里的 1e40 是合法 JSON 数字，转 float32 直接变 +Inf；不拦会被
+// applyConfig 写进 a.DanmuArea / a.DanmuOpacity，然后同样是落盘失败。
+func clampUnitRange(v float64, lo, hi float32) float32 {
+	f := float32(v)
+	if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) || f <= 0 {
+		return 0
+	}
+	return min(hi, max(lo, f))
 }
 
 // parseHexColor 把 #rrggbb / #rrggbbaa 解析成 RGBA，认不出来就当透明。

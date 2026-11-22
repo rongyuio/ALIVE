@@ -47,6 +47,8 @@ type wallSession struct {
 	offline  bool
 	checking bool
 
+	// openedAt 是这一路当前阶段的起点：取流阶段是开始取流，引擎开出之后
+	// 重置为引擎打开的时刻——首帧预算从后者算，取流慢不该吃掉出图的预算。
 	openedAt   time.Time
 	retryAt    time.Time
 	failures   int
@@ -387,6 +389,9 @@ func (a *App) watchOpenSession(s *wallSession) {
 		s.err = "该平台还不支持取流"
 		return
 	}
+	// 记下来给 watchEnded 用：判死后要先问平台是不是真下播，没填的话
+	// nil 接口断言恒为 false，会被当成「还在播」白白重开一轮。
+	s.prov = prov
 	if s.renderW <= 0 || s.renderH <= 0 {
 		s.renderW, s.renderH = 640, 360
 	}
@@ -474,6 +479,9 @@ func (a *App) watchOpenSession(s *wallSession) {
 				e.SetPresentSize(s.renderW, s.renderH)
 			}
 			s.player, s.track = p, e
+			// 引擎已经开出来了：首帧预算从这里重新计时，播放器迟迟不出图
+			// 时由 watchTick 接手，不能让取流阶段的耗时提前吃掉这段预算。
+			s.openedAt = time.Now()
 			s.stream, s.up = info, v
 			// 平台确认的档位写回这一格自己的记录：激活 / 进播放页时读的就是它。
 			a.learnRoomChoice(s.key, info, v)
@@ -621,7 +629,7 @@ func (a *App) watchTick(now time.Time) {
 	for _, s := range a.watch.sessions {
 		if s.player == nil {
 			if s.loading {
-				if !s.openedAt.IsZero() && now.Sub(s.openedAt) > 20*time.Second {
+				if !s.openedAt.IsZero() && now.Sub(s.openedAt) > firstFrameBudget {
 					a.watchFail(s, "首帧超时")
 				}
 				continue
@@ -652,6 +660,16 @@ func (a *App) watchTick(now time.Time) {
 		}
 		if !s.refreshAt.IsZero() && now.After(s.refreshAt) {
 			a.watchRestart(s, "地址到期")
+			continue
+		}
+		// 引擎构建成功不等于出图：libmpv 收到 loadfile 就返回，一条死地址
+		// 可以一直停在 Loading、不报错也不结束。watchDeadReason 对 !Ready
+		// 是刻意放过的（慢启动不判死），所以这里必须有首帧预算兜底，和
+		// 播放页的 needFirstFrameTimeout 对齐。暂停中的格子不算——用户
+		// 主动停着，恢复播放那一拍再继续计时。
+		if !s.player.Ready() && s.player.Playing() &&
+			!s.openedAt.IsZero() && now.Sub(s.openedAt) >= firstFrameBudget {
+			a.watchRestart(s, "首帧超时")
 		}
 	}
 }
@@ -665,7 +683,13 @@ func (a *App) watchEnded(s *wallSession, why string) {
 		return
 	}
 	s.checking = true
-	prov, roomID, win := s.prov, s.room.RoomID, a.Win
+	prov := s.prov
+	if prov == nil {
+		// 会话可能来自没走过 watchOpenSession 的交接路径：别让 nil 静默
+		// 变成「平台说还在播」，那会把真下播的一格送进无谓的重连。
+		prov, _ = providerFor(live.Platform(s.room.Platform))
+	}
+	roomID, win := s.room.RoomID, a.Win
 	go func() {
 		liveNow := true
 		if ri, ok := prov.(live.RoomInfoer); ok {
@@ -715,7 +739,23 @@ func (a *App) watchRestart(s *wallSession, reason string) {
 // watchActivate 单击格子：切音频焦点，不跳路由。
 func (a *App) watchActivate(room Streamer) {
 	key := watchKey(room)
-	if key == "" || key == a.WatchActive {
+	if key == "" {
+		return
+	}
+	if key == a.WatchActive {
+		// 点已经是焦点的格 = 重试。失败/未开播的提示写着「点击重试」，
+		// 而 active 以前在这里直接 return；这一路通常还挂在墙的 pending
+		// 会话上（不在媒体层），控制条上的「重新加载」也够不着它，于是
+		// 整格没有任何有效入口。在播/在载时这里什么都不做。
+		if a.media.roomKey == key {
+			if a.media.player == nil && a.media.err != "" {
+				a.Playing = true
+				a.markDirty()
+				a.retryStream()
+			}
+		} else if s := a.watch.sessions[key]; s != nil && s.player == nil && !s.loading {
+			a.watchReload(s.room)
+		}
 		return
 	}
 	a.watch.init()
@@ -818,6 +858,15 @@ func (a *App) watchReleaseActive() {
 		stream: m.stream, up: m.upstream, firstFrame: true,
 		refreshAt: m.refreshAt, stillSince: time.Now(), lastPos: m.player.Position(),
 	}
+	// 首帧预算跟着这一路走：媒体层已经等过的时长不能因为退回墙上而重置，
+	// 否则一条死地址每次交接都能重新领 20 秒。
+	s.openedAt = m.openedAt
+	if s.openedAt.IsZero() {
+		s.openedAt = time.Now()
+	}
+	// watchEnded 靠它确认是不是真下播；交接路径不填就又会退化成
+	// 「nil 恒等于还在播」。
+	s.prov, _ = providerFor(live.Platform(room.Platform))
 	if r, ok := a.watch.rects[key]; ok {
 		s.renderW, s.renderH = watchSize(r)
 	} else {
@@ -908,8 +957,14 @@ func (a *App) watchAdoptActive(onWall bool) bool {
 	a.learnRoomChoice(key, s.stream, s.up)
 	m.loading = false
 	m.err = ""
-	m.firstFrame = true
-	m.openedAt = time.Now()
+	// 接管的是这一格的真实状态：引擎还没出图就不能在这里记成「已出图」，
+	// 否则媒体层的首帧预算（needFirstFrameTimeout）从此不再看这一路。
+	m.firstFrame = s.player.Ready()
+	// 预算也跟着这一路走：墙上已经等过的时长带回播放页。
+	m.openedAt = s.openedAt
+	if m.openedAt.IsZero() {
+		m.openedAt = time.Now()
+	}
 	m.pauseStarted = time.Time{}
 	m.pausedFor = 0
 	m.background = onWall
@@ -1013,7 +1068,10 @@ func (a *App) watchAdd(room Streamer) bool {
 		return false
 	}
 	if len(a.WatchRooms) >= watch.MaxRooms {
-		a.notifyPlayback(fmt.Sprintf("观测盒最多 %d 间", watch.MaxRooms))
+		// 这里的调用方是首页卡片右键与关注页行菜单，都不在播放页；提示
+		// 必须走常驻外壳的 toast。notifyPlayback 只画在播放页的 noticePill
+		// 上，用在这里等于什么都没发生。
+		a.toastTone(fmt.Sprintf("观测盒最多 %d 间", watch.MaxRooms), toastInfo)
 		return false
 	}
 	key := watchKey(room)
@@ -1054,7 +1112,11 @@ func (a *App) watchSwap(dragKey, targetKey string) {
 // watchRemove 移出一间；如果是 active，声音一起停。
 func (a *App) watchRemove(room Streamer) {
 	key := watchKey(room)
-	out := a.WatchRooms[:0]
+	// 必须新分配：点「移出观测」是在 watchWall 构建这一格时同步跑的，而
+	// watchWall 开头把 a.WatchRooms 的切片头拷给了 rooms。用 [:0] 原地压缩
+	// 会改写它正在遍历的底层数组——余下的循环按左移过的房间继续建格，
+	// 同一间房在这一帧里画两格，被删的后一位被跳过。
+	out := make([]Streamer, 0, len(a.WatchRooms))
 	for _, s := range a.WatchRooms {
 		if watchKey(s) != key {
 			out = append(out, s)
