@@ -94,11 +94,20 @@ func (a *App) PlayerPage(c *ui.Context) {
 		shell.Children(func() {
 			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
+				// 圆角必须挂在舞台自己身上，不能只靠外壳的 Clip。
+				//
+				// MyGo 的飞行取的是元素自己的 radius（match.go 的 lookOf），
+				// 途中在源元素与目标元素之间插值（mixLook）。只在 shell 上
+				// Clip 时舞台自己是 0，于是从墙格的 8 一路插到 0——飞行那
+				// 几百毫秒屏幕上是越来越方的画面，落定之后才被外壳裁圆。
+				// 挂成和外壳一样的 16，两端相同，全程一致。
+				if !full {
+					stage.Radius(theme.RadiusXL).Clip()
+				}
 				// 这一块是焦点会话在全尺寸表面上的那一份。从墙上放大进来时
 				// 它拿同一个身份，于是从格子那块矩形长过来（surface_motion.go）。
-				// 退出时焦点已经被清掉，身份由 exitMatchKey 接住，反向收缩
-				// 才找得到起点。
-				if key := a.stageMatchKey(); key != "" {
+				// 只在路由过渡期间挂 Match：常挂着会让窗口改尺寸也走尺寸动画。
+				if key := a.stageMatchKey(); key != "" && !a.routeTransitionUntil.IsZero() {
 					stage.Transition(ui.ElementTransition{
 						Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
 					})

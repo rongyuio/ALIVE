@@ -66,6 +66,10 @@ type Options struct {
 	// 所以只设 audio-client-name 会被这行覆盖回 mpv。
 	ClientName string
 
+	// GPU 走零拷贝（D3D11 render API）。默认关，见 d3d11_windows.go 的说明：
+	// 结构体未经验证，实测出不画。
+	GPU bool
+
 	// NoBackBuffer 关掉 demuxer 的回退缓存（demuxer-max-back-bytes=0）。
 	//
 	// ALIVE 本地补丁。直播不能回退，那份缓存永远不会被读到，却按 mpv 的
@@ -107,6 +111,12 @@ type State struct {
 	VideoSpeed, AudioSpeed   float64       // 音视频各自的校正倍率（1.0 = 不校正）
 	AVSync                   float64       // 当前音画偏差（秒）
 	HWDec                    string        // 实际启用的硬解；空或 "no" 表示软件解码
+	// GPU 表示这一路走的是零拷贝路径：mpv 直接渲进共享纹理，帧不经内存。
+	// ALIVE 本地补丁。
+	GPU bool
+	// GPUFrames 是这条路径实际渲出的帧数。GPU 为真但它是 0，说明纹理
+	// 建不出来——那一路其实没在出画。
+	GPUFrames uint64
 	// Renders 是累计真正做过的渲染次数（跳过的不算）。
 	// 用来验证渲染门控：没人看时它应当停止增长。
 	Renders uint64
@@ -151,10 +161,17 @@ type Player struct {
 	forceRender        bool // 尺寸变化后立刻用当前帧重渲染一次
 	// lastPull 是上一次有人取帧的时刻，renderIdle 据此决定要不要跳过渲染。
 	// pull 只发生在真正显示这一路的帧里，所以它就是"有没有人在看"。
-	lastPull  time.Time
-	rendering bool // 当前是否处于"跳过渲染"状态（只为恢复时补一次强制渲染）
-	// skipDecode 表示解码器已经挂起（vd-lavc-skipframe=all）。
-	skipDecode bool
+	lastPull time.Time
+	// idle 表示渲染线程已经进入"跳过渲染"状态（没人看）。
+	//
+	// 它只由渲染线程写、Frame() 读后清：Frame() 看见 idle 就强制渲一帧并
+	// 唤醒渲染线程。写成反的（idle 时置假）会让恢复永远等不到唤醒，画面
+	// 一直冻着，直到上层看门狗把整路重开。
+	idle bool
+	// gpu 表示这一路走零拷贝（D3D11 渲染 API）。ALIVE 本地补丁。
+	gpu bool
+	// gpuFrames 是零拷贝实际渲出的帧数；用它判断这条路是不是真在出画。
+	gpuFrames func() uint64
 	// mpvLog 是最近的 mpv 错误 / 警告，环形缓冲，State.Log 交出去给上层落盘。
 	mpvLog    []LogLine
 	mpvLogSeq uint64
@@ -185,14 +202,27 @@ func New(opts Options) (*Player, error) {
 		return nil, err
 	}
 	p.native = n
+	if nn, ok := n.(*native); ok && nn.gpu != nil {
+		p.gpu = true
+		p.gpuFrames = nn.gpu.frameCount
+	}
 	p.start()
 	return p, nil
 }
 func makePlayer(opts Options) *Player {
 	return &Player{opts: opts, state: State{Phase: Idle, Volume: 100, Rate: 1}, paused: true, wake: make(chan struct{}, 1), renderWake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}), pending: map[uint64]bool{}, width: 0, height: 0}
 }
-func (p *Player) start()       { p.workers.Add(2); go p.events(); go p.frames(); signal(p.wake) }
-func (p *Player) State() State { p.mu.Lock(); defer p.mu.Unlock(); return p.state }
+func (p *Player) start() { p.workers.Add(2); go p.events(); go p.frames(); signal(p.wake) }
+func (p *Player) State() State {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.state
+	s.GPU = p.gpu
+	if p.gpuFrames != nil {
+		s.GPUFrames = p.gpuFrames()
+	}
+	return s
+}
 func (p *Player) Capabilities() Capabilities {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -615,24 +645,25 @@ func (p *Player) frames() {
 		force := p.forceRender
 		p.forceRender = false
 		idle := !force && renderIdle(p.frame != nil, p.lastPull, time.Now())
-		p.rendering = !idle
+		p.idle = idle
 		p.mu.Unlock()
 		if closed {
 			return
 		}
 		if idle {
-			// 没人看：不渲、不回读。
+			// 没人看：不渲、不回读。解码不动。
 			//
-			// 再把视频解码挂起（vd-lavc-skipframe=all）。实测（2026-11-23，
-			// B 站 1080P 原画，d3d11va-copy）：挂起期间 demuxer 照常读，
-			// 时间轴按 1x 前进、缓存 0–7 秒、没有一次 idle；恢复时第一次取帧
-			// 到出新画面 6–37ms，之后立刻按 1x 走。音频不解码不受影响。
+			// 挂起解码的代价实测（2026-11-23，B 站 7734200，隐藏 12 秒）：
+			//   - vd-lavc-skipframe=all：参考帧链断，恢复要等直播流的下一个
+			//     关键帧，实测 8–22 秒。墙上就是"回来画面冻十几秒"。
+			//   - nonref：参考帧照解，恢复仍要约 2.2 秒（解码器追赶缓存）。
+			//   - 不挂起：恢复即刻出画，隐藏期间多花的是解码——零拷贝下
+			//     3 路 0.13 核量级。
 			//
-			// 注意不能用 nonkey：那一个会让 vfps 归零、缓存清零，管线停住。
-			p.setSkipDecode(true)
+			// 要省带宽/解码就用用户的「暂离时省流量」，那条路直接关会话，
+			// 回来重新加载是用户预期之内的。渲染门控只管渲染。
 			continue
 		}
-		p.setSkipDecode(false)
 		w, h := p.target()
 		frame, fresh, err := p.native.render(w, h, force)
 		p.mu.Lock()
@@ -701,30 +732,11 @@ func (p *Player) target() (int, int) {
 // 序号每次成功渲染自增，调用方据此判断有没有换帧——比反复比较像素便宜得多。
 // 返回的切片指向引擎内部轮换的缓冲，三次渲染之后才会被覆写，所以调用方可以
 // 把它交给上屏线程，不必自己拷。
-// setSkipDecode 挂起或恢复视频解码。幂等，可在渲染线程里调。
-//
-// 挂起期间视频包照常被 demuxer 消费（解码器仍然取包，只是不解），所以
-// 连接和缓存都不断——这是"消费继续、解码停"的全部机关。
-func (p *Player) setSkipDecode(skip bool) {
-	p.mu.Lock()
-	if p.skipDecode == skip || p.state.Phase == Closed {
-		p.mu.Unlock()
-		return
-	}
-	p.skipDecode = skip
-	p.mu.Unlock()
-	value := "none"
-	if skip {
-		value = "all"
-	}
-	_ = p.send([]string{"set", "options/vd-lavc-skipframe", value}, false)
-}
-
 func (p *Player) Frame() (*Frame, uint64) {
 	p.mu.Lock()
 	p.lastPull = time.Now()
-	resume := p.rendering
-	p.rendering = false
+	resume := p.idle
+	p.idle = false
 	if resume {
 		p.forceRender = true
 	}

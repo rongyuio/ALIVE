@@ -53,6 +53,13 @@ type Options struct {
 	StartSilent bool
 	// SkipAudioGate 不压画面等音频时钟。墙上的格子只要画面，等音频会白压两秒。
 	SkipAudioGate bool
+	// GPU 走零拷贝（mpv 的 D3D11 render API，直接渲进共享纹理）。
+	//
+	// 只有观测墙开：mpv 直接渲进共享 D3D11 纹理，MyGo 的渲染器用另一个
+	// device 打开它，帧不经内存（12 路 8.7 核 → 0.4 核，见
+	// doc/reference/measurements.md「视频零拷贝」）。播放页一路全尺寸，收益
+	// 小，且截图 / Tester 的 CPU 回读路径留着更方便。
+	GPU bool
 	// NoBackBuffer 关掉 demuxer 的回退缓存。
 	//
 	// 直播不能回退，这份缓存永远不会被读到，却按 mpv 的默认上限占着内存。
@@ -192,6 +199,7 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		Silent:       opts.Silent,
 		ClientName:   audioClientName,
 		NoBackBuffer: opts.NoBackBuffer,
+		GPU:          opts.GPU,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
@@ -292,6 +300,22 @@ func (e *Engine) Frame(t time.Time) (media.Picture, bool, bool) {
 	e.mu.Unlock()
 
 	w, h := f.W, f.H
+	// 零拷贝：这一帧在 GPU 上，直接把共享纹理的句柄交给渲染器，它用同一个
+	// device 打开，不经内存。RGBA 仍要留一条转换路径——CPU 渲染器（Tester、
+	// headless、截图）没有 GPU，只能读回像素。
+	if f.Shared != 0 {
+		surface := &scene.Surface{
+			Format:   scene.SurfaceBGRA,
+			Native:   f.Shared,
+			NativeID: f.SharedID,
+		}
+		return media.Picture{
+			Surface: surface,
+			W:       w,
+			H:       h,
+			RGBA:    func(dst []byte) []byte { return dst[:0] },
+		}, changed, true
+	}
 	// mpv 的软件渲染只吐 RGB（render.h 里只认 "bgr0"/"rgb0"/"rgb24" 这类
 	// 单平面 RGB），所以这里是 BGRA 单平面，不是 NV12。
 	surface := &scene.Surface{
@@ -404,6 +428,9 @@ func (e *Engine) SetPresentSize(w, h int) { e.p.SetPresentSize(w, h) }
 
 // Debug 返回底层 libmpv 的原始状态，诊断用。
 func (e *Engine) Debug() video.State { return e.p.State() }
+
+// GPU 报告这一路是不是零拷贝路径。ALIVE 本地补丁。
+func (e *Engine) GPU() bool { return e.p.State().GPU }
 
 // Stats 返回累计上屏帧数。丢帧由 mpv 内部处理，这里不统计；audioOn 恒为真，
 // 因为音轨的有无由 mpv 决定，我们不参与。

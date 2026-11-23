@@ -104,7 +104,13 @@ test: check-mpv
 lint:
 	golangci-lint run --build-tags mock ./...
 
-check: fmt-check vet lint test
+# 本地漂移的上游包（third_party/mygo）里有自己的测试：零拷贝的共享 ID、
+# 渲染门控的恢复、Label 之外的静态守卫都住在那一边。它们不在 app module 里，
+# 上面的 `go test ./...` 一个都跑不到，所以必须单独跑。
+test-mygo: check-mpv
+	cd third_party/mygo && $(GO) test ./plugins/video/ -count=1
+
+check: fmt-check vet lint test test-mygo
 	@echo "all checks passed"
 
 # mock 走 -tags mock：整个假数据层（internal/live/mock.go）只在这个构建里存在，

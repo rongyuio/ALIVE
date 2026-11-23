@@ -5,6 +5,10 @@ libmpv 的 Windows 运行库与头文件，供 `github.com/egoist/mygo/plugins/v
 
 - 来源：`shinchiro/mpv-winbuild-cmake` 的 `mpv-dev-x86_64-20261111-git-bcde6b93cc.7z`
 - `bin/libmpv-2.dll`：随包分发（`mygo.json` 的 `resources`），116MB，LZMA 后约 40MB
+- `include/mpv/render_d3d11.h`：**2026-11-23 从上游 master 补的**，D3D11 渲染
+  后端（`MPV_RENDER_API_TYPE_D3D11`）的参数结构体只在这个头里。原包里没有它，
+  靠记忆猜字段顺序写出过一版实现——结构体只有一个字段，猜错不影响偏移，但
+  猜本身不该发生。
 - `include/mpv/*.h`：只作参考。绑定走 purego 的 `RegisterFunc`，不需要编译期头文件，
   但这些头文件是 `MPV_RENDER_PARAM_*` 那些常量与类型定义唯一的权威来源，读文档比猜参数快
 - 客户端 API v2（mpv 0.35+），`engine.go` 里会校验 `mpv_client_api_version()>>16 == 2`

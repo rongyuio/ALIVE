@@ -143,6 +143,9 @@ func TestWatchReloadActiveWallSession(t *testing.T) {
 func TestWatchFirstFrameBudgetOnOpenEngine(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, _ := newWatchMock(t, rooms)
+	// 首帧超时之后要问一次平台；这里给一个没有 RoomInfoer 的实现，
+	// 断言落在"引擎被收掉"这一半，测试不发真实请求。
+	useProvider(t, plainProvider{})
 	now := time.Now()
 
 	stalled := fakeSession(t, app, rooms[0])

@@ -25,8 +25,11 @@ ALIVE 是一个直播客户端：Go 写全部逻辑，界面由 MyGo（`github.c
 几条从目录列表看不出来的：
 
 - `third_party/mygo/` 是 replace 到本地的上游源码，**不是纯净上游**。相对上游的漂移：
-  `plugins/video`（播放、vid 开关，移植自未合的 PR #124）、`plugins/internal`、`media/`、
-  `scene/`（引擎契约的导出）是本地的，`ui/engine_export.go` 是本地的单文件补丁（给
+  `plugins/video`（播放、vid 开关，移植自未合的 PR #124；另有 ALIVE 自己的
+  渲染门控与 D3D11 零拷贝两个补丁，见对应文件头）、`plugins/internal`、`media/`、
+  `scene/`（引擎契约的导出，外加进程级的 `NextSurfaceID`：所有生产者共用一个
+  Surface ID 发号器，各自从 1 数会让墙撞成同一画面）、`ui/video/mf_windows.go`
+  改用 `scene.NextSurfaceID`（同一原因）、`ui/engine_export.go` 是本地的单文件补丁（给
   `VideoPlayer` 补 `Engine()`），`cmd/mygo/nsis.go` 把安装器的「应用正在运行」提示
   改成了 LangString。都有注释说明为什么。`internal/raster` 的重叠区像素修复
   上游 v0.10.0 已合，本地不再需要。

@@ -353,18 +353,6 @@ type App struct {
 	// routeTransitionUntil 是表面之间连续过渡的结束时刻；零值表示当前
 	// 不播页面过渡。由 pushRoute 置、tickRouteTransition 收尾。
 	routeTransitionUntil time.Time
-	// playerFrom 是进播放页之前停留的那一页。退出时要靠它判断"退回去的
-	// 那一页还画不画这一间"——从墙格放大进来的才连续，从列表进的不连续。
-	// 由 trackRoute 每帧记录，是唯一来源。
-	playerFrom string
-	// lastRoute 是上一帧的路由，用来认出"这一帧刚换了页"。
-	lastRoute string
-	// exitMatchKey 是退出播放页时接管 Match 身份的会话 key。
-	//
-	// closeMedia 会清空焦点，而舞台的 Match 身份本来取自 focusKey。清空之后
-	// 源元素在退出那一帧就没了身份，Match 找不到起点，只能硬切。这个记号
-	// 让舞台在退出的那一帧继续带着同一个身份，飞完由 tickRouteTransition 清掉。
-	exitMatchKey string
 }
 
 // CategoryGroup 是一级分区及其下的二级分区。
@@ -533,8 +521,6 @@ func (a *App) Shell(c *ui.Context) {
 
 	// 表面之间的连续过渡到点收尾：恢复成"不播页面过渡"。
 	a.tickRouteTransition(time.Now())
-	// 记下这一帧的路由，退出过渡要靠它知道是从哪一页进来的。
-	a.trackRoute()
 
 	// 各平台登录头像提前进缓存：切平台换头像时才不会先画灰人再跳图。
 	a.syncAuthAvatars()

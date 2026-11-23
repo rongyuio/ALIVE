@@ -47,6 +47,9 @@ type wallSession struct {
 	err      string
 	offline  bool
 	checking bool
+	// probing 表示正在静默探测这一格开没开播：只查 RoomInfo，不动画面、
+	// 不动 loading/err。墙上不能因为一次探测就闪出加载态或刷新提示。
+	probing bool
 
 	// openedAt 是这一路当前阶段的起点：取流阶段是开始取流，引擎开出之后
 	// 重置为引擎打开的时刻——首帧预算从后者算，取流慢不该吃掉出图的预算。
@@ -79,6 +82,9 @@ type wallMedia struct {
 	resume map[string]wallResume
 	// tickPending 表示墙的心跳定时器已经排上，避免每帧重复排。
 	tickPending bool
+	// lastProbe 是上一次离线探测的时刻。一排离线格同时到点时错开，别让
+	// 一次 tick 把整个平台问一遍。
+	lastProbe time.Time
 	// hiddenSince 是墙变成不可见的时刻；零值表示墙可见。只有用户开了
 	// 「暂离时省流量」才在 watchReapGrace 之后回收。
 	hiddenSince time.Time
@@ -296,6 +302,7 @@ func (a *App) watchPlayer(key string) *ui.VideoPlayer {
 // watchShow 是墙可见时的每帧同步：补齐会话、更新渲染尺寸、关掉已经不在盒里的。
 func (a *App) watchShow(rects map[string]watch.Rect) {
 	a.watch.init()
+	wasHidden := !a.watch.hiddenSince.IsZero()
 	a.watch.rects = rects
 	// 墙又可见了：保留窗口从头计。
 	a.watch.hiddenSince = time.Time{}
@@ -353,10 +360,14 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 		a.watchOpenSession(s)
 	}
 	for key, s := range a.watch.sessions {
-		if seen[key] {
+		if !seen[key] {
+			a.watchCloseSession(s)
 			continue
 		}
-		a.watchCloseSession(s)
+		if wasHidden && s.offline {
+			// 墙刚回到屏上：离线格立刻探一次，不用等离开前攒下的退避。
+			s.retryAt = time.Time{}
+		}
 	}
 	// 盒里没有 active 了：停掉它。
 	if a.WatchActive != "" && !seen[a.WatchActive] {
@@ -588,6 +599,7 @@ func wallPlaybackOptions(v live.Variant) playback.Options {
 		StartSilent:   true,
 		SkipAudioGate: true,
 		NoBackBuffer:  true,
+		GPU:           true,
 	}
 }
 
@@ -621,8 +633,7 @@ func (a *App) acceptWallEngine(s *wallSession, ctx context.Context, seq int, win
 		a.learnRoomChoice(s.key, info, v)
 		s.loading = false
 		s.err = ""
-		s.firstFrame = p.Ready()
-		s.failures = 0
+		s.firstFrame = false
 		s.refreshAt = refreshAtFor(v)
 		s.stillSince = time.Now()
 		s.lastPos = 0
@@ -671,10 +682,15 @@ func (a *App) watchOffline(s *wallSession) {
 	s.offline = true
 	s.err = "主播暂时没有开播"
 	s.firstFrame = false
-	// 蹲开播：下一拍之后按退避自动再问一次平台。
-	// failures 不清零——一个长期没开播的房间不该每 2 秒问一次。
+	// 旧地址作废：这一格再开播要重新问平台。留着旧签名地址重开，只会拿
+	// 一条已经没内容的流再等一次 20 秒首帧预算。
+	s.up = live.Variant{}
+	a.watch.init()
+	delete(a.watch.resume, s.key)
+	// 蹲开播：按离线节奏探测，上限 5 分钟。failures 不清零——一个长期
+	// 没开播的房间不该每 30 秒问一次平台。
 	s.failures++
-	s.retryAt = time.Now().Add(watchBackoff(s.failures))
+	s.retryAt = time.Now().Add(offlineProbeBackoff(s.failures, s.key))
 	if s.key == a.WatchActive {
 		// 下播就是没有声音：焦点跟着收掉，绿点和岛一起消失。
 		a.watchDeactivate()
@@ -693,6 +709,142 @@ func watchBackoff(n int) time.Duration {
 	default:
 		return 2 * time.Minute
 	}
+}
+
+// offlineProbeBackoff 是离线格探测开播的间隔：30s、1m、2m、4m，再加按房间
+// 摊开的抖动（最多 59 秒）。
+//
+// 上限 4m59s 来自产品要求：主播开播之后，墙上最多 5 分钟跟上。不要求实时。
+// 抖动按房间号算而不是随机，测试里可复现，也保证一排离线格不同时到点。
+func offlineProbeBackoff(failures int, key string) time.Duration {
+	base := 30 * time.Second
+	for i := 1; i < failures && base < 4*time.Minute; i++ {
+		base *= 2
+	}
+	if base > 4*time.Minute {
+		base = 4 * time.Minute
+	}
+	var h uint32 = 2166136261 // FNV-1a
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return base + time.Duration(h%60)*time.Second
+}
+
+// wallOnScreen 报告墙此刻是不是真的在屏上：路由在观测墙，且没有被最小化
+// 或小窗换下去。离线探测只在它为真时发生——看不见的格子开没开播没有意义。
+func (a *App) wallOnScreen() bool {
+	return a.onWatchWall() && a.watch.hiddenSince.IsZero()
+}
+
+// watchProbe 静默问一次平台这一格开没开播。
+//
+// 无感是硬要求：探测期间不动 loading、err、offline，格子上还是
+// 「主播暂时没有开播」，没有 spinner、没有「正在刷新」。只有平台说开播了，
+// 才走正常起播——那时才允许出现加载态。
+func (a *App) watchProbe(s *wallSession, now time.Time) {
+	if s == nil || s.probing || s.loading || s.player != nil || s.checking {
+		return
+	}
+	a.watch.init()
+	// 一排离线格同时到点时错开：一次 tick 最多起一个探测。
+	if !a.watch.lastProbe.IsZero() && now.Sub(a.watch.lastProbe) < 500*time.Millisecond {
+		return
+	}
+	prov, ok := providerFor(live.Platform(s.room.Platform))
+	if !ok {
+		s.retryAt = now.Add(offlineProbeBackoff(s.failures+1, s.key))
+		return
+	}
+	ri, ok := prov.(live.RoomInfoer)
+	if !ok {
+		// 平台没有单点查询：只能退回完整取流，退避照算。
+		s.retryAt = now.Add(offlineProbeBackoff(s.failures+1, s.key))
+		a.watchOpenSession(s)
+		return
+	}
+	win := a.Win
+	if win == nil {
+		return
+	}
+	s.probing = true
+	a.watch.lastProbe = now
+	s.failures++
+	s.retryAt = now.Add(offlineProbeBackoff(s.failures, s.key))
+	key, roomID := s.key, s.room.RoomID
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		room, err := ri.RoomInfo(ctx, roomID)
+		runOnMain(win, func() {
+			if a.watch.sessions[key] != s {
+				return
+			}
+			s.probing = false
+			if err != nil || !room.Live {
+				// 还是没开播：什么都不变，格子不闪。
+				return
+			}
+			s.offline = false
+			s.err = ""
+			s.failures = 0
+			s.retryAt = time.Time{}
+			s.up = live.Variant{}
+			a.watchOpenSession(s)
+		})
+	}()
+}
+
+// watchFirstFrame 记这一格真的出了第一帧。退避只在这里清零。
+//
+// 引擎开出来不算数：一条平台说在播、实际不出帧的流，如果按"开出来了"清零
+// failures，就会 20 秒超时 → 2 秒重开 → 又清零，永远循环下去。
+func (a *App) watchFirstFrame(s *wallSession) {
+	if s == nil || s.firstFrame {
+		return
+	}
+	s.firstFrame = true
+	s.failures = 0
+	s.retryAt = time.Time{}
+}
+
+// watchFirstFrameLost 处理"引擎开着、过了首帧预算还没画面"。
+//
+// 先收掉引擎（这一格立刻回到可重试状态），再问一次平台：真下播就落未开播，
+// 之后按离线节奏探测；还在播才按失败退避重开。不问平台的话，平台已经下播
+// 的房间会被一轮轮重开，永远按"在播"处理。
+func (a *App) watchFirstFrameLost(s *wallSession) {
+	if s == nil || s.checking {
+		return
+	}
+	a.watchRestart(s, "首帧超时")
+	prov := s.prov
+	if prov == nil {
+		prov, _ = providerFor(live.Platform(s.room.Platform))
+	}
+	ri, ok := prov.(live.RoomInfoer)
+	win := a.Win
+	if !ok || win == nil {
+		return
+	}
+	s.checking = true
+	key, roomID := s.key, s.room.RoomID
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		room, err := ri.RoomInfo(ctx, roomID)
+		runOnMain(win, func() {
+			if a.watch.sessions[key] != s {
+				return
+			}
+			s.checking = false
+			if err != nil || room.Live {
+				return
+			}
+			a.watchOffline(s)
+		})
+	}()
 }
 
 // watchReload 是格子控制台上的「重新加载」：作用于当前 hover 的那一格。
@@ -784,16 +936,17 @@ func (a *App) watchTick(now time.Time) {
 				continue
 			}
 			if s.offline {
-				// 蹲开播：离线格按退避自动重试。
+				// 蹲开播：只问平台「开没开播」，不取流、不碰画面。
 				//
-				// 以前这里直接 continue，于是"把关注的房间摆上墙等它开播"
-				// 这个场景根本不成立——只能手点。退避和失败重连共用一套，
-				// 免得对一个长期没开播的房间每拍问一次平台。
+				// 不在墙上就完全不探测——看不见的格子开没开播没有意义，
+				// 用户回到墙上时 watchShow 会把退避清零，立刻探一次。
+				if !a.wallOnScreen() {
+					continue
+				}
 				if !s.retryAt.IsZero() && now.Before(s.retryAt) {
 					continue
 				}
-				s.retryAt = now.Add(watchBackoff(s.failures + 1))
-				a.watchOpenSession(s)
+				a.watchProbe(s, now)
 				continue
 			}
 			if !s.retryAt.IsZero() && now.Before(s.retryAt) {
@@ -803,7 +956,7 @@ func (a *App) watchTick(now time.Time) {
 			continue
 		}
 		if s.player.Ready() {
-			s.firstFrame = true
+			a.watchFirstFrame(s)
 		}
 		if err := s.player.Err(); err != nil {
 			a.watchEnded(s, "播放器报错："+err.Error())
@@ -829,7 +982,7 @@ func (a *App) watchTick(now time.Time) {
 		// 主动停着，恢复播放那一拍再继续计时。
 		if !s.player.Ready() && s.player.Playing() &&
 			!s.openedAt.IsZero() && now.Sub(s.openedAt) >= firstFrameBudget {
-			a.watchRestart(s, "首帧超时")
+			a.watchFirstFrameLost(s)
 		}
 	}
 }

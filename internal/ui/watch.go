@@ -105,9 +105,16 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 	tile.InsetShadow(0, 1, 0, 0, theme.TopLight)
 	// 这一格是"同一间房"在墙上的那一份。进播放页时舞台拿同一个身份，
 	// 于是画面从这块矩形长到整屏，而不是硬切（见 surface_motion.go）。
-	tile.Transition(ui.ElementTransition{
-		Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
-	})
+	//
+	// 只在路由过渡期间挂：常挂着等于告诉 MyGo「这个元素的尺寸变化要动画」，
+	// 于是最大化/还原时格子一帧帧弹过去，视频每帧重新适配——就是用户看到的
+	// 「最大化会闪」。文档里 resize 本来就不该 animate。
+	if !a.routeTransitionUntil.IsZero() {
+		tile.Transition(ui.ElementTransition{
+			Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
+		})
+	}
+
 	if tile.Clicked() {
 		// 点任何一间 = 看这一间。和首页卡片、关注行、搜索结果同一个语义：
 		// 全应用里"点一张直播画面"只有这一种结果。

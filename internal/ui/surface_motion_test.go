@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	mymedia "github.com/egoist/mygo/media"
 	"github.com/egoist/mygo/ui"
+
+	"alive/internal/live"
 )
 
 // 表面之间的连续过渡：墙格 → 播放页，同一间房不该硬切。
@@ -56,26 +59,27 @@ func TestWallToPlayerIsContinuous(t *testing.T) {
 	}
 }
 
-// 退出播放页必须走同一条连续过渡：进去是放大，出来就该是缩回去。
+// 退出播放页是硬切，而且回到墙的第一帧就得是画面，不能先闪封面/黑底。
 //
-// 这条以前不存在，而且它不是"忘了调 pushRoute"那么简单：三个退出入口
-// 都先 closeMedia() 再 Router.Back()，而 closeMedia 会把焦点清空——
-// continuousRoute 判 focusKey() != "" 于是永远为假，pushRoute 根本不会
-// 把路由器切到 Match。所以修法不是补一句调用，是换顺序：先把"这一趟要
-// 不要连续"定下来，再结束焦点，再退。
+// 为什么退出不做 Match：一个 VideoPlayer 只能被一个 ui.Video 画出来（实测
+// 两个元素只有一个出画），而退出时必须把画面交回墙上的格子——播放舞台这一侧
+// 就没有引擎可画了。TransitionMatch 会在淡出期间把旧页面重建一次，那一帧
+// 舞台的 player 是 nil，整块闪成封面或黑底（帧探针实测第 0–2 帧全黑，之后
+// 才淡入）。硬切则新墙第一帧就带着同一路画面，没有空窗。
 //
-// 判据：退出的那一帧路由器处于 TransitionMatch。硬切就是 None。
-//
-// 先红后绿过：把 exitPlayer 换回 closeMedia + Router.Back，第一条直接失败。
-func TestPlayerToWallIsContinuous(t *testing.T) {
+// 先红后绿过：把 exitPlayer 换回 TransitionMatch，第 0 帧就是黑。
+func TestExitToWallKeepsThePicture(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
+	useProvider(t, plainProvider{})
+	oldEngine := engineOf
+	engineOf = func(*ui.VideoPlayer) videoTrack { return &trackSpy{} }
+	t.Cleanup(func() { engineOf = oldEngine })
 	for _, r := range rooms {
-		fakeSession(t, app, r).player.Pause()
+		steadySession(t, app, r)
 	}
 	tt.Frame()
 
-	// 双击进播放页。
 	label := watchTileLabel(rooms[0])
 	if err := tt.Click(label); err != nil {
 		t.Fatal(err)
@@ -83,56 +87,92 @@ func TestPlayerToWallIsContinuous(t *testing.T) {
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
-	if app.Router.Path() != routePlayer {
-		t.Fatalf("没有进播放页：route=%q", app.Router.Path())
-	}
-	// 进场的 Match 已经结束，路由器应当回到 None。
 	app.tickRouteTransition(time.Now().Add(routeTransitionDur + time.Second))
 	tt.Frame()
-	if app.Router.Transition != ui.TransitionNone {
-		t.Fatalf("进场过渡没有收尾：%v", app.Router.Transition)
-	}
 
-	// 按岛上的 X 退出。
 	if err := tt.Click("退出直播间"); err != nil {
 		t.Fatal(err)
 	}
-	tt.Frame()
-
-	if got := app.Router.Path(); got != routeFollows {
-		t.Fatalf("退出后没有回墙：route=%q", got)
-	}
-	if app.Router.Transition != ui.TransitionMatch {
-		t.Fatalf("退出播放页时路由器是 %v，期望 TransitionMatch：这一下是硬切",
-			app.Router.Transition)
-	}
-
-	// 收尾之后恢复，别把顶栏 tab 一起带滑。
-	app.tickRouteTransition(time.Now().Add(routeTransitionDur + time.Second))
-	tt.Frame()
-	if app.Router.Transition != ui.TransitionNone {
-		t.Fatalf("退出过渡结束后路由器还停在 %v", app.Router.Transition)
+	for i := 0; i < 6; i++ {
+		tt.Frame()
+		if got := app.Router.Path(); got != routeFollows {
+			t.Fatalf("第 %d 帧还没回到墙：route=%q", i, got)
+		}
+		if app.Router.Transition != ui.TransitionNone {
+			t.Fatalf("退出走了页面过渡（%v）：旧页面会重建，舞台这一侧没有引擎", app.Router.Transition)
+		}
+		r, g, b, ok := tilePixel(tt, rooms[0])
+		if !ok {
+			t.Fatalf("第 %d 帧墙格不在场", i)
+		}
+		if !isVideoRed(r, g, b) {
+			t.Fatalf("第 %d 帧墙格是 %d,%d,%d，不是视频画面：退出时闪成了封面/黑底", i, r, g, b)
+		}
+		tt.Advance(16 * time.Millisecond)
 	}
 }
 
-// 退出过渡必须留住 Match 身份：closeMedia 清掉焦点之后，舞台还要认得出自己。
+// 窗口改尺寸不参与动画：墙格必须在第一帧就是新尺寸，不能一帧帧弹过去。
 //
-// 上一条只断言路由器的模式，那还可能是"Match 但没有可匹配的元素"——退化成
-// 交叉淡化。这条验的是机制本身：退出的那一刻，舞台的 Match 身份必须仍然是
-// 这一间，而且这一间确实还在观测盒里（墙上有格子能接住这次飞行）。
-//
-// 先红后绿过：把 exitPlayer 里的 exitMatchKey 去掉，stageMatchKey() 会落到
-// 已经清空的焦点上，返回空串。
-func TestPlayerExitKeepsMatchIdentity(t *testing.T) {
+// 文档（docs/ui/transitions.md「When nothing moves」）写明 resize 不animate。
+// 之前每个格子身上常挂着 Match + Fly，MyGo 于是把尺寸变化也做了弹簧——
+// 最大化/还原时整墙一起缩放十几帧，视频每帧重新适配，看起来就是闪。
+func TestWindowResizeDoesNotAnimateTheWall(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
+	useProvider(t, plainProvider{})
+	oldEngine := engineOf
+	engineOf = func(*ui.VideoPlayer) videoTrack { return &trackSpy{} }
+	t.Cleanup(func() { engineOf = oldEngine })
 	for _, r := range rooms {
-		fakeSession(t, app, r).player.Pause()
+		steadySession(t, app, r)
 	}
 	tt.Frame()
 
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
+	tt.SetSize(1920, 1080)
+	tt.Frame()
+	tt.Advance(16 * time.Millisecond)
+	tt.Frame()
+	first, ok := tt.Find(label)
+	if !ok {
+		t.Fatal("改尺寸之后找不到格子")
+	}
+	if r, g, b, ok := tilePixel(tt, rooms[0]); !ok || !isVideoRed(r, g, b) {
+		t.Fatalf("改尺寸第一帧墙格是 %d,%d,%d，不是视频画面", r, g, b)
+	}
+	for i := 0; i < 8; i++ {
+		tt.Advance(16 * time.Millisecond)
+		tt.Frame()
+		box, _ := tt.Find(label)
+		if box != first {
+			t.Fatalf("第 %d 帧格子还在动：%v → %v（resize 不该有尺寸动画）", i, first, box)
+		}
+	}
+	tt.SetSize(1440, 900)
+	tt.Frame()
+	back, _ := tt.Find(label)
+	for i := 0; i < 8; i++ {
+		tt.Advance(16 * time.Millisecond)
+		tt.Frame()
+		box, _ := tt.Find(label)
+		if box != back {
+			t.Fatalf("还原尺寸后第 %d 帧格子还在动：%v → %v", i, back, box)
+		}
+	}
+}
+
+// 播放页同样：改尺寸不能让舞台做尺寸动画，画面也不能空。
+func TestWindowResizeDoesNotAnimateTheStage(t *testing.T) {
+	rooms := watchTestRooms(1)
+	app, tt := newWatchMock(t, rooms)
+	useProvider(t, plainProvider{})
+	oldEngine := engineOf
+	engineOf = func(*ui.VideoPlayer) videoTrack { return &trackSpy{} }
+	t.Cleanup(func() { engineOf = oldEngine })
+	steadySession(t, app, rooms[0])
+	tt.Frame()
+	if err := tt.Click(watchTileLabel(rooms[0])); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
@@ -141,14 +181,21 @@ func TestPlayerExitKeepsMatchIdentity(t *testing.T) {
 	app.tickRouteTransition(time.Now().Add(routeTransitionDur + time.Second))
 	tt.Frame()
 
-	key := watchKey(rooms[0])
-	app.exitPlayer()
-
-	if got := app.stageMatchKey(); got != key {
-		t.Fatalf("退出之后舞台的 Match 身份是 %q，期望 %q：源元素没身份，飞不起来", got, key)
-	}
-	if !app.watchHas(key) {
-		t.Fatal("这一间不在观测盒里：墙上没有格子接住这次收缩")
+	tt.SetSize(1920, 1080)
+	tt.Frame()
+	// 判据是画面红区的矩形：正常重排时它第一帧就是新尺寸；挂着 Match +
+	// Fly 时舞台会从旧矩形一帧帧飞过去，红区每帧都在长——那就是"最大化
+	// 时闪"。整屏扫，避开舞台之外的背景色。
+	want := redBounds(tt.Image())
+	tt.Advance(16 * time.Millisecond)
+	tt.Frame()
+	for i := 0; i < 8; i++ {
+		got := redBounds(tt.Image())
+		if got != want {
+			t.Fatalf("第 %d 帧画面红区是 %v，期望 %v：舞台在飞，窗口改尺寸不该有尺寸动画", i, got, want)
+		}
+		tt.Advance(16 * time.Millisecond)
+		tt.Frame()
 	}
 }
 
@@ -223,3 +270,96 @@ func TestTabSwitchStaysInstant(t *testing.T) {
 		t.Fatalf("顶栏 tab 之间播了页面过渡：%v", app.Router.Transition)
 	}
 }
+
+// steadyEngine 是「一直出同一帧画面」的引擎：静态红帧，不退、不暂停。
+//
+// 过渡和 resize 的判据要一个像素稳定的画面；GIF 播放器会自己换帧，用它
+// 分不清「动画在动」还是「内容在动」。
+type steadyEngine struct{ pix []byte }
+
+func (e *steadyEngine) SetWake(func()) {}
+func (e *steadyEngine) Frame(time.Time) (mymedia.Picture, bool, bool) {
+	if e.pix == nil {
+		e.pix = make([]byte, 4*160*90)
+		for i := 0; i < len(e.pix); i += 4 {
+			e.pix[i], e.pix[i+3] = 255, 255
+		}
+	}
+	return mymedia.Picture{W: 160, H: 90, RGBA: func(dst []byte) []byte { return append(dst[:0], e.pix...) }}, true, true
+}
+func (e *steadyEngine) Interval() time.Duration       { return 16 * time.Millisecond }
+func (e *steadyEngine) State() (mymedia.State, error) { return mymedia.Ready, nil }
+func (e *steadyEngine) Size() (int, int)              { return 160, 90 }
+func (e *steadyEngine) Duration() time.Duration       { return 0 }
+func (e *steadyEngine) Position() time.Duration       { return time.Second }
+func (e *steadyEngine) Play()                         {}
+func (e *steadyEngine) Pause()                        {}
+func (e *steadyEngine) Seek(time.Duration)            {}
+func (e *steadyEngine) SetLoop(bool)                  {}
+func (e *steadyEngine) SetRate(float64)               {}
+func (e *steadyEngine) SetVolume(float64)             {}
+func (e *steadyEngine) SetMuted(bool)                 {}
+func (e *steadyEngine) Close() error                  { return nil }
+
+// steadySession 把一格换成静态视频，并给它一份还没过期的地址。
+//
+// 地址和刷新时刻必须给：接管进媒体层之后，一条 Expires 为零的变体会被
+// 看门狗当成「地址到期」，立刻重取流——测试会从 20ms 变成一次真实请求。
+func steadySession(t *testing.T, app *App, room Streamer) *wallSession {
+	t.Helper()
+	s := fakeSession(t, app, room)
+	p := ui.NewEngineVideoPlayer(&steadyEngine{})
+	t.Cleanup(p.Close)
+	s.player, s.track = p, engineOf(p)
+	s.up = live.Variant{URL: "https://example.invalid/live.m3u8", Expires: time.Now().Add(time.Hour), Width: 160, Height: 90}
+	s.stream = live.Stream{RoomID: room.RoomID, Platform: live.Bilibili, Live: true}
+	s.refreshAt = time.Now().Add(time.Hour)
+	s.firstFrame = true
+	return s
+}
+
+// tilePixel 读墙格中心那一像素。
+func tilePixel(tt *ui.Tester, room Streamer) (r, g, b uint8, ok bool) {
+	box, ok := tt.Find(watchTileLabel(room))
+	if !ok {
+		return 0, 0, 0, false
+	}
+	c := tt.Image().RGBAAt(int(box.X+box.W/2), int(box.Y+box.H/2))
+	return c.R, c.G, c.B, true
+}
+
+// redBounds 扫出画面那一帧红的外接矩形。舞台飞过去时它每帧都在变。
+func redBounds(img *image.RGBA) image.Rectangle {
+	return img.Bounds().Intersect(redRect(img))
+}
+
+func redRect(img *image.RGBA) image.Rectangle {
+	b := img.Bounds()
+	x0, y0, x1, y1 := b.Max.X, b.Max.Y, -1, -1
+	for y := b.Min.Y; y < b.Max.Y; y += 2 {
+		for x := b.Min.X; x < b.Max.X; x += 2 {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			if isVideoRed(uint8(r>>8), uint8(g>>8), uint8(bl>>8)) {
+				if x < x0 {
+					x0 = x
+				}
+				if y < y0 {
+					y0 = y
+				}
+				if x > x1 {
+					x1 = x
+				}
+				if y > y1 {
+					y1 = y
+				}
+			}
+		}
+	}
+	if x1 < 0 {
+		return image.Rect(0, 0, 0, 0)
+	}
+	return image.Rect(x0, y0, x1+1, y1+1)
+}
+
+// isVideoRed 认 steadyEngine 那一帧红：封面（浅灰）和视频井（近黑）都不满足。
+func isVideoRed(r, g, b uint8) bool { return r > 200 && g < 40 && b < 40 }

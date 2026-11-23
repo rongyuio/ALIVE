@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/egoist/mygo/plugins/internal/contentlib"
+	"log/slog"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,6 +24,13 @@ type Frame struct {
 	Luma, Chroma []byte
 	Stride       int
 	W, H         int
+	// Shared 非零时这一帧在 GPU 上：mpv 直接渲进了这块共享纹理，
+	// 渲染器用同一个 device 打开它就能零拷贝采样。Luma/Stride 此时为 nil。
+	//
+	// ALIVE 本地补丁，见 d3d11_windows.go。
+	Shared uintptr
+	// SharedID 标识这块纹理，跨帧不变时渲染器可以复用打开的资源。
+	SharedID uint64
 }
 
 type backend interface {
@@ -188,6 +196,8 @@ type native struct {
 	slot int
 	// last 是上一次真正画出来的帧。mpv 没有新画面时复用它。
 	last *Frame
+	// gpu 非空时走 D3D11 零拷贝路径（ALIVE 本地补丁，见 d3d11_windows.go）。
+	gpu *gpuTarget
 }
 
 func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
@@ -266,12 +276,27 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 	// 订阅 mpv 自己的日志。不订阅就一条都收不到——mpv 默认不向客户端推。
 	// warn 起步：info 级别的 hls / 解复用消息正常播放时也在刷，会把日志淹掉。
 	_ = e.requestLog(n.handle, "warn")
-	api := []byte("sw\x00")
-	params := []renderParam{{kind: 1, data: unsafe.Pointer(&api[0])}, {}}
-	if err = e.err(e.renderCreate(&n.renderer, n.handle, &params[0])); err != nil {
-		return fail(fmt.Errorf("video: libmpv software render API unavailable: %w", err))
+	// 优先 D3D11 零拷贝：mpv 直接渲进共享纹理，帧不经内存。
+	// 没有渲染器 device（headless / Tester / GPU 不可用）时退回 SW。
+	if t := newGPUTarget(opts.GPU); t != nil {
+		if err := t.createRenderer(e, n.handle); err == nil {
+			n.gpu = t
+			slog.Info("video: 零拷贝路径", "device", fmt.Sprintf("%#x", t.device))
+		} else {
+			t.release()
+		}
 	}
-	runtime.KeepAlive(api)
+	if n.gpu != nil {
+		n.renderer = n.gpu.renderer
+	} else {
+		// mpv 要求 API 类型串以 NUL 结尾。
+		api := append([]byte("sw"), 0)
+		params := []renderParam{{kind: 1, data: unsafe.Pointer(&api[0])}, {}}
+		if err = e.err(e.renderCreate(&n.renderer, n.handle, &params[0])); err != nil {
+			return fail(fmt.Errorf("video: libmpv software render API unavailable: %w", err))
+		}
+		runtime.KeepAlive(api)
+	}
 	for i, o := range []struct {
 		name   string
 		format int32
@@ -385,6 +410,23 @@ func (n *native) render(w, h int, force bool) (*Frame, bool, error) {
 		return nil, false, nil
 	}
 
+	// 零拷贝：mpv 直接渲进共享纹理，交出去的是一块显存，不是内存。
+	if n.gpu != nil {
+		handle, id, err := n.gpu.render(n.e, w, h)
+		if err != nil {
+			return nil, false, err
+		}
+		if handle == 0 {
+			// 纹理正被渲染器读着，这一拍让过去，复用上一帧。
+			if n.last != nil {
+				return n.last, false, nil
+			}
+			return nil, false, nil
+		}
+		n.last = &Frame{W: w, H: h, Shared: handle, SharedID: id}
+		return n.last, true, nil
+	}
+
 	// SW 渲染只接受 RGB 格式（"bgr0" 之类），不接受 nv12：render.h 里写明了
 	// 「internally marked as RGB, has exactly 1 plane」，NV12 两个平面，传过去
 	// 直接 MPV_ERROR_NOT_SUPPORTED。
@@ -429,6 +471,10 @@ func (n *native) render(w, h int, force bool) (*Frame, bool, error) {
 }
 
 func (n *native) close() {
+	if n.gpu != nil {
+		n.gpu.release()
+		n.gpu = nil
+	}
 	if n.handle != 0 {
 		n.e.wake(n.handle, 0, 0)
 	}

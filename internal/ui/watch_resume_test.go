@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
+
 	"alive/internal/live"
 )
 
@@ -182,14 +184,17 @@ func TestWatchSaveDataToggle(t *testing.T) {
 	}
 }
 
-// 离线格要自己回来：蹲开播是墙的核心场景之一。
+// 离线格要自己回来：蹲开播是墙的核心场景之一，但探测必须无感。
 //
-// 以前 watchTick 对 offline 直接 continue，于是"把关注的房间摆上墙等它开播"
-// 根本不成立，只能手点。
-func TestOfflineTileRetriesByItself(t *testing.T) {
+// 退避到期只静默问一次平台，不动格子上的任何状态；平台说开播了才起播。
+func TestOfflineTileProbesSilentlyAndOpensWhenLive(t *testing.T) {
 	rooms := watchTestRooms(1)
-	app, tt := newWatchMock(t, rooms)
+	app, _ := newWatchMock(t, rooms)
 	key := watchKey(rooms[0])
+	prov := &probeProvider{live: true}
+	useProvider(t, prov)
+	runOnMainNow(t)
+	app.Win = &mygo.Window{}
 
 	s := &wallSession{
 		key: key, room: rooms[0], offline: true, err: "主播暂时没有开播",
@@ -197,18 +202,20 @@ func TestOfflineTileRetriesByItself(t *testing.T) {
 	}
 	app.watch.init()
 	app.watch.sessions[key] = s
-	tt.Frame()
 
-	// 退避还没到：不动。
-	app.watchTick(time.Now())
-	if !s.offline {
-		t.Fatal("退避还没到就去问了平台")
+	now := time.Now()
+	app.watchTick(now)
+	if n := prov.roomInfoCalls(); n != 0 {
+		t.Fatalf("退避还没到就探测了平台：%d 次", n)
 	}
 
-	// 退避到期：这一格必须被重新打开。
-	app.watchTick(time.Now().Add(time.Hour))
+	app.watchTick(now.Add(time.Hour))
+	waitFor(t, func() bool { return !s.probing })
+	if n := prov.roomInfoCalls(); n != 1 {
+		t.Fatalf("退避到期只该静默探测一次，实际 %d 次", n)
+	}
 	if s.offline {
-		t.Fatal("退避到期之后离线格没有被重试")
+		t.Fatal("平台说开播了，格子还停在未开播")
 	}
 }
 
