@@ -51,6 +51,55 @@ func (a *App) pushRoute(target string) {
 	a.Router.Push(target)
 }
 
+// trackRoute 记下路由变化，给退出过渡判断"从哪一页进来的"。
+//
+// 必须在这里统一记，不能在各条进入播放页的路径上各记一次：进入播放页有
+// 四条路（首页卡片、关注行、搜索、墙格），散着记一定漏，而漏掉的那条会
+// 退化成硬切。每帧调用一次，幂等。
+func (a *App) trackRoute() {
+	if a.Router == nil {
+		return
+	}
+	path := a.Router.Path()
+	if path == a.lastRoute {
+		return
+	}
+	if path == routePlayer {
+		a.playerFrom = a.lastRoute
+		// 新的一次进入：上一次退出留下的记号不能带进来，否则这一趟会
+		// 从一个早就关掉的会话那里起飞。
+		a.exitMatchKey = ""
+	}
+	a.lastRoute = path
+}
+
+// exitPlayer 结束这一路焦点，退回上一页。三个退出入口共用。
+//
+// 岛上的 X、Esc、全屏时左上角那颗按钮要的是同一件事，所以只有一个入口。
+//
+// 顺序是这个函数的全部内容：**先决定这一趟要不要连续，再结束焦点**。
+// closeMedia 会把焦点清空，而连续判据依赖焦点——先 close 再判，就永远
+// 飞不起来。这不是"忘了调 pushRoute"，是结构上飞不起来，所以修在顺序上。
+//
+// 只有退回去的那一页确实还画着这一间（从墙格放大进来的），才连续。从列表
+// 进的播放页退回首页时首页没有对应的画面可接，硬切才是对的——给内容层加
+// 交叉淡化违反 0010。
+func (a *App) exitPlayer() {
+	if a.Router == nil {
+		return
+	}
+	key := a.focusKey()
+	if key != "" && a.playerFrom == routeFollows && a.watchHas(key) {
+		// 焦点会在下面被清掉，舞台要凭这个记号继续带 Match 身份，
+		// 否则源元素在退出那一帧消失，Match 没有起点可飞。
+		a.exitMatchKey = key
+		a.Router.Transition = ui.TransitionMatch
+		a.routeTransitionUntil = time.Now().Add(routeTransitionDur + 120*time.Millisecond)
+	}
+	a.closeMedia()
+	a.Router.Back()
+}
+
 // continuousRoute 报告这次跳转该不该连续。
 //
 // 判据只有一条：目标或来源是播放页，而且这一间房在两边都有画面可接。
@@ -79,7 +128,19 @@ func (a *App) tickRouteTransition(now time.Time) {
 		return
 	}
 	a.routeTransitionUntil = time.Time{}
+	a.exitMatchKey = ""
 	if a.Router != nil {
 		a.Router.Transition = ui.TransitionNone
 	}
+}
+
+// stageMatchKey 是播放舞台这一刻该带的 Match 身份。
+//
+// 两个来源，顺序固定：退出途中的记号优先（那时焦点已经被 closeMedia 清掉，
+// 但舞台还要飞），否则就是焦点会话。返回空串表示这一帧的舞台不参与过渡。
+func (a *App) stageMatchKey() string {
+	if a.exitMatchKey != "" {
+		return a.exitMatchKey
+	}
+	return a.focusKey()
 }

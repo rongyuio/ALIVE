@@ -96,8 +96,9 @@ func (a *App) PlayerPage(c *ui.Context) {
 				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
 				// 这一块是焦点会话在全尺寸表面上的那一份。从墙上放大进来时
 				// 它拿同一个身份，于是从格子那块矩形长过来（surface_motion.go）。
-				// 卡片进播放页也走这条路：封面长成舞台。
-				if key := a.focusKey(); key != "" {
+				// 退出时焦点已经被清掉，身份由 exitMatchKey 接住，反向收缩
+				// 才找得到起点。
+				if key := a.stageMatchKey(); key != "" {
 					stage.Transition(ui.ElementTransition{
 						Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
 					})
@@ -545,10 +546,12 @@ func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 	if btn.Clicked() {
 		on()
 	}
+	down := btn.Pressed()
 	btn.Children(func() {
 		ui.Icon(c, iconSync).FontSize(13).TextColor(ui.Hex("#0b0c08"))
 		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(600).
 			TextColor(ui.Hex("#0b0c08"))
+		pressDim(c, down, theme.RadiusFull)
 	})
 }
 
@@ -603,11 +606,18 @@ func (a *App) current() Streamer {
 	return Streamer{Name: "未选择直播间", Title: "", Category: ""}
 }
 
-// playerTopbar 是画面顶部那条：只有一颗返回钮。
+// playerTopbar 是画面顶部那条返回钮，只在两种全屏下画。
+//
+// 窗口模式下这颗 X 归灵动岛：岛在播放页展开时最右那颗就是「退出直播间」，
+// 和墙上 active 那颗同一个位置、同一个动作来源。全屏时整个岛不画
+// （见 Shell），这里必须留着，否则退出只剩 Esc。
 //
 // 直播间信息在顶栏那枚灵动岛里（见 island.go），这里不再重复一份——
 // 同一个直播间在画面上出现两条一模一样的头像加标题，属于历史遗留。
 func (a *App) playerTopbar(c *ui.Context) {
+	if !a.playerFullscreen() {
+		return
+	}
 	// 这条 Row 只是布局容器，自己不该吃指针：窗口全屏时它整条压在画面
 	// 顶部的拖窗条上，不穿透的话这条 44 高的带子会被它连同下面那根弹性
 	// 空 Box 一起挡死。按钮和信息岛是子元素，照常命中。
@@ -626,8 +636,7 @@ func (a *App) playerTopbar(c *ui.Context) {
 		if back.Clicked() {
 			// 叉是明确退出：关引擎、断弹幕，不留后台声音。别的离开方式
 			// （顶栏 tab、灵动岛、搜索跳转）只进后台收听。
-			a.closeMedia()
-			a.Router.Back()
+			a.exitPlayer()
 		}
 		back.Children(func() {
 			// 关闭用 X，不是返回箭头
@@ -803,6 +812,18 @@ func metricsFor(c *ui.Context) controlMetrics {
 // 关键在于拖动不能靠 Pressed 判断——它要求指针仍在热区矩形内，一拖出去就断。
 // Dragged 是 press 级的状态，指针离开元素后仍然为 true，用它判断「还按着」。
 func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
+	a.volumeControlFor(c, m, "")
+}
+
+// volumeControlFor 是带名字的音量组：墙上 12 格各有一个，必须能分辨。
+//
+// 无障碍名同屏不能重名（AGENTS.md）。播放页只有一组，名字就用「静音」「音量」；
+// 墙上要带上房间名，读屏和 mygo-automation 才点得准是哪一格。
+func (a *App) volumeControlFor(c *ui.Context, m controlMetrics, name string) {
+	suffix := ""
+	if name != "" {
+		suffix = " " + name
+	}
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(0, 0, 0, 6).Children(func() {
 		muteIcon := iconVolumeLow
 		switch {
@@ -811,14 +832,14 @@ func (a *App) volumeControl(c *ui.Context, m controlMetrics) {
 		case a.Volume > 0.5:
 			muteIcon = iconVolumeHigh
 		}
-		muteLabel := "静音"
+		muteLabel := "静音" + suffix
 		if a.Volume <= 0 {
-			muteLabel = "取消静音"
+			muteLabel = "取消静音" + suffix
 		}
 		a.iconBtnSized(c, muteIcon, m.iconSize, m.iconHit, false, muteLabel, a.toggleMute)
 
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
-			Cursor(ui.CursorPointer).Label("音量")
+			Cursor(ui.CursorPointer).Label("音量" + suffix)
 		// 悬停在音量条上滚轮调音量。挂在这条热区上而不是控制条或画面：
 		// MyGo 的滚轮按指针位置找接收者，只有指针真在这 18px 高的一条上
 		// 才收得到，所以「悬停才生效」是结构保证的。
@@ -1045,8 +1066,10 @@ func (a *App) iconBtnSized(c *ui.Context, ico *ui.SVG, size, hit float32, active
 		on()
 	}
 	col := playerIconColor(btn, active)
+	down := btn.Pressed()
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(size).TextColor(col)
+		pressDim(c, down, hit/2)
 	})
 }
 

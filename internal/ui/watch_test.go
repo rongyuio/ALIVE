@@ -9,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"alive/internal/live"
 	"alive/internal/theme"
 	"alive/internal/watch"
 )
@@ -46,6 +47,34 @@ func newWatchMock(t *testing.T, rooms []Streamer) (*App, *ui.Tester) {
 	app := NewMockApp()
 	app.WatchRooms = rooms
 	return app, openWatchWall(t, app)
+}
+
+// openTile 点一格：在墙上点任何一间 = 进去看这一间，和首页卡片同一个语义。
+func openTile(t *testing.T, tt *ui.Tester, room Streamer) {
+	t.Helper()
+	if err := tt.Click(watchTileLabel(room)); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+}
+
+// listenOnWall 在墙上点某一格的「在墙上听」：只换声音焦点，不进播放页。
+//
+// 这是墙上唯一一个这么做的控件。它长在 hover 底栏里，所以要先 hover 到那一格。
+func listenOnWall(t *testing.T, tt *ui.Tester, room Streamer) {
+	t.Helper()
+	r, ok := tt.Find(watchTileLabel(room))
+	if !ok {
+		t.Fatalf("找不到格子 %q", watchTileLabel(room))
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	if err := tt.Click("在墙上听 " + room.Name); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 }
 
 func TestWatchEmptyState(t *testing.T) {
@@ -108,15 +137,35 @@ func TestWatchNineRoomsLayout(t *testing.T) {
 	}
 }
 
-func TestWatchClickActivatesWithoutLeaving(t *testing.T) {
+// 单击一格 = 进播放页。和首页卡片、关注行、搜索结果同一个语义。
+//
+// 以前这里是「切声音焦点」：画面不动，只多一颗绿点。用户点完看不出发生了
+// 什么，而长得一样的卡片在别处做的是另一件事。
+func TestWatchClickOpensPlayer(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
-	if err := tt.Click(watchTileLabel(rooms[0])); err != nil {
-		t.Fatal(err)
+	openTile(t, tt, rooms[0])
+
+	if app.Router.Path() != routePlayer {
+		t.Fatalf("单击没有进播放页，route=%q", app.Router.Path())
 	}
-	tt.Frame()
+	if got := watchKey(app.Player); got != watchKey(rooms[0]) {
+		t.Fatalf("打开的是 %q，期望 %q", got, watchKey(rooms[0]))
+	}
+	// 进去就是这一间在出声。
+	if app.WatchActive != watchKey(rooms[0]) || !app.Playing {
+		t.Fatalf("active=%q playing=%v", app.WatchActive, app.Playing)
+	}
+}
+
+// 墙上唯一一个"只换声音、不进播放页"的入口是底栏那颗「在墙上听」。
+func TestWatchListenKeySwitchesSoundOnWall(t *testing.T) {
+	rooms := watchTestRooms(2)
+	app, tt := newWatchMock(t, rooms)
+	listenOnWall(t, tt, rooms[0])
+
 	if app.Router.Path() != routeFollows {
-		t.Fatalf("单击不该离开观测盒，route=%q", app.Router.Path())
+		t.Fatalf("在墙上听不该离开观测盒，route=%q", app.Router.Path())
 	}
 	if app.WatchActive != watchKey(rooms[0]) {
 		t.Fatalf("active=%q，期望 %q", app.WatchActive, watchKey(rooms[0]))
@@ -124,27 +173,24 @@ func TestWatchClickActivatesWithoutLeaving(t *testing.T) {
 	if app.Player.Name != rooms[0].Name || !app.Playing {
 		t.Fatalf("播放项 %+v playing=%v", app.Player, app.Playing)
 	}
-	// 激活格的音量必须是真实音量，而不是非 active 格的静音 0%。
+	// 激活格的音量必须是真实音量，而不是非 active 格记住的 0%。
 	if !tt.HasText("60%") {
 		t.Fatalf("激活格没有显示真实音量：texts=%q", tt.Texts())
 	}
-	if _, ok := tt.Find("静音"); !ok {
+	if _, ok := tt.Find("静音 " + rooms[0].Name); !ok {
 		t.Fatal("激活格没有静音控件")
 	}
-	if err := tt.Click("静音"); err != nil {
+	if err := tt.Click("静音 " + rooms[0].Name); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 	if app.Volume != 0 {
 		t.Fatalf("点了静音，volume=%v", app.Volume)
 	}
-	if _, ok := tt.Find("取消静音"); !ok {
+	if _, ok := tt.Find("取消静音 " + rooms[0].Name); !ok {
 		t.Fatal("静音后控件没有变成取消静音")
 	}
-	if !tt.HasText("0%") {
-		t.Fatalf("静音后没有显示 0%%：texts=%q", tt.Texts())
-	}
-	if err := tt.Click("取消静音"); err != nil {
+	if err := tt.Click("取消静音 " + rooms[0].Name); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
@@ -152,7 +198,7 @@ func TestWatchClickActivatesWithoutLeaving(t *testing.T) {
 		t.Fatalf("取消静音后没有恢复 60%%：texts=%q", tt.Texts())
 	}
 	for _, label := range []string{
-		"暂停", "重新加载", "音量",
+		"暂停", "重新加载", "音量 " + rooms[0].Name,
 		"放大观测 " + rooms[0].Name, "移出观测 " + rooms[0].Name,
 	} {
 		if _, ok := tt.Find(label); !ok {
@@ -173,6 +219,44 @@ func TestWatchClickActivatesWithoutLeaving(t *testing.T) {
 	}
 }
 
+// 非 active 格的音量滑条只改这一格记下的数，不许把声音焦点切走。
+//
+// 以前它先 watchActivate 再改值：用户想调一个预览格的音量，结果整个声音
+// 换到那一格去了。控件做了它看起来不该做的事。
+func TestWatchTileVolumeDoesNotStealFocus(t *testing.T) {
+	rooms := watchTestRooms(2)
+	app, tt := newWatchMock(t, rooms)
+	listenOnWall(t, tt, rooms[0])
+	if app.WatchActive != watchKey(rooms[0]) {
+		t.Fatalf("前置：active=%q", app.WatchActive)
+	}
+	app.setVolume(0.6)
+
+	// 悬停另一格，把它的滑条点到 20% 的位置。
+	r, ok := tt.Find(watchTileLabel(rooms[1]))
+	if !ok {
+		t.Fatal("找不到第二格")
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	vol, ok := tt.Find("音量 " + rooms[1].Name)
+	if !ok {
+		t.Fatalf("非 active 格没有音量条：texts=%q", tt.Texts())
+	}
+	tt.ClickAt(vol.X+vol.W*0.2, vol.Y+vol.H/2)
+	tt.Frame()
+
+	if app.WatchActive != watchKey(rooms[0]) {
+		t.Fatalf("调预览格音量把焦点切走了：active=%q", app.WatchActive)
+	}
+	if got := app.watchVolume(watchKey(rooms[1])); got < 0.15 || got > 0.25 {
+		t.Fatalf("这一格记住的音量没有变：%v", got)
+	}
+	if app.Volume != 0.6 {
+		t.Fatalf("出声那一路的音量被改了：%v", app.Volume)
+	}
+}
+
 func TestWatchHoverInactiveShowsControls(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
@@ -183,7 +267,7 @@ func TestWatchHoverInactiveShowsControls(t *testing.T) {
 	tt.Move(r.X+r.W/2, r.Y+r.H/2)
 	tt.Frame()
 	for _, label := range []string{
-		"播放", "重新加载", "取消静音", "音量",
+		"播放", "重新加载", "在墙上听 " + rooms[1].Name, "音量 " + rooms[1].Name,
 		"放大观测 " + rooms[1].Name, "移出观测 " + rooms[1].Name,
 	} {
 		if _, ok := tt.Find(label); !ok {
@@ -209,20 +293,63 @@ func TestWatchHoverInactiveShowsControls(t *testing.T) {
 	}
 }
 
-func TestWatchDoubleClickOpensPlayer(t *testing.T) {
-	rooms := watchTestRooms(2)
-	app, tt := newWatchMock(t, rooms)
-	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
+// 点一格没开播的房间：播放页打开的是这一间，不是岛上原来那一间。
+//
+// 以前这里靠双击的第二下兜底：第一次点击只是重试，第二次才是"打开这一间"。
+// 现在单击就是打开，一条路。
+func TestWatchOpenDeadTileTargetsThatRoom(t *testing.T) {
+	setup := func(t *testing.T) (*App, *ui.Tester, Streamer, string) {
+		rooms := watchTestRooms(2)
+		app, tt := newWatchMock(t, rooms)
+		dead := rooms[1]
+		key := watchKey(dead)
+		app.watch.init()
+		app.watch.sessions[key] = &wallSession{
+			key: key, room: dead, offline: true, err: "主播暂时没有开播",
+		}
+		return app, tt, dead, key
 	}
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if app.Router.Path() != routePlayer {
-		t.Fatalf("双击没有进播放页，route=%q", app.Router.Path())
-	}
+
+	t.Run("wall has another active room", func(t *testing.T) {
+		app, tt, dead, key := setup(t)
+		app.WatchActive = watchKey(app.WatchRooms[0])
+		app.Player = app.WatchRooms[0]
+		tt.Frame()
+
+		openTile(t, tt, dead)
+
+		if app.Router.Path() != routePlayer {
+			t.Fatalf("点死格没进播放页，route=%q", app.Router.Path())
+		}
+		if got := watchKey(app.Player); got != key {
+			t.Fatalf("播放页打开的是 %q，期望点的那一间 %q", got, key)
+		}
+	})
+
+	t.Run("nothing played before", func(t *testing.T) {
+		app, tt, dead, key := setup(t)
+		app.WatchActive, app.Player = "", Streamer{}
+		tt.Frame()
+
+		openTile(t, tt, dead)
+
+		if app.Router.Path() != routePlayer {
+			t.Fatalf("点死格没进播放页，route=%q", app.Router.Path())
+		}
+		if got := watchKey(app.Player); got != key {
+			t.Fatalf("播放页没有目标房间：a.Player=%+v", app.Player)
+		}
+
+		// 取流结果回来确认未开播：画面上要有提示和刷新入口，不是一片黑。
+		app.media.loading = false
+		app.media.stream = live.Stream{
+			Platform: live.Platform(dead.Platform), RoomID: dead.RoomID, Live: false,
+		}
+		tt.Frame()
+		if !tt.HasText("主播暂时没有开播") {
+			t.Fatalf("播放页没画未开播提示：texts=%q", tt.Texts())
+		}
+	})
 }
 
 func TestWatchAddCapAndDedupe(t *testing.T) {
@@ -444,23 +571,19 @@ func TestWatchVolumeIsPerTile(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
 
+	// 换焦点走「在墙上听」，不再靠点格子：点格子是进播放页。
 	activate := func(i int) {
 		t.Helper()
-		// 两次点同一格之间隔开，避免被判成双击跳进播放页。
-		tt.Advance(time.Second)
-		if err := tt.Click(watchTileLabel(rooms[i])); err != nil {
-			t.Fatal(err)
-		}
-		tt.Frame()
+		listenOnWall(t, tt, rooms[i])
 	}
 
 	activate(0)
 	if !almostEqual(float64(app.Volume), 0.6) {
 		t.Fatalf("初始音量 %v", app.Volume)
 	}
-	r, ok := tt.Find("音量")
+	r, ok := tt.Find("音量 " + rooms[0].Name)
 	if !ok {
-		t.Fatal("激活格没有音量条")
+		t.Fatalf("激活格没有音量条：texts=%q", tt.Texts())
 	}
 	tt.ClickAt(r.X+r.W*0.3, r.Y+r.H/2)
 	tt.Frame()
@@ -473,9 +596,9 @@ func TestWatchVolumeIsPerTile(t *testing.T) {
 	if !almostEqual(float64(app.Volume), 0.6) || !slices.Contains(tt.Texts(), "60%") {
 		t.Fatalf("切到 B 后 volume=%v texts=%q，期望 B 自己的 60%%", app.Volume, tt.Texts())
 	}
-	r, ok = tt.Find("音量")
+	r, ok = tt.Find("音量 " + rooms[1].Name)
 	if !ok {
-		t.Fatal("B 激活后没有音量条")
+		t.Fatalf("B 激活后没有音量条：texts=%q", tt.Texts())
 	}
 	tt.ClickAt(r.X+r.W*0.2, r.Y+r.H/2)
 	tt.Frame()
@@ -715,7 +838,7 @@ func TestWatchControlsAreCompact(t *testing.T) {
 	tt.Move(r.X+r.W/2, r.Y+r.H/2)
 	tt.Frame()
 	for _, label := range []string{
-		"播放", "重新加载", "取消静音",
+		"播放", "重新加载", "在墙上听 " + rooms[1].Name,
 		"放大观测 " + rooms[1].Name, "移出观测 " + rooms[1].Name,
 	} {
 		b, ok := tt.Find(label)
@@ -726,9 +849,9 @@ func TestWatchControlsAreCompact(t *testing.T) {
 			t.Errorf("%q 热区 %.0f×%.0f，超过 24", label, b.W, b.H)
 		}
 	}
-	v, ok := tt.Find("音量")
+	v, ok := tt.Find("音量 " + rooms[1].Name)
 	if !ok {
-		t.Fatal("找不到音量条")
+		t.Fatalf("找不到音量条：texts=%q", tt.Texts())
 	}
 	if v.W > 64.5 {
 		t.Errorf("音量条宽 %.0f，超过 64", v.W)

@@ -402,23 +402,21 @@ func absInt(v int) int {
 // 两边都不移动，也分不开。
 func TestIslandRings(t *testing.T) {
 	cases := []struct {
-		name                 string
-		player, listen, wall bool
-		m                    float32
-		wantRing, wantBr     float32
+		name             string
+		expanded, listen bool
+		m                float32
+		wantRing, wantBr float32
 	}{
-		{"首页只有流光", false, false, false, 1, 1, 0},
-		{"首页 m 取任何值都不影响", false, false, false, 0, 1, 0},
-		{"播放页展开：纯流光", true, false, false, 0, 1, 0},
-		{"播放页收起途中：交叉淡化", true, false, false, 0.4, 0.6, 0.4},
-		{"播放页收定：纯呼吸环", true, false, false, 1, 0, 1},
-		{"后台收听：纯呼吸环", false, true, false, 1, 0, 1},
-		{"后台收听不看 m", false, true, false, 0, 0, 1},
-		{"观测墙 active：收成圆，环仍是流光", false, true, true, 1, 1, 0},
-		{"观测墙 active 不看 m", false, true, true, 0, 1, 0},
+		{"首页只有流光", false, false, 1, 1, 0},
+		{"首页 m 取任何值都不影响", false, false, 0, 1, 0},
+		{"展开态：纯流光", true, false, 0, 1, 0},
+		{"收起途中：交叉淡化", true, false, 0.4, 0.6, 0.4},
+		{"收定：纯呼吸环", true, false, 1, 0, 1},
+		{"后台收听：纯呼吸环", false, true, 1, 0, 1},
+		{"后台收听不看 m", false, true, 0, 0, 1},
 	}
 	for _, tc := range cases {
-		ring, breath := islandRings(tc.player, tc.listen, tc.wall, tc.m)
+		ring, breath := islandRings(tc.expanded, tc.listen, tc.m)
 		if ring != tc.wantRing || breath != tc.wantBr {
 			t.Errorf("%s：ring=%v breath=%v，期望 %v / %v",
 				tc.name, ring, breath, tc.wantRing, tc.wantBr)
@@ -772,6 +770,52 @@ func TestLiveDotIgnoresThemeMode(t *testing.T) {
 		if n := count(tt); n == 0 {
 			t.Errorf("%s: 岛上没有深色主题的在线绿", tc.palette)
 		}
+	}
+}
+
+// 播放页的退出 X 长在灵动岛上：和墙上 active 那颗同一个位置、同一颗按钮，
+// 动作按表面走——播放页退出整路并退回上一页，墙上只收声。
+//
+// 非全屏时画面左上角不再有第二颗 X：退出只在这一处。
+func TestIslandPlayerExitButton(t *testing.T) {
+	rooms := watchTestRooms(1)
+	app, tt := newWatchMock(t, rooms)
+	fakeSession(t, app, rooms[0])
+	tt.Frame()
+
+	label := watchTileLabel(rooms[0])
+	if err := tt.Click(label); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	if app.Router.Path() != routePlayer {
+		t.Fatalf("双击格子没进播放页，route=%q", app.Router.Path())
+	}
+
+	island, ok := tt.Find("灵动岛")
+	if !ok {
+		t.Fatalf("播放页没有灵动岛：texts=%q", tt.Texts())
+	}
+	x, ok := tt.Find("退出直播间")
+	if !ok {
+		t.Fatalf("播放页的岛上没有退出 X：texts=%q", tt.Texts())
+	}
+	if x.X < island.X || x.X+x.W > island.X+island.W ||
+		x.Y < island.Y || x.Y+x.H > island.Y+island.H {
+		t.Fatalf("退出 X 不在岛上：X=%+v，岛=%+v", x, island)
+	}
+
+	if err := tt.Click("退出直播间"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.Router.Path() != routeFollows {
+		t.Fatalf("点岛上的 X 没回上一页：route=%q", app.Router.Path())
+	}
+	if len(app.WatchRooms) != 1 {
+		t.Fatalf("退出直播间动了观测盒：%+v", app.WatchRooms)
 	}
 }
 

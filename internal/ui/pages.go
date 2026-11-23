@@ -18,13 +18,13 @@ const (
 
 // Subscription 是「订阅分区」那一级上的一枚 chip 的数据。
 type Subscription struct {
-	PlatformID string // 平台 id（douyu / huya / douyin / bilibili），用于匹配
-	Platform   string // 2 字平台名，显示在 chip 左侧的小标签里
-	Group      string // 一级分区
-	Name       string // 二级分区
+	PlatformID string `json:"platformId"` // 平台 id（douyu / huya / douyin / bilibili），用于匹配
+	Platform   string `json:"platform"`   // 2 字平台名，显示在 chip 左侧的小标签里
+	Group      string `json:"group"`      // 一级分区
+	Name       string `json:"name"`       // 二级分区
 	// CategoryID 是二级分区的接口 id：拉这个分区的房间列表要用它。
 	// 这之前存下来的订阅没有这个字段，加载后会按「平台+分组名+分区名」回填。
-	CategoryID string
+	CategoryID string `json:"categoryId,omitempty"`
 }
 
 // subChip 是订阅分区这一级上的一枚 chip：一个分区，加上订阅了它的平台。

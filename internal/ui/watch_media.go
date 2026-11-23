@@ -101,12 +101,33 @@ func (a *App) watchVolume(key string) float32 {
 }
 
 // setVolume 改当前出声那一路的音量：播放页，或墙上 active。
-// 墙上 active 时同时把值记到这格名下，切走再切回来才能恢复。
 func (a *App) setVolume(v float32) {
 	a.Volume = min(1, max(0, v))
 	if key := a.WatchActive; key != "" {
 		a.watch.init()
 		a.watch.volumes[key] = a.Volume
+	}
+	a.markDirty()
+}
+
+// setTileVolume 改**某一格自己**记住的音量，不碰声音焦点。
+//
+// 和 setVolume 的分工是这次收口里最要紧的一条：墙上每一格都记着自己的音量，
+// 但只有焦点那一路在出声。非 active 格的滑条以前会先 watchActivate 再改值，
+// 于是"调一个预览格的音量"实际把整个声音焦点切走了——控件做了它看起来
+// 不该做的事。
+//
+// 现在它只改这格记下的数。没声音时听不到反馈不是问题：百分比数字就在旁边。
+func (a *App) setTileVolume(room Streamer, v float32) {
+	key := watchKey(room)
+	a.watch.init()
+	a.watch.volumes[key] = min(1, max(0, v))
+	// 这格正好是焦点时才同步到真正在出声的那一路。
+	if key == a.WatchActive {
+		a.Volume = a.watch.volumes[key]
+		a.markDirty()
+		a.watchSyncActiveAudio()
+		return
 	}
 	a.markDirty()
 }
@@ -741,6 +762,17 @@ func (a *App) watchRestart(s *wallSession, reason string) {
 }
 
 // watchActivate 单击格子：切音频焦点，不跳路由。
+// watchTileDead 报告这一格是不是已知没有声音：没有引擎、没在取流，而且
+// 已经落了失败或未开播的终态。点它只该重试，不该抢焦点。
+//
+// 「抢了会先亮绿点、展开岛，等这一路再失败又一起收掉——一次没有意义的
+// 闪动，还会把原来的声音焦点弄丢。」这条判据同时被 watchActivate 和
+// watchOpenPlayer 用，两处各写一遍迟早会漂。
+func (a *App) watchTileDead(key string) bool {
+	s := a.watch.sessions[key]
+	return s != nil && s.player == nil && !s.loading && (s.offline || s.err != "")
+}
+
 func (a *App) watchActivate(room Streamer) {
 	key := watchKey(room)
 	if key == "" {
@@ -765,9 +797,8 @@ func (a *App) watchActivate(room Streamer) {
 	// 这一格已知没有声音（离线 / 取流失败，也没有引擎在跑）：点击只重试，
 	// 不抢焦点。抢了会先亮绿点、展开岛，等这一路再失败又一起收掉——一次
 	// 没有意义的闪动，还会把原来的声音焦点弄丢。
-	if s := a.watch.sessions[key]; s != nil && s.player == nil && !s.loading &&
-		(s.offline || s.err != "") {
-		a.watchReload(s.room)
+	if a.watchTileDead(key) {
+		a.watchReload(room)
 		return
 	}
 	a.watch.init()
@@ -824,6 +855,29 @@ func (a *App) watchActivate(room Streamer) {
 	}
 	a.watchSyncActiveAudio()
 	a.invalidateWindows()
+}
+
+// watchOpenPlayer 从墙上打开某一间：双击格子和控制条上的「放大观测」都走这里。
+//
+// 和 watchActivate 的区别在目标：那一支切的是声音焦点，对已知没有声音的
+// 格子只重试、不抢焦点（见那里的注释）。照着它走，a.Player 会停在上一
+// 间——播放页打开的是岛上的另一个直播间；之前什么都没播过时 a.Player
+// 还是零值，播放页连房间都没有：整屏黑，连未开播提示都画不出来。
+//
+// 双击/放大是明确的「我要看这一间」，目标必须落到 a.Player 上。播放页
+// 自己会重新取流，未开播就画未开播那一层。
+func (a *App) watchOpenPlayer(room Streamer) {
+	key := watchKey(room)
+	if key == "" {
+		return
+	}
+	// 在播 / 在载的一格交给 watchActivate：它会接管墙上的引擎，不重取流。
+	// 死格跳过它——那里只会触发一轮马上被播放页取流取代的重试。
+	if !a.watchTileDead(key) {
+		a.watchActivate(room)
+	}
+	a.Player = room
+	a.pushRoute(routePlayer)
 }
 
 // watchSyncActiveAudio 把 a.Volume / a.Playing 落到当前 active 的播放器上。

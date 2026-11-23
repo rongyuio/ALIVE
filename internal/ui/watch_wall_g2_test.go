@@ -56,7 +56,12 @@ func stalledPlayer(t *testing.T) *ui.VideoPlayer {
 // 激活同一格以前在 watchActivate 第一行直接 return；墙上的失败会话不属于
 // 媒体层，「重新加载」走 retryStream 又因为 media.roomKey=="" 直接返回。
 // 结果是这格没有任何有效重试入口，只能先激活别的格再点回来。
-func TestWatchTileClickRetriesActiveOfflineTile(t *testing.T) {
+// 未开播 / 取流失败的格，重试入口是底栏那颗「重新加载」。
+//
+// 以前点格子本身就是重试（单击只切声音，对死格只重试不抢焦点）。单击改成
+// "进这一间"之后，那条路走不通了：点下去会打开播放页。所以一步重试挪到
+// 「重新加载」上——它本来就在，只是以前不是唯一入口。
+func TestWatchReloadRetriesOfflineTile(t *testing.T) {
 	rooms := watchTestRooms(1)
 	app, tt := newWatchMock(t, rooms)
 	key := watchKey(rooms[0])
@@ -67,25 +72,27 @@ func TestWatchTileClickRetriesActiveOfflineTile(t *testing.T) {
 	}
 	app.watch.init()
 	app.watch.sessions[key] = s
-	app.WatchActive = key
-	app.WatchPending = key
-	app.Player = rooms[0]
-	app.Playing = true
 	tt.Frame()
 
-	if !tt.HasText("主播暂时没有开播 · 点击重试") {
-		t.Fatalf("失败格没有给出重试提示：texts=%q", tt.Texts())
+	if !tt.HasText("主播暂时没有开播") {
+		t.Fatalf("失败格没有给出提示：texts=%q", tt.Texts())
 	}
-	if err := tt.Click(watchTileLabel(rooms[0])); err != nil {
+	r, ok := tt.Find(watchTileLabel(rooms[0]))
+	if !ok {
+		t.Fatal("找不到格子")
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	if err := tt.Click("重新加载"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 
 	if s.offline {
-		t.Fatal("点击 active 的失败格之后仍是未开播态：格子上没有任何有效重试入口")
+		t.Fatal("点重新加载之后仍是未开播态：格子上没有有效重试入口")
 	}
 	if s.failures != 0 || !s.retryAt.IsZero() {
-		t.Fatalf("点击重试没有清退避：failures=%d retryAt=%v", s.failures, s.retryAt)
+		t.Fatalf("重试没有清退避：failures=%d retryAt=%v", s.failures, s.retryAt)
 	}
 }
 

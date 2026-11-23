@@ -194,3 +194,96 @@ func selectorName(e ast.Expr) string {
 	}
 	return ""
 }
+
+// 有 MinHeight 的容器必须让主轴也居中。
+//
+// 用户报的「通知的字不垂直居中」就是这么来的：toast 的容器写了
+// MinHeight(38)，内容只有 17.34 高，多出来的 20 全落在下面，文字就贴着
+// 上边。只写 AlignItems(Center) 管的是交叉轴，主轴仍是起始对齐——要两边
+// 都居中必须用 Center()（= Justify(Center) + AlignItems(Center)）。
+//
+// 这条做成静态检查：MinHeight 撑高本身不报错，但它和「内容比最小高度矮」
+// 组合起来就会露馅，而后者只有布局算得出来。规则简单到可以照字面执行，
+// 就不该靠人记住。
+func TestMinHeightCentersContent(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var problems []string
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, path, src, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		// 按「最外层调用」去重：Inspect 会把同一条链的每一环都送来，
+		// 用起始位置（同一列）收进 map，最后每列只判一次。
+		chains := map[token.Position]*ast.CallExpr{}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || !chainHas(call, isMinHeight) {
+				return true
+			}
+			pos := fset.Position(call.Pos())
+			if prev, ok := chains[pos]; !ok || chainLen(call) > chainLen(prev) {
+				chains[pos] = call
+			}
+			return true
+		})
+		for pos, call := range chains {
+			if !chainHas(call, isCentered) {
+				problems = append(problems, pos.String())
+			}
+		}
+	}
+	sort.Strings(problems)
+	if len(problems) > 0 {
+		t.Fatalf("这些容器有 MinHeight 但主轴没居中，内容会贴着上边（%d 处）：\n  %s\n用 Center() 一次设主轴和交叉轴。",
+			len(problems), strings.Join(problems, "\n  "))
+	}
+}
+
+// chainLen 数一条链上有几环调用，用来在同一起点的多个 CallExpr 里挑最外层。
+func chainLen(call *ast.CallExpr) int {
+	n := 0
+	for {
+		n++
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return n
+		}
+		inner, ok := sel.X.(*ast.CallExpr)
+		if !ok {
+			return n
+		}
+		call = inner
+	}
+}
+
+func isMinHeight(c *ast.CallExpr) bool {
+	sel, ok := c.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "MinHeight"
+}
+
+// isCentered 报告这一环是不是 Center() 或 Justify(ui.Center)。
+func isCentered(c *ast.CallExpr) bool {
+	sel, ok := c.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "Center":
+		return true
+	case "Justify":
+		return len(c.Args) == 1 && selectorName(c.Args[0]) == "Center"
+	}
+	return false
+}

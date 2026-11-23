@@ -222,3 +222,56 @@ func TestFollowsSectionPersists(t *testing.T) {
 		t.Fatalf("重启后停在 %d，期望悲鸣观测", restored.FollowsSection)
 	}
 }
+
+// 旧版 state.json 里 FollowRecord / Subscription 的键是 Go 字段名（PascalCase）。
+// 给它们补 json tag 之后旧文件必须还能读——json 匹配键名不区分大小写，
+// 这条把兼容性钉住，免得以后改 tag 时以为旧数据不重要。
+func TestLegacyStateKeyCase(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AppData", dir)
+
+	raw := `{
+  "followRecords": [
+    {
+      "Platform": "bilibili",
+      "RoomID": "1001",
+      "Name": "老王",
+      "AvatarURL": "https://a/b.png",
+      "Viewers": 3200,
+      "Live": true,
+      "FollowedAt": "2026-11-21T19:59:22+08:00"
+    }
+  ],
+  "subscriptions": [
+    {
+      "PlatformID": "douyu",
+      "Platform": "斗鱼",
+      "Group": "网游",
+      "Name": "英雄联盟",
+      "CategoryID": "1_1"
+    }
+  ]
+}`
+	path := filepath.Join(dir, "alive", "state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewMockApp()
+	if len(app.Follows) != 1 {
+		t.Fatalf("旧格式关注读出了 %d 条", len(app.Follows))
+	}
+	f := app.Follows[0]
+	if f.Platform != "bilibili" || f.RoomID != "1001" || f.Name != "老王" || f.Viewers != 3200 || !f.Live {
+		t.Errorf("关注字段没有对上：%+v", f)
+	}
+	if f.FollowedAt.IsZero() {
+		t.Error("关注时间丢了")
+	}
+	if len(app.Subs) != 1 || app.Subs[0].CategoryID != "1_1" {
+		t.Errorf("旧格式订阅没有对上：%+v", app.Subs)
+	}
+}

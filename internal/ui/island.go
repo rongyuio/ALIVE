@@ -100,33 +100,10 @@ const islandListenAvatar float32 = islandContentH
 // 关注键，上下留一点呼吸。内容区 34，32 上下各留 1。
 const islandPlayerAvatar float32 = theme.IslandH - 6
 
-// islandListening 报告岛该不该画「后台收听」那一枚。
-//
-// 判据是「人不在播放页，但这一路还开着」，两种时候成立：
-//
-//   - background：引擎活着、全尺寸呈现关着、解码在跑，声音在走（detachMedia 置上，
-//     stopPlayback 清掉）；
-//   - loading：这一路正在重开（登录成功要重取流、后台断流重连）。这段时间
-//     background 已经被 stopPlayback 清掉、新引擎还没建出来，只看 background
-//     的话岛会掉回默认态几秒，看着像「听着听着没了」。
-//
-// 取流失败时 loading 落回 false，岛也就不会再假装在收听。
 // onWatchWall 报告当前是不是「悲鸣观测」那一屏。
 func (a *App) onWatchWall() bool {
 	return a.Router != nil && a.Router.Path() == routeFollows &&
 		a.FollowsSection == followsSectionWatch
-}
-
-func (a *App) islandListening() bool {
-	if a.Router != nil && a.Router.Path() == routePlayer {
-		return false
-	}
-	// 观测墙上的 active 也是一路开着的声音：它可能由墙自己的会话持有，
-	// 不在 a.media 里。Island 会看到它，但不展开成后台收听那一枚。
-	if a.WatchActive != "" {
-		return true
-	}
-	return a.media.background || (a.media.loading && a.media.roomKey != "")
 }
 
 // Island 是顶部居中的「灵动岛」，三种形态：
@@ -144,12 +121,17 @@ func (a *App) Island(c *ui.Context) {
 	// 以前这里各自算一遍 player / listening / wallActive，于是"声音在响
 	// 但岛是时钟"这种组合能存在。
 	form := a.islandFormOf()
-	player := form == islandFull
-	// 墙上焦点和后台收听都走"展开的岛"那一套内容（主播信息 + 关注键 +
-	// 可点回这一路），区别只在目标宽度与环：墙上是整条 + 流光，后台收听
-	// 是缩成圆 + 呼吸环。
-	wallActive := form == islandTile
-	listening := form == islandListening || wallActive
+	open := form == islandOpen
+	// 展开态的两种场合：在播放页（全尺寸），或在观测墙上（焦点被画在格子里）。
+	// 渲染完全一样，只有"点它去哪"和右侧那颗 X 的动作不同——那两处各自看
+	// 表面决定，不在这里分叉。
+	player := open && a.Router != nil && a.Router.Path() == routePlayer
+	wallActive := open && !player
+	listening := form == islandListening
+
+	// player 与 wallActive 是同一个展开态的两种场合：宽度、内容树、环都
+	// 一样，所以下面凡是"展开"的判断都走 open。
+	expanded := player || wallActive
 
 	if player {
 		a.enterPlayerIsland()
@@ -162,20 +144,20 @@ func (a *App) Island(c *ui.Context) {
 	// 这个宽度和当前宽度之间归一化出来的，没有它，收起来就只能另画一颗
 	// 居中的头像——头像先闪到中间、岛再慢慢缩。
 	//
+	// 右侧第二颗按钮：展开态是「退出直播间」（播放页）或「取消观测发声」
+	// （墙上），后台收听没有这一颗。两处同名同形同一个位置，动作按当前
+	// 表面走——X 到哪都是「结束这一路」。
+	showX := expanded
 	// 首页不量：那时岛上没有主播信息，量出来也没人用。
 	openW := islandPlayerCollapsedW
-	if player || listening {
-		openW = islandPlayerContentW(c, a.current(), winW, islandButtonsW(wallActive))
+	if expanded || listening {
+		openW = islandPlayerContentW(c, a.current(), winW, islandButtonsW(showX))
 	}
 
 	targetW := float32(theme.IslandW)
 	switch {
-	case player:
+	case expanded:
 		// 展开态常驻：不再有 InfoOpen 这一档收起
-		targetW = openW
-	case wallActive:
-		// 观测墙上的 active 跟单直播间一样展开：显示的就是 active 那一间，
-		// 点整块回播放页。
 		targetW = openW
 	case listening:
 		// 后台收听缩成一枚正圆，和播放页收起态同一个尺寸——它们是同一件事
@@ -237,7 +219,7 @@ func (a *App) Island(c *ui.Context) {
 		//
 		// 光面必须**每一帧都画**：它就是岛的墨底本身。收听态 ring=0 时
 		// 色带整条是墨，岛照样有形状；不画的话岛就只剩呼吸环那一圈。
-		ring, breath := islandRings(player, listening, wallActive, islandMorph(w, openW))
+		ring, breath := islandRings(expanded, listening, islandMorph(w, openW))
 		a.islandGlow(c, theme.RadiusFull, ring)
 		if breath > 0 {
 			a.islandBreath(c, breath)
@@ -252,7 +234,7 @@ func (a *App) Island(c *ui.Context) {
 
 		body.Children(func() {
 			switch {
-			case player || listening:
+			case expanded || listening:
 				a.playerIsland(c, w, openW, listening, wallActive)
 			default:
 				a.islandPill(c)
@@ -332,27 +314,23 @@ func (a *App) enterPlayerIsland() {
 
 // islandRings 决定画哪几圈环，以及各自的不透明度。
 //
-//	首页          ring=1，breath=0   只有流光
-//	观测墙 active  ring=1，breath=0   展开显示 active 那间，环是流光
-//	播放页        ring=1-m，breath=m  展开时纯流光，收缩时交叉淡化
-//	后台收听      ring=0，breath=1   纯呼吸环
+//	首页 / 展开态  ring=1，breath=0   只有流光
+//	后台收听       ring=0，breath=1   纯呼吸环
 //
 // 抽成纯函数是因为它没法用像素验证：两个环同一个主题色、都在动、都在同一条
 // 环带上，截图和像素统计分不出谁是谁。上一版就是在这里出错——首页 openW
 // 等于收起宽度（岛上没有主播信息可量），islandMorph 恒为 1，跟着收起进度
 // 走就把时钟岛画成了呼吸环，流光整个消失。
 //
-// 所以首页那一支必须显式写出来，不能靠 m 的取值碰巧对。观测墙上的 active
-// 也一样：它就是那一间单直播间，形态跟播放页一致，环也是流光——呼吸环属于
-// 「后台收听」，墙上的 active 不是那个语义。
-func islandRings(player, listening, wallActive bool, m float32) (ring, breath float32) {
+// 所以首页那一支必须显式写出来，不能靠 m 的取值碰巧对。播放页和观测墙上
+// 的 active 是同一个展开态：都是"这一间正在放，而且你看得见"，环都是流光。
+// 呼吸环只属于「后台收听」——那一路在放，但没有任何视图显示它。
+func islandRings(expanded, listening bool, m float32) (ring, breath float32) {
 	switch {
-	case wallActive:
-		return 1, 0
-	case player:
-		return 1 - m, m
 	case listening:
 		return 0, 1
+	case expanded:
+		return 1 - m, m
 	default:
 		// 首页：时钟岛。m 在这里没有意义（openW == 收起宽度），不参与。
 		return 1, 0
@@ -391,13 +369,13 @@ func clamp01(v float32) float32 {
 	return v
 }
 
-// islandButtonsW 是右侧按钮组占的宽度：收藏一颗，观测墙上 active 时
-// 收藏右边多一颗「取消 active」。
+// islandButtonsW 是右侧按钮组占的宽度：收藏一颗，播放页与墙上 active 时
+// 收藏右边多一颗 X。
 //
 // 量宽度和画布局都必须用这同一个数：两边各算一次，增删按钮时文字列就会
 // 和画出来的按钮对不上。
-func islandButtonsW(canCancel bool) float32 {
-	if canCancel {
+func islandButtonsW(showX bool) float32 {
+	if showX {
 		return 2*islandPlayerFollowW + islandPlayerGap
 	}
 	return islandPlayerFollowW
@@ -494,7 +472,9 @@ func islandPlayerMeta(s Streamer) string {
 //
 // w 是这一帧的动画宽度，openW 是展开目标宽度（跟着窗口钳过）。
 // listening 为真时整块内容区是「回到直播间」的点击热区。
-func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel bool) {
+// onWall 区分展开态的两种场合，只影响最右那颗 X 的文案与动作：播放页是
+// 「退出直播间」，墙上是「取消观测发声」。渲染本身两种场合完全一样。
+func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, onWall bool) {
 	s := a.current()
 
 	// m：0 完整展开，1 收成正圆。只有头像用这条曲线；文字和关注键不参与，
@@ -531,10 +511,11 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 	// 否则头像滑过去时会从字上碾过去。展开态 4 + 32 + 10 = 46，而头像在
 	// 收起时最右也只到 0 + 34 = 34，中间始终留着那 12px。
 	textX := islandPlayerPadX + islandPlayerAvatar + islandPlayerGap
-	// 右侧按钮组：常态只有收藏一颗；观测墙上 active 时收藏右边多一颗
-	// 「取消 active」，文字列要让出这 36px，否则岛宽不变、标题先被挤没。
+	// 右侧按钮组：常态只有收藏一颗；展开态（播放页或墙上）收藏右边多一颗 X，
+	// 文字列要让出这 36px，否则岛宽不变、标题先被挤没。
+	showX := !listening
 	buttonsW := islandPlayerFollowW
-	if canCancel {
+	if showX {
 		buttonsW += islandPlayerGap + islandPlayerFollowW
 	}
 	textW := openW - 2*islandBodyInset - 2*islandPlayerPadX -
@@ -542,11 +523,11 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 	if textW < 0 {
 		textW = 0
 	}
-	// 最右一颗固定是「取消 active」；收藏贴在它左边。没有取消键时
-	// 收藏自己占最右，位置和以前一样。
+	// 最右一颗固定是 X；收藏贴在它左边。没有 X 时收藏自己占最右，
+	// 位置和以前一样。
 	edgeX := openW - islandBodyInset - islandPlayerPadX - islandPlayerFollowW
 	followX, cancelX := edgeX, edgeX
-	if canCancel {
+	if showX {
 		followX = edgeX - islandPlayerGap - islandPlayerFollowW
 	}
 
@@ -584,15 +565,18 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 	// 和它的祖先，不会穿过兄弟往下找：热区排在按钮之后会把收藏键整个吃掉
 	// （点收藏等于点整块岛），头像虽然不可点，压在热区上面同样会挡住它。
 	// 顺序因此是 文字 → 头像 → 热区 → 按钮。
-	if listening {
-		// 点岛回到"这一路属于哪个表面"：
-		//
-		//   - 焦点那一间还在观测盒里，而且人不在墙上 → 回墙。用户离开的
-		//     正是那面墙，那里还有它的格子；直接跳进播放页等于替他做了一个
-		//     没要求的决定。
-		//   - 其余（不在盒里，或者本来就在墙上）→ 回播放页。
-		//
-		// 两条路都只是换路由：attachMedia / watchShow 各自把呈现尺寸求对。
+	// 整块内容区是回这一路的热区。展开态里它压在文字和头像上、排在按钮
+	// 之前；后台收听时它也是唯一能点的地方。
+	//
+	// 点岛回到"这一路属于哪个表面"：
+	//
+	//   - 焦点那一间还在观测盒里，而且人不在墙上 → 回墙。用户离开的
+	//     正是那面墙，那里还有它的格子；直接跳进播放页等于替他做了一个
+	//     没要求的决定。
+	//   - 其余（不在盒里，或者本来就在墙上）→ 回播放页。
+	//
+	// 两条路都只是换路由：attachMedia / watchShow 各自把呈现尺寸求对。
+	{
 		key := a.focusKey()
 		target := routePlayer
 		if key != "" && a.watchHas(key) && !a.onWatchWall() {
@@ -619,20 +603,33 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 		}
 	}
 
-	// 取消 active：只在墙上 active 时出现，放在收藏右边（最右）。
-	if canCancel {
+	// X：播放页上是「退出直播间」，墙上 active 时是「取消观测发声」。
+	// 同一个位置同一颗按钮，动作按当前表面走——播放页结束整路并退回上一页，
+	// 墙上只收声、格子留在墙上做静音预览。
+	if !listening {
+		label := "退出直播间"
+		if onWall {
+			label = "取消观测发声"
+		}
 		cancel := ui.Box(c).Absolute().Left(cancelX).Top((islandContentH-islandPlayerFollowW)/2).
 			Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
-			Center().Cursor(ui.CursorPointer).Label("取消观测发声")
+			Center().Cursor(ui.CursorPointer).Label(label)
 		cancel.Background(theme.MediaRow).Border(1, theme.MediaRowLine)
 		if cancel.Hovered() {
 			cancel.Background(theme.MediaHair).BorderColor(theme.MediaHairStrong)
 		}
 		if cancel.Clicked() {
-			a.watchDeactivate()
+			if onWall {
+				a.watchDeactivate()
+			} else {
+				// 和全屏时左上角那颗叉同一个动作：关引擎、断弹幕、退回上一页。
+				a.exitPlayer()
+			}
 		}
+		cancelDown := cancel.Pressed()
 		cancel.Children(func() {
 			ui.Icon(c, iconX).FontSize(15).TextColor(theme.MediaText)
+			pressDim(c, cancelDown, theme.RadiusFull)
 		})
 	}
 
@@ -664,12 +661,14 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, listening, canCancel
 	if followed {
 		col = theme.StatusOnlineInk
 	}
+	followDown := btn.Pressed()
 	btn.Children(func() {
 		ico := iconStar
 		if followed {
 			ico = iconStarFilled
 		}
 		ui.Icon(c, ico).FontSize(15).TextColor(col)
+		pressDim(c, followDown, theme.RadiusFull)
 	})
 }
 

@@ -98,12 +98,9 @@ func TestInvariantAtMostOneAudible(t *testing.T) {
 	}
 	tt.Frame()
 
-	// 逐个激活，每一步之后都必须只有一路出声。
+	// 逐个换声音焦点（墙上唯一不跳路由的入口），每一步之后都必须只有一路出声。
 	for i, r := range rooms {
-		if err := tt.Click(watchTileLabel(r)); err != nil {
-			t.Fatal(err)
-		}
-		tt.Frame()
+		listenOnWall(t, tt, r)
 		if n := audibleCount(app); n > 1 {
 			t.Fatalf("激活第 %d 格之后有 %d 路在出声", i, n)
 		}
@@ -118,10 +115,7 @@ func TestInvariantAudibleImpliesFocus(t *testing.T) {
 	fakeSession(t, app, rooms[1])
 	tt.Frame()
 
-	if err := tt.Click(watchTileLabel(rooms[0])); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
+	listenOnWall(t, tt, rooms[0])
 
 	key := app.focusKey()
 	if key != watchKey(rooms[0]) {
@@ -190,9 +184,6 @@ func TestInvariantCloseKeepsSessionInBox(t *testing.T) {
 	if err := tt.Click(label); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
 	tt.Frame()
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("双击没有进播放页，route=%q", app.Router.Path())
@@ -223,18 +214,12 @@ func TestInvariantFocusSwitchKeepsPrevious(t *testing.T) {
 	second := fakeSession(t, app, rooms[1])
 	tt.Frame()
 
-	if err := tt.Click(watchTileLabel(rooms[0])); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
+	listenOnWall(t, tt, rooms[0])
 	if app.media.player != first.player {
 		t.Fatal("第一间没有进媒体层")
 	}
 
-	if err := tt.Click(watchTileLabel(rooms[1])); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
+	listenOnWall(t, tt, rooms[1])
 
 	if app.watchPlayer(watchKey(rooms[0])) != first.player {
 		t.Fatal("换焦点之后上一间的播放器不见了：它还在盒里")
@@ -284,9 +269,6 @@ func TestInvariantDanmakuOnlyOnFullSurface(t *testing.T) {
 	tt.Frame()
 
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
 	if err := tt.Click(label); err != nil {
 		t.Fatal(err)
 	}
@@ -579,9 +561,6 @@ func TestLeavingPlayerFromWallClearsIsland(t *testing.T) {
 	tt.Frame()
 
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
 	if err := tt.Click(label); err != nil {
 		t.Fatal(err)
 	}

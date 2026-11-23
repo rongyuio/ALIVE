@@ -107,29 +107,32 @@ func (a *App) surfaceFor(key string) surface {
 	return surfaceNone
 }
 
-// islandForm 是灵动岛的四种形态，由焦点与当前表面推导。
+// islandForm 是灵动岛的三种形态，由焦点与当前表面推导。
 //
-// 以前的判据散在 islandListening / wallActive / player 三处，各自算一遍，
-// 于是"声音在响但岛是头像圆"这种组合能存在。现在只有一个来源。
+// 以前是四种（full / tile / listening / idle）。full 和 tile 在渲染上完全
+// 一样：同一个展开宽度、同一棵内容树、同样的流光环——差别只有"点它回哪"，
+// 而那个判断本来就该由点击处理自己看表面决定，不该在形态里分叉。所以合成
+// 一种展开态。
+//
+// 保留 listening（缩成头像圆）是因为它不是"展开态的一个变体"，是另一种
+// 呈现：呼吸环、收缩动画、头像填满内容区，都是为了表达"这一路还开着，但
+// 你没在看"。把它并进展开态，这些就都没地方放了。
 type islandForm int
 
 const (
 	// islandIdle 是首页的时钟岛：没有声音焦点。
 	islandIdle islandForm = iota
-	// islandFull 是播放页的展开态：焦点会话有全尺寸视图。
-	islandFull
-	// islandTile 是墙上的展开态：焦点会话被画在格子里，点它进播放页。
-	islandTile
+	// islandOpen 是展开态：焦点会话有全尺寸视图（播放页）或被画在格子里
+	// （观测墙），岛上显示主播信息、关注键和退出键。
+	islandOpen
 	// islandListening 是收成头像圆的后台收听态：焦点会话没有可见视图。
 	islandListening
 )
 
 func (f islandForm) String() string {
 	switch f {
-	case islandFull:
-		return "full"
-	case islandTile:
-		return "tile"
+	case islandOpen:
+		return "open"
 	case islandListening:
 		return "listening"
 	}
@@ -138,18 +141,16 @@ func (f islandForm) String() string {
 
 // islandFormOf 由焦点与表面推导岛的形态。
 //
-// 不变量：焦点非空时，岛一定处于 full / tile / listening 三者之一，
-// 且三种形态里显示的都是焦点那一间。焦点为空时只能是时钟。
+// 不变量：焦点非空时，岛一定处于 open / listening 之一，且两种形态里显示
+// 的都是焦点那一间。焦点为空时只能是时钟。
 func (a *App) islandFormOf() islandForm {
 	key := a.focusKey()
 	if key == "" {
 		return islandIdle
 	}
 	switch a.surfaceFor(key) {
-	case surfaceFull:
-		return islandFull
-	case surfaceTile:
-		return islandTile
+	case surfaceFull, surfaceTile:
+		return islandOpen
 	}
 	return islandListening
 }

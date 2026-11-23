@@ -4,10 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
+	"maps"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,431 +16,153 @@ import (
 	"alive/internal/theme"
 )
 
-// 数据同步的文件格式。
+// 数据同步文件。
 //
-// 导出写成 alive 自己的形状（kind: alive-config）；导入同时接受 DTV
-// 的两种文件——dtv-config（导出 JSON）与 dtv-lan-sync（局域网快照）。
-// 那两种的 entries 是一组 localStorage 键值，值本身还是 JSON 字符串，
-// 所以要多拐一层解析，形状映射也在本文件里。
-const (
-	configKind     = "alive-config"
-	configVersion  = 1
-	dtvConfigKind  = "dtv-config"
-	dtvLanSyncKind = "dtv-lan-sync"
-	configClient   = "ALIVE"
-)
-
-// 导入兼容用的 localStorage 键名。
+// 顶层直接是我们的领域划分——主题、平台顺序、关注、订阅、观测墙、房间播放
+// 选择、播放器、弹幕。没有 kind / version / source / data 这类包一层的信封，
+// 也没有版本号：软件还没发过版，不存在要按版本拒绝的旧文件；字段对不上时
+// 解析会直接失败，不会悄悄丢配置。
 //
-// 清晰度和线路的键带平台前缀（BILIBILI_preferred_quality 这种），
-// 前缀用大写平台名。
-const (
-	dtvKeyFollows = "followedStreamers"
-	dtvKeySubs    = "dtv_custom_categories_v1"
-	dtvKeyDanmu   = "dtv_danmu_preferences_v1"
-	dtvKeyTheme   = "theme_preference"
-	dtvKeyVolume  = "dtv_player_volume_v1"
-	dtvQualSuffix = "_preferred_quality"
-	dtvLineSuffix = "_preferred_line"
-	dtvPrefixes24 = "DOUYU,DOUYIN,HUYA,BILIBILI"
-)
+// 文件头只留一个 app，用来在用户拿错文件时给出明确报错。其余字段全部对应
+// 我们自己 state.json 里的东西，没有一个是外部客户端的形状。
+const configApp = "ALIVE"
 
-// portableFollow 是关注记录在文件里的形状。
-//
-// 不直接序列化 FollowRecord：那个结构没有 json tag，落盘键名是 Go 字段名，
-// 既不好看也没法和 DTV 的记录对上。
-type portableFollow struct {
-	Platform   string `json:"platform"`
-	RoomID     string `json:"roomId"`
-	Name       string `json:"name"`
-	Title      string `json:"title,omitempty"`
-	AvatarURL  string `json:"avatarUrl,omitempty"`
-	CoverURL   string `json:"coverUrl,omitempty"`
-	Category   string `json:"category,omitempty"`
-	Viewers    int    `json:"viewers,omitempty"`
-	Live       bool   `json:"live,omitempty"`
-	FollowedAt string `json:"followedAt,omitempty"`
-}
+type configFile struct {
+	App        string `json:"app"`
+	ExportedAt string `json:"exportedAt"`
 
-// portableSub 是订阅分区在文件里的形状。
-type portableSub struct {
-	PlatformID string `json:"platformId"`
-	Platform   string `json:"platform"`
-	Group      string `json:"group"`
-	Name       string `json:"name"`
-	CategoryID string `json:"categoryId,omitempty"`
-}
+	Theme fileTheme `json:"theme"`
 
-// configData 是文件里真正携带的内容。
-//
-// 单值偏好用指针，和 persisted 一样区分「文件里没有这一项」与「有，但是空值」。
-type configData struct {
-	Palette       string   `json:"palette,omitempty"`
+	// PlatformOrder 是顶栏平台的显示顺序。
 	PlatformOrder []string `json:"platformOrder,omitempty"`
-	// FollowsSectionOrder 是关注页一级分区的显示顺序
-	FollowsSectionOrder []string         `json:"followsSectionOrder,omitempty"`
-	Follows             []portableFollow `json:"follows"`
-	Subs                []portableSub    `json:"subscriptions"`
-	Quality             string           `json:"quality,omitempty"`
-	Line                string           `json:"line,omitempty"`
-	Volume              *float32         `json:"volume,omitempty"`
-	DanmuOn             *bool            `json:"danmuOn,omitempty"`
-	Danmu               *danmuPrefs      `json:"danmu,omitempty"`
+	// FollowsSections 是关注页一级分区的显示顺序。
+	FollowsSections []string `json:"followsSections,omitempty"`
+
+	Follows       []FollowRecord `json:"follows"`
+	Subscriptions []Subscription `json:"subscriptions"`
+
+	// WatchWall 是观测墙上的格子，和 state.json 里同一个形状。空墙也写成 []，
+	// 让文件的结构固定。
+	WatchWall []watchRecord `json:"watchWall"`
+
+	// Rooms 是每个直播间自己的清晰度 / 线路，键是 platform|roomID。
+	// 房间键跨机器不变，所以整张表都能带走。
+	Rooms map[string]roomChoice `json:"rooms"`
+
+	Player filePlayer `json:"player"`
+	Danmu  fileDanmu  `json:"danmu"`
 }
 
-type configSource struct {
-	Client     string `json:"client"`
-	AppVersion string `json:"appVersion,omitempty"`
+type fileTheme struct {
+	Palette string `json:"palette,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
-type configPayload struct {
-	Kind       string       `json:"kind"`
-	Version    int          `json:"version"`
-	ExportedAt string       `json:"exportedAt"`
-	Source     configSource `json:"source"`
-	Data       configData   `json:"data"`
+type filePlayer struct {
+	// Volume 是指针：区分「文件里没写」和「写了个 0」（静音）。
+	Volume *float32 `json:"volume,omitempty"`
+}
+
+// fileDanmu 把弹幕开关、外观和屏蔽词收在同一段里。
+//
+// 不内嵌 danmuPrefs：匿名内嵌的字段名是小写的 danmuPrefs，encoding/json
+// 会把它当成未导出字段整个跳过，导出时这段会变成空对象。
+type fileDanmu struct {
+	On       bool     `json:"on"`
+	Font     float32  `json:"font"`
+	DurMs    int64    `json:"durationMs"`
+	Area     float32  `json:"area"`
+	Opacity  float32  `json:"opacity"`
+	Color    [4]uint8 `json:"color"`
+	Stroke   [4]uint8 `json:"stroke"`
+	Colorful bool     `json:"colorful"`
+	Filters  []string `json:"filters"`
 }
 
 // configFileName 是导出时的默认文件名，带时间戳便于区分多份快照。
 func configFileName() string {
-	return "ALIVE-config-" + time.Now().Format("20060102-150405") + ".json"
+	return "ALIVE-" + time.Now().Format("20060102-150405") + ".json"
 }
 
-// buildConfigPayload 拍一份当前配置的完整快照。
-func (a *App) buildConfigPayload() configPayload {
-	follows := make([]portableFollow, 0, len(a.Follows))
-	for _, r := range a.Follows {
-		at := ""
-		if !r.FollowedAt.IsZero() {
-			at = r.FollowedAt.UTC().Format(time.RFC3339)
-		}
-		follows = append(follows, portableFollow{
-			Platform:   r.Platform,
-			RoomID:     r.RoomID,
-			Name:       r.Name,
-			Title:      r.Title,
-			AvatarURL:  r.AvatarURL,
-			CoverURL:   r.CoverURL,
-			Category:   r.Category,
-			Viewers:    r.Viewers,
-			Live:       r.Live,
-			FollowedAt: at,
-		})
-	}
-	subs := make([]portableSub, 0, len(a.Subs))
-	for _, s := range a.Subs {
-		subs = append(subs, portableSub(s))
-	}
-	volume := a.Volume
-	danmuOn := a.DanmuOn
-	danmu := danmuPrefs{
-		Font:     a.DanmuFont,
-		DurMs:    a.DanmuDur.Milliseconds(),
-		Area:     a.DanmuArea,
-		Opacity:  a.DanmuOpacity,
-		Color:    colorBytes(a.DanmuColor),
-		Stroke:   colorBytes(a.DanmuStroke),
-		Colorful: a.DanmuColorful,
+// buildConfigFile 拍一份当前配置的完整快照。
+func (a *App) buildConfigFile() configFile {
+	follows := append([]FollowRecord(nil), a.Follows...)
+	subs := append([]Subscription(nil), a.Subs...)
+
+	wall := make([]watchRecord, 0, len(a.WatchRooms))
+	for _, s := range a.WatchRooms {
+		wall = append(wall, a.watchRecordOf(s))
 	}
 
-	return configPayload{
-		Kind:       configKind,
-		Version:    configVersion,
+	// 拷贝一份：payload 会交给后台 goroutine 序列化，不能和主线程共用一张表。
+	rooms := make(map[string]roomChoice, len(a.roomChoices))
+	maps.Copy(rooms, a.roomChoices)
+
+	volume := a.Volume
+	return configFile{
+		App:        configApp,
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
-		Source:     configSource{Client: configClient},
-		Data: configData{
-			Palette:             a.PaletteID,
-			PlatformOrder:       append([]string(nil), a.PlatformOrder...),
-			FollowsSectionOrder: a.followsSectionOrder(),
-			Follows:             follows,
-			Subs:                subs,
-			// 清晰度 / 线路属于房间：导出时带走当前这一间的，导入时
-			// 也只写回当前这一间。没有当前房间就没有可写的归属。
-			Quality: a.qualityFor(a.choiceKey()),
-			Line:    a.lineFor(a.choiceKey()),
-			Volume:  &volume,
-			DanmuOn: &danmuOn,
-			Danmu:   &danmu,
+		Theme: fileTheme{
+			Palette: a.PaletteID,
+			Mode:    a.ThemeMode,
+		},
+		PlatformOrder:   append([]string(nil), a.PlatformOrder...),
+		FollowsSections: a.followsSectionOrder(),
+		Follows:         follows,
+		Subscriptions:   subs,
+		WatchWall:       wall,
+		Rooms:           rooms,
+		Player:          filePlayer{Volume: &volume},
+		Danmu: fileDanmu{
+			On:       a.DanmuOn,
+			Font:     a.DanmuFont,
+			DurMs:    a.DanmuDur.Milliseconds(),
+			Area:     a.DanmuArea,
+			Opacity:  a.DanmuOpacity,
+			Color:    colorBytes(a.DanmuColor),
+			Stroke:   colorBytes(a.DanmuStroke),
+			Colorful: a.DanmuColorful,
+			Filters:  append([]string{}, a.DanmuFilters...),
 		},
 	}
 }
 
-// parseConfigFile 读一份导入文件。只认得上层的三种 kind，别的直接报错，
-// 免得用户拿错文件时被静默合并成空结果。
-func parseConfigFile(data []byte) (configData, error) {
-	var head struct {
-		Kind    string                     `json:"kind"`
-		Data    json.RawMessage            `json:"data"`
-		Entries map[string]json.RawMessage `json:"entries"`
-	}
-	if err := json.Unmarshal(data, &head); err != nil {
-		return configData{}, errors.New("文件不是有效的 JSON")
-	}
-
-	switch head.Kind {
-	case configKind:
-		var p configPayload
-		if err := json.Unmarshal(data, &p); err != nil {
-			return configData{}, errors.New("ALIVE 配置文件损坏，读不出内容")
-		}
-		return p.Data, nil
-	case dtvConfigKind, dtvLanSyncKind:
-		return configFromDTVEntries(head.Entries), nil
-	case "":
-		return configData{}, errors.New("文件缺少 kind 字段，不是配置导出文件")
-	default:
-		return configData{}, fmt.Errorf("不认识的文件类型：%s", head.Kind)
-	}
-}
-
-// entryText 取出一条 entries 的值。
+// parseConfigFile 读一份导入文件。
 //
-// DTV 的 PortableEntries 是 Record<string, string>，值是被再序列化一次的
-// JSON；但手改过的文件可能直接写成对象，两种都接受。
-func entryText(raw json.RawMessage) []byte {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return []byte(s)
+// 只认 app 是 ALIVE 的文件：拿错文件时明确报错，不能被静默合并成空结果。
+func parseConfigFile(data []byte) (configFile, error) {
+	var f configFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return configFile{}, errors.New("文件不是有效的 JSON：该字段类型对不上，或者数字超出范围")
 	}
-	return raw
-}
-
-// configFromDTVEntries 把 DTV 的 localStorage 快照翻译成 alive 的配置。
-//
-// 只翻译两边都有的东西：关注、订阅、弹幕设置、主题、音量、清晰度与线路。
-// 分组、关注排序、Cookie 这些 DTV 独有或 alive 还没做的直接跳过。
-func configFromDTVEntries(entries map[string]json.RawMessage) configData {
-	var out configData
-
-	// ---- 关注
-	if raw, ok := entries[dtvKeyFollows]; ok {
-		var list []struct {
-			ID            string  `json:"id"`
-			CurrentRoomID string  `json:"currentRoomId"`
-			Platform      string  `json:"platform"`
-			Nickname      string  `json:"nickname"`
-			Title         string  `json:"title"`
-			RoomTitle     string  `json:"roomTitle"`
-			Avatar        string  `json:"avatar"`
-			AvatarURL     string  `json:"avatarUrl"`
-			Viewers       float64 `json:"viewers"`
-			IsLive        bool    `json:"isLive"`
-			LiveStatus    string  `json:"liveStatus"`
-		}
-		if json.Unmarshal(entryText(raw), &list) == nil {
-			for _, f := range list {
-				platform := normalizePlatformID(f.Platform)
-				if platform == "" {
-					continue
-				}
-				roomID := strings.TrimSpace(f.ID)
-				if roomID == "" {
-					roomID = strings.TrimSpace(f.CurrentRoomID)
-				}
-				name := strings.TrimSpace(f.Nickname)
-				if name == "" && roomID == "" {
-					continue
-				}
-				title := f.Title
-				if title == "" {
-					title = f.RoomTitle
-				}
-				avatar := f.Avatar
-				if avatar == "" {
-					avatar = f.AvatarURL
-				}
-				out.Follows = append(out.Follows, portableFollow{
-					Platform:  platform,
-					RoomID:    roomID,
-					Name:      name,
-					Title:     title,
-					AvatarURL: avatar,
-					Viewers:   int(f.Viewers),
-					Live:      f.IsLive || f.LiveStatus == "LIVE",
-				})
-			}
-		}
+	if f.App != configApp {
+		return configFile{}, errors.New("不是 ALIVE 导出的配置文件")
 	}
-
-	// ---- 订阅
-	if raw, ok := entries[dtvKeySubs]; ok {
-		var list []struct {
-			Platform  string `json:"platform"`
-			Cate1Name string `json:"cate1Name"`
-			Cate2ID   string `json:"cate2Id"`
-			Cate2Name string `json:"cate2Name"`
-		}
-		if json.Unmarshal(entryText(raw), &list) == nil {
-			for _, s := range list {
-				platform := normalizePlatformID(s.Platform)
-				if platform == "" || s.Cate2Name == "" {
-					continue
-				}
-				out.Subs = append(out.Subs, portableSub{
-					PlatformID: platform,
-					Platform:   platformLabel(platform),
-					Group:      s.Cate1Name,
-					Name:       s.Cate2Name,
-					CategoryID: s.Cate2ID,
-				})
-			}
-		}
-	}
-
-	// ---- 弹幕设置
-	if raw, ok := entries[dtvKeyDanmu]; ok {
-		var prefs struct {
-			Enabled  bool `json:"enabled"`
-			Settings struct {
-				Color       string  `json:"color"`
-				StrokeColor string  `json:"strokeColor"`
-				FontSize    string  `json:"fontSize"` // "20px"
-				Duration    float64 `json:"duration"`
-				Area        float64 `json:"area"`
-				Opacity     float64 `json:"opacity"`
-				Colorful    bool    `json:"colorful"`
-			} `json:"settings"`
-		}
-		if json.Unmarshal(entryText(raw), &prefs) == nil {
-			enabled := prefs.Enabled
-			out.DanmuOn = &enabled
-			d := danmuPrefs{
-				Font:     parsePixelSize(prefs.Settings.FontSize),
-				DurMs:    int64(math.Round(prefs.Settings.Duration)),
-				Area:     clampUnitRange(prefs.Settings.Area, 0.25, 1),
-				Opacity:  clampUnitRange(prefs.Settings.Opacity, 0.2, 1),
-				Color:    parseHexColor(prefs.Settings.Color),
-				Stroke:   parseHexColor(prefs.Settings.StrokeColor),
-				Colorful: prefs.Settings.Colorful,
-			}
-			out.Danmu = &d
-		}
-	}
-
-	// ---- 主题（裸字符串）
-	if id := entryString(entries, dtvKeyTheme); id != "" && theme.Find(id) != nil {
-		out.Palette = id
-	}
-
-	// ---- 音量（裸数字）
-	if raw, ok := entries[dtvKeyVolume]; ok {
-		text := entryString(entries, dtvKeyVolume)
-		if text == "" {
-			text = strings.TrimSpace(string(entryText(raw)))
-		}
-		// ParseFloat 认 "NaN" / "Inf"，但音量只该接受有限值：NaN 会
-		// 穿过 setVolume 的 min/max（浮点 min/max 传播 NaN），之后
-		// state.json 会一直报 "unsupported value: NaN" 并静默停止落盘。
-		if v, err := strconv.ParseFloat(text, 32); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) {
-			f := float32(v)
-			out.Volume = &f
-		}
-	}
-
-	// ---- 清晰度 / 线路：键带平台前缀，取第一个认识的平台
-	for platform := range strings.SplitSeq(dtvPrefixes24, ",") {
-		if v := entryString(entries, platform+dtvQualSuffix); v != "" {
-			out.Quality = v
-		}
-		if v := entryString(entries, platform+dtvLineSuffix); v != "" {
-			out.Line = v
-		}
-		if out.Quality != "" && out.Line != "" {
-			break
-		}
-	}
-
-	return out
-}
-
-// entryString 取一条 entries 里的裸字符串值。
-func entryString(entries map[string]json.RawMessage, key string) string {
-	raw, ok := entries[key]
-	if !ok {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(raw, &s) != nil {
-		return ""
-	}
-	// DTV 的单值偏好都是裸字符串（loadRaw），但手改过的文件可能多包一层引号
-	return strings.Trim(strings.TrimSpace(s), `"`)
-}
-
-// normalizePlatformID 把 DTV 的大写平台名归一成 alive 的小写 id。
-func normalizePlatformID(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "douyu":
-		return "douyu"
-	case "huya":
-		return "huya"
-	case "douyin":
-		return "douyin"
-	case "bilibili", "bili":
-		return "bilibili"
-	}
-	return ""
-}
-
-// parsePixelSize 把 "20px" 这样的字号解析成数值，认不出来就返回 0。
-//
-// 只收有限值并夹到界面滑杆的 14–30：ParseFloat 认 "Inf"，而 float32(+Inf)
-// 一旦进 DanmuFont，saveState 的 json.MarshalIndent 会一直报 unsupported
-// value，state.json 从此静默停止落盘。
-func parsePixelSize(raw string) float32 {
-	text := strings.TrimSuffix(strings.TrimSpace(raw), "px")
-	v, err := strconv.ParseFloat(text, 32)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
-		return 0
-	}
-	return float32(min(30, max(14, v)))
-}
-
-// clampUnitRange 把导入的浮点偏好收进 [lo, hi]；非有限值返回 0（视为没给）。
-//
-// DTV 文件里的 1e40 是合法 JSON 数字，转 float32 直接变 +Inf；不拦会被
-// applyConfig 写进 a.DanmuArea / a.DanmuOpacity，然后同样是落盘失败。
-func clampUnitRange(v float64, lo, hi float32) float32 {
-	f := float32(v)
-	if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) || f <= 0 {
-		return 0
-	}
-	return min(hi, max(lo, f))
-}
-
-// parseHexColor 把 #rrggbb / #rrggbbaa 解析成 RGBA，认不出来就当透明。
-func parseHexColor(raw string) [4]uint8 {
-	text := strings.TrimPrefix(strings.TrimSpace(raw), "#")
-	if len(text) != 6 && len(text) != 8 {
-		return [4]uint8{}
-	}
-	v, err := strconv.ParseUint(text[:6], 16, 32)
-	if err != nil {
-		return [4]uint8{}
-	}
-	out := [4]uint8{uint8(v >> 16), uint8(v >> 8), uint8(v), 255}
-	if len(text) == 8 {
-		if a, err := strconv.ParseUint(text[6:], 16, 8); err == nil {
-			out[3] = uint8(a)
-		}
-	}
-	return out
+	return f, nil
 }
 
 // importSummary 是一次导入实际并入多少东西。
 type importSummary struct {
 	Follows int
 	Subs    int
+	Watch   int
+	Filters int
 	Prefs   bool // 主题 / 清晰度 / 音量 / 弹幕这些单值偏好是否被文件覆盖
 }
 
 func (s importSummary) String() string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 5)
 	if s.Follows > 0 {
 		parts = append(parts, fmt.Sprintf("新增 %d 位关注", s.Follows))
 	}
 	if s.Subs > 0 {
 		parts = append(parts, fmt.Sprintf("新增 %d 个订阅", s.Subs))
+	}
+	if s.Watch > 0 {
+		parts = append(parts, fmt.Sprintf("新增 %d 个观测盒", s.Watch))
+	}
+	if s.Filters > 0 {
+		parts = append(parts, fmt.Sprintf("新增 %d 个屏蔽词", s.Filters))
 	}
 	if s.Prefs {
 		parts = append(parts, "更新了主题与播放设置")
@@ -463,121 +184,157 @@ func followIdentity(platform, roomID, name string) string {
 
 // applyConfig 把导入的配置并进当前状态。
 //
-// 关注和订阅只增不减——导入不该删掉本机已经关注的东西；主题、清晰度、
-// 音量、弹幕这些单值偏好按文件内容覆盖。
-func (a *App) applyConfig(d configData) importSummary {
+// 列表类（关注、订阅、观测墙、屏蔽词）只增不减——导入不该删掉本机的东西；
+// 单值偏好（主题、音量、弹幕）以文件为准；清晰度 / 线路按房间合并，文件里
+// 有的房间覆盖本机同一间，本机其他房间不动。
+func (a *App) applyConfig(f configFile) importSummary {
 	var sum importSummary
 
-	seenFollow := make(map[string]bool, len(a.Follows)+len(d.Follows))
+	seenFollow := make(map[string]bool, len(a.Follows)+len(f.Follows))
 	for _, r := range a.Follows {
 		seenFollow[followIdentity(r.Platform, r.RoomID, r.Name)] = true
 	}
-	for _, f := range d.Follows {
-		key := followIdentity(f.Platform, f.RoomID, f.Name)
+	for _, rec := range f.Follows {
+		key := followIdentity(rec.Platform, rec.RoomID, rec.Name)
 		if seenFollow[key] {
 			continue
 		}
 		seenFollow[key] = true
-		rec := FollowRecord{
-			Platform:  f.Platform,
-			RoomID:    f.RoomID,
-			Name:      f.Name,
-			Title:     f.Title,
-			AvatarURL: f.AvatarURL,
-			CoverURL:  f.CoverURL,
-			Category:  f.Category,
-			Viewers:   f.Viewers,
-			Live:      f.Live,
-		}
-		if at, err := time.Parse(time.RFC3339, f.FollowedAt); err == nil {
-			rec.FollowedAt = at
-		} else {
+		if rec.FollowedAt.IsZero() {
 			rec.FollowedAt = time.Now()
 		}
 		a.Follows = append(a.Follows, rec)
 		sum.Follows++
 	}
 
-	seenSub := make(map[string]bool, len(a.Subs)+len(d.Subs))
+	seenSub := make(map[string]bool, len(a.Subs)+len(f.Subscriptions))
 	for _, s := range a.Subs {
 		seenSub[s.PlatformID+"|"+s.Group+"|"+s.Name] = true
 	}
-	for _, s := range d.Subs {
+	for _, s := range f.Subscriptions {
 		key := s.PlatformID + "|" + s.Group + "|" + s.Name
 		if seenSub[key] {
 			continue
 		}
 		seenSub[key] = true
-		platform := s.Platform
-		if platform == "" {
-			platform = platformLabel(s.PlatformID)
+		if s.Platform == "" {
+			s.Platform = platformLabel(s.PlatformID)
 		}
-		a.Subs = append(a.Subs, Subscription{
-			PlatformID: s.PlatformID,
-			Platform:   platform,
-			Group:      s.Group,
-			Name:       s.Name,
-			CategoryID: s.CategoryID,
-		})
+		a.Subs = append(a.Subs, s)
 		sum.Subs++
 	}
 
-	if d.Palette != "" && theme.Find(d.Palette) != nil && d.Palette != a.PaletteID {
-		a.PaletteID = d.Palette
+	// ---- 观测墙：本机已有的格子保留原位，文件里多出来的追加到末尾；
+	// 同一格的音量以文件为准。
+	beforeRooms := len(a.WatchRooms)
+	for _, r := range f.WatchWall {
+		if r.Platform == "" || r.RoomID == "" {
+			continue
+		}
+		key := r.Platform + "|" + r.RoomID
+		if !a.watchHas(key) {
+			a.WatchRooms = append(a.WatchRooms, r.streamer())
+		}
+		if r.Volume != nil {
+			a.watch.init()
+			a.watch.volumes[key] = min(1, max(0, *r.Volume))
+		}
+	}
+	// normalize 顺带兜住文件里重复的房间和超过上限的部分。
+	a.WatchRooms = normalizeWatchRooms(a.WatchRooms)
+	sum.Watch = max(0, len(a.WatchRooms)-beforeRooms)
+
+	// ---- 清晰度 / 线路：按房间合并。
+	rooms := make(map[string]roomChoice, len(f.Rooms))
+	for key, c := range f.Rooms {
+		if key == "" || (c.Quality == "" && c.Line == "" && c.LineID == "") {
+			continue
+		}
+		rooms[key] = c
+	}
+	if len(rooms) > 0 {
+		if a.roomChoices == nil {
+			a.roomChoices = make(map[string]roomChoice, len(rooms))
+		}
+		cur := a.media.roomKey
+		beforeCur := a.roomChoiceOf(cur)
+		maps.Copy(a.roomChoices, rooms)
 		sum.Prefs = true
-	}
-	if len(d.PlatformOrder) > 0 {
-		a.PlatformOrder = normalizePlatformOrder(d.PlatformOrder)
-	}
-	if len(d.FollowsSectionOrder) > 0 {
-		a.FollowsSectionOrder = normalizeFollowsSectionOrder(d.FollowsSectionOrder)
-	}
-	// 清晰度 / 线路按房间存：只有当前这一路能接住导入值，没有房间时
-	// 丢掉——把它们塞回全局正是串台的来源。
-	if key := a.choiceKey(); key != "" {
-		changed := false
-		if d.Quality != "" {
-			a.setRoomQuality(key, d.Quality)
-			sum.Prefs = true
-			changed = true
-		}
-		if d.Line != "" {
-			a.setRoomLine(key, d.Line, "")
-			sum.Prefs = true
-			changed = true
-		}
 		// 正在播的就是这一间：把新档位 / 新线路真正接到流上。只写房间记录
 		// 的话，播放页芯片显示导入的档位，画面还是旧的那一路。
-		if changed && a.media.roomKey == key {
+		if cur != "" && a.roomChoiceOf(cur) != beforeCur {
 			a.startStream(true)
 		}
 	}
-	if d.Volume != nil {
+
+	if f.Theme.Palette != "" && theme.Find(f.Theme.Palette) != nil && f.Theme.Palette != a.PaletteID {
+		a.PaletteID = f.Theme.Palette
+		sum.Prefs = true
+	}
+	switch f.Theme.Mode {
+	case themeModeSystem, themeModeDark, themeModeLight:
+		if a.ThemeMode != f.Theme.Mode {
+			a.ThemeMode = f.Theme.Mode
+			sum.Prefs = true
+		}
+	}
+	if len(f.PlatformOrder) > 0 {
+		a.PlatformOrder = normalizePlatformOrder(f.PlatformOrder)
+	}
+	if len(f.FollowsSections) > 0 {
+		a.FollowsSectionOrder = normalizeFollowsSectionOrder(f.FollowsSections)
+	}
+
+	if f.Player.Volume != nil {
 		// 走 setVolume：墙上正出声的那格同步成导入值，别的格保留自己的。
-		a.setVolume(*d.Volume)
+		a.setVolume(*f.Player.Volume)
 		sum.Prefs = true
 	}
-	if d.DanmuOn != nil {
-		a.DanmuOn = *d.DanmuOn
+
+	// 弹幕段总是整段写出，读回来时逐项覆盖；只要文件里有内容就算改过偏好。
+	fileDan := danmuPrefs{
+		Font:     f.Danmu.Font,
+		DurMs:    f.Danmu.DurMs,
+		Area:     f.Danmu.Area,
+		Opacity:  f.Danmu.Opacity,
+		Color:    f.Danmu.Color,
+		Stroke:   f.Danmu.Stroke,
+		Colorful: f.Danmu.Colorful,
+	}
+	if fileDan != (danmuPrefs{}) || f.Danmu.On != a.DanmuOn {
 		sum.Prefs = true
 	}
-	if d.Danmu != nil {
-		if d.Danmu.Font > 0 {
-			a.DanmuFont = d.Danmu.Font
+	a.DanmuOn = f.Danmu.On
+	if f.Danmu.Font > 0 {
+		a.DanmuFont = f.Danmu.Font
+	}
+	if f.Danmu.DurMs > 0 {
+		a.DanmuDur = time.Duration(f.Danmu.DurMs) * time.Millisecond
+	}
+	if f.Danmu.Area > 0 {
+		a.DanmuArea = f.Danmu.Area
+	}
+	if f.Danmu.Opacity > 0 {
+		a.DanmuOpacity = f.Danmu.Opacity
+	}
+	a.DanmuColor = rgbaColor(f.Danmu.Color)
+	a.DanmuStroke = rgbaColor(f.Danmu.Stroke)
+	a.DanmuColorful = f.Danmu.Colorful
+
+	if len(f.Danmu.Filters) > 0 {
+		seen := make(map[string]bool, len(a.DanmuFilters)+len(f.Danmu.Filters))
+		for _, w := range a.DanmuFilters {
+			seen[w] = true
 		}
-		if d.Danmu.DurMs > 0 {
-			a.DanmuDur = time.Duration(d.Danmu.DurMs) * time.Millisecond
+		for _, w := range f.Danmu.Filters {
+			w = strings.TrimSpace(w)
+			if w == "" || seen[w] {
+				continue
+			}
+			seen[w] = true
+			a.DanmuFilters = append(a.DanmuFilters, w)
+			sum.Filters++
 		}
-		if d.Danmu.Area > 0 {
-			a.DanmuArea = d.Danmu.Area
-		}
-		if d.Danmu.Opacity > 0 {
-			a.DanmuOpacity = d.Danmu.Opacity
-		}
-		a.DanmuColor = rgbaColor(d.Danmu.Color)
-		a.DanmuStroke = rgbaColor(d.Danmu.Stroke)
-		a.DanmuColorful = d.Danmu.Colorful
-		sum.Prefs = true
 	}
 
 	return sum
@@ -599,7 +356,7 @@ func (a *App) exportConfig() {
 	a.SyncError = ""
 	a.SyncNotice = ""
 	win := a.Win
-	payload := a.buildConfigPayload()
+	payload := a.buildConfigFile()
 
 	go func() {
 		data, err := json.MarshalIndent(payload, "", "  ")
@@ -655,7 +412,7 @@ func (a *App) importConfig() {
 			},
 		})
 
-		var parsed configData
+		var parsed configFile
 		if err == nil && len(paths) > 0 {
 			data, readErr := os.ReadFile(paths[0])
 			if readErr != nil {

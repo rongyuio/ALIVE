@@ -15,7 +15,9 @@ func TestImportQualityRestreamsCurrentRoom(t *testing.T) {
 	app.media.roomKey = key
 	before := app.media.seq
 
-	app.applyConfig(configData{Quality: "超清 720P", Line: "线路一"})
+	app.applyConfig(configFile{Rooms: map[string]roomChoice{
+		key: {Quality: "超清 720P", Line: "线路一"},
+	}})
 
 	if got := app.qualityFor(key); got != "超清 720P" {
 		t.Fatalf("清晰度没有写进房间记录：%q", got)

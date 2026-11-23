@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -118,9 +119,6 @@ func TestCloseMediaRestoresTilePresentSize(t *testing.T) {
 	if err := tt.Click(label); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
 	tt.Frame()
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("双击格子没有进播放页，route=%q", app.Router.Path())
@@ -129,6 +127,9 @@ func TestCloseMediaRestoresTilePresentSize(t *testing.T) {
 		t.Fatalf("播放页该按视频原始尺寸呈现，实际 %+v（推过 %v）", got, ok)
 	}
 
+	// 退出 X 长在灵动岛上：等岛展开到能放下这颗按钮再点。
+	tt.Advance(time.Second)
+	tt.Frame()
 	if err := tt.Click("退出直播间"); err != nil {
 		t.Fatal(err)
 	}

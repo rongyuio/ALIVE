@@ -72,7 +72,7 @@ func (a *App) syncHeader(c *ui.Context) {
 		ui.Column(c).Grow(1).Gap(1).Children(func() {
 			ui.Text(c, "数据同步").FontSize(theme.TextMD).FontWeight(600).
 				LetterSpacing(-0.01).TextColor(theme.TextPrimary)
-			ui.Text(c, "同步关注、订阅、主题与弹幕设置").FontSize(theme.Text2XS).
+			ui.Text(c, "同步关注、订阅、观测墙与播放偏好").FontSize(theme.Text2XS).
 				TextColor(theme.TextTertiary).SingleLine()
 		})
 
@@ -144,7 +144,7 @@ func (a *App) syncTab(c *ui.Context, id string, ico *ui.SVG, label string) {
 // syncExportBody 是导出页签：说明 + 导出 JSON。
 func (a *App) syncExportBody(c *ui.Context) {
 	ui.Column(c).Padding(12, 16, 16, 16).Gap(10).Children(func() {
-		a.syncHint(c, "导出一份 JSON 快照，包含关注、订阅、主题配色、清晰度与弹幕设置。")
+		a.syncHint(c, "导出一份 JSON 快照：关注、订阅、观测墙、主题配色、清晰度与弹幕设置。")
 
 		ui.Row(c).Gap(8).Children(func() {
 			a.syncButton(c, iconDownload, "导出 JSON", true, a.exportConfig)
@@ -163,8 +163,7 @@ func (a *App) syncImportBody(c *ui.Context) {
 
 		a.syncFeedback(c)
 
-		a.syncHint(c, "关注和订阅按增量合并，不会删掉本机已有的；主题、清晰度、音量与弹幕设置以文件为准。")
-		a.syncHint(c, "也能读 DTV 旧版导出的配置文件。")
+		a.syncHint(c, "关注、订阅、观测墙和屏蔽词按增量合并，不会删掉本机已有的；主题、清晰度、音量与弹幕设置以文件为准。")
 	})
 }
 

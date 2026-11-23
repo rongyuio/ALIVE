@@ -51,25 +51,26 @@ func TestIslandListensWhileRestarting(t *testing.T) {
 
 	a.media.background = false
 	a.media.loading = true
-	if !a.islandListening() {
+	if a.islandFormOf() != islandListening {
 		t.Fatal("正在重开这一路时岛掉回了默认态")
 	}
 
 	// 取流失败：没声音了就不该再显示在收听。
 	a.media.loading = false
-	if a.islandListening() {
+	if a.islandFormOf() == islandListening {
 		t.Fatal("取流失败后岛还挂着「在收听」")
 	}
 
 	// 引擎活着、人离开播放页：这才是常态的后台收听。
 	a.media.background = true
-	if !a.islandListening() {
+	if a.islandFormOf() != islandListening {
 		t.Fatal("后台收听时岛没显示")
 	}
 
 	// 回到播放页：岛切成主播那一态。
+	a.Player = Streamer{Platform: "huya", RoomID: "333003", Name: "主播"}
 	a.Router.Push(routePlayer)
-	if a.islandListening() {
-		t.Fatal("播放页上岛还在画后台收听")
+	if a.islandFormOf() != islandOpen {
+		t.Fatalf("播放页上岛是 %v，期望展开态", a.islandFormOf())
 	}
 }

@@ -109,12 +109,13 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 		Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
 	})
 	if tile.Clicked() {
-		a.watchActivate(room)
-	}
-	if tile.DoubleClicked() {
-		a.watchActivate(room)
-		// 同一间房从格子长到整屏：走连续过渡，不硬切。
-		a.pushRoute(routePlayer)
+		// 点任何一间 = 看这一间。和首页卡片、关注行、搜索结果同一个语义：
+		// 全应用里"点一张直播画面"只有这一种结果。
+		//
+		// 以前这里切的是声音焦点：画面不动，只多一颗 10px 绿点，声音从别的
+		// 格子换过来。用户点完看不出发生了什么——长得一样的卡片做了不一样
+		// 的事，这是最贵的一类不一致。
+		a.watchOpenPlayer(room)
 	}
 	tile.Drag(key)
 	_, dropOver = ui.DragOver[string](tile)
@@ -335,9 +336,9 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float
 				a.watchReload(room)
 			})
 			if active {
-				a.volumeControl(c, m)
+				a.volumeControlFor(c, m, room.Name)
 			} else {
-				a.watchMutedVolume(c, m, room)
+				a.watchTileAudio(c, m, room)
 			}
 		})
 
@@ -346,8 +347,7 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float
 		// 右：放大 / 移出。放大就是进播放页，移出就是离开观测盒。
 		ui.Row(c).Gap(m.rightGap).AlignItems(ui.Center).Children(func() {
 			a.iconBtnSized(c, iconFullscreen, m.iconSize, m.iconHit, false, "放大观测 "+room.Name, func() {
-				a.watchActivate(room)
-				a.pushRoute(routePlayer)
+				a.watchOpenPlayer(room)
 			})
 			a.iconBtnSized(c, iconX, m.iconSize, m.iconHit, false, "移出观测 "+room.Name, func() {
 				a.watchRemove(room)
@@ -396,33 +396,56 @@ func watchBarSizeFor(w float32) watchBarSize {
 	}
 }
 
-// watchMutedVolume 是非 active 格的音量组：这格没在出声，但条上显示的是
-// 它自己记住的音量，不是固定 0%——切走再切回来，用户设过的值还在。
+// watchWheelStep 把一次滚轮位移折算成音量增量，取整到 1%。
 //
-// 点静音键/滑条/滚轮会先把这一格激活再改它自己的音量：没有声音时调音量
-// 听不到反馈，激活是唯一的即时反馈；但改的始终只是这格，别的格一动不动。
-func (a *App) watchMutedVolume(c *ui.Context, m controlMetrics, room Streamer) {
+// 和播放页那条 wheelVolume 同一个灵敏度，但没有跨帧余量：墙上每格各存一份
+// 值，余量要么得按格存一份状态，要么就在一次事件里算完。触控板一次只推
+// 几 DIP，取整之后会掉成 0——所以不足 1% 时按 1% 走，宁可稍快也不卡住。
+func watchWheelStep(dy float32) float32 {
+	step := -dy * volumeWheelPerDIP
+	rounded := float32(math.Round(float64(step)*100)) / 100
+	if rounded == 0 {
+		if step > 0 {
+			return 0.01
+		}
+		if step < 0 {
+			return -0.01
+		}
+	}
+	return rounded
+}
+
+// watchTileAudio 是非 active 格音量组的全部内容：一个"在墙上听"的键，加一条
+// 只改这格记住的值的滑条。
+//
+// 以前这里是一个"取消静音"的静音图标：点它等于激活这一格，也就是换掉整个
+// 声音焦点。那是墙格上唯一能把语义说清楚的控件，却藏在 hover 里、名字还
+// 指向了错误的东西（这一格从来没被静音过，它只是没在出声）。
+//
+// 现在它就叫"在墙上听"——唯一一个只换声音、不进播放页的入口。滑条和滚轮
+// 不再激活这一格：调预览格的音量，改的就只是那一格记下的数。
+func (a *App) watchTileAudio(c *ui.Context, m controlMetrics, room Streamer) {
 	volume := a.watchVolume(watchKey(room))
 	ui.Row(c).Gap(m.leftGap).AlignItems(ui.Center).Children(func() {
-		a.iconBtnSized(c, iconVolumeMute, m.iconSize, m.iconHit, false, "取消静音", func() {
-			a.watchActivate(room)
-			a.watchSyncActiveAudio()
-		})
+		a.iconBtnSized(c, iconVolumeMute, m.iconSize, m.iconHit, false,
+			"在墙上听 "+room.Name, func() {
+				a.watchActivate(room)
+				a.watchSyncActiveAudio()
+			})
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
-			Cursor(ui.CursorPointer).Label("音量")
+			Cursor(ui.CursorPointer).Label("音量 " + room.Name)
 		hot.HandleInput(func(ev ui.InputEvent) bool {
 			if ev.Kind != ui.InputScroll || ev.DY == 0 {
 				return false
 			}
-			a.watchActivate(room)
-			a.wheelVolume(ev.DY)
+			// 滚轮走同一套 1% 取整，但只落在这一格自己的值上。
+			a.setTileVolume(room, volume-watchWheelStep(ev.DY))
 			return true
 		})
 		if hot.Clicked() {
 			x, _, _ := hot.PointerPosition()
 			v := min(1, max(0, x/m.volumeW))
-			a.watchActivate(room)
-			a.setVolume(float32(math.Round(float64(v)*100)) / 100)
+			a.setTileVolume(room, float32(math.Round(float64(v)*100))/100)
 		}
 		hot.Children(func() {
 			track := ui.Box(c).Width(m.volumeW).Height(4).Radius(999).
@@ -496,9 +519,9 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *wallSession, player
 	if msg == "" {
 		return
 	}
-	if sess != nil && player == nil && (sess.offline || sess.err != "") {
-		msg += " · 点击重试"
-	}
+	// 这里以前补一句「· 点击重试」。单击改成"进这一间"之后那句话不成立了：
+	// 点下去会打开播放页，播放页里有「立即刷新」。真正的一步重试在 hover
+	// 底栏的「重新加载」上，所以这里只报状态，不承诺动作。
 	ui.Box(c).Absolute().Top(8).Left(0).Right(0).Height(26).Center().Children(func() {
 		ui.Box(c).Height(22).Padding(0, 9, 0, 9).Radius(theme.RadiusFull).
 			Background(theme.MediaScrimSoft).Center().Children(func() {
@@ -536,8 +559,10 @@ func (a *App) watchEmptyBtn(c *ui.Context, label string, on func()) {
 	if btn.Clicked() {
 		on()
 	}
+	down := btn.Pressed()
 	btn.Children(func() {
 		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(500).
 			TextColor(theme.TextPrimary)
+		pressDim(c, down, theme.RadiusMD)
 	})
 }

@@ -105,8 +105,7 @@ func (a *App) handleEscape() {
 	}
 	// Esc 和左上角的叉一样是明确退出：关引擎、断弹幕，不留后台声音。
 	// 只按 Esc 退全屏的那两条分支已经在上面的 return 里走掉了。
-	a.closeMedia()
-	a.Router.Back()
+	a.exitPlayer()
 }
 
 // toggleWinFull 切换应用内窗口全屏（铺满应用窗口、

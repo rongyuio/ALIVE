@@ -2,13 +2,14 @@ package ui
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
 // 导出再导入必须是自洽的：同一份数据过一遍文件，能原样回到新 App 上。
 func TestConfigRoundTrip(t *testing.T) {
 	src := NewMockApp()
-	// NewMockApp 会 restore 本机 state.json，测试要先清空才不依赖用户数据
+	// NewMockApp 会 restore 本机 state.json，测试要先写死想要的字段
 	src.Follows = []FollowRecord{
 		{Platform: "bilibili", RoomID: "1001", Name: "老王", Title: "直播中", Live: true, Viewers: 3200},
 		{Platform: "douyu", RoomID: "77", Name: "老李"},
@@ -16,12 +17,18 @@ func TestConfigRoundTrip(t *testing.T) {
 	src.Subs = []Subscription{
 		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "英雄联盟", CategoryID: "1_1"},
 	}
+	src.WatchRooms = []Streamer{{Platform: "douyu", RoomID: "77", Name: "老李"}}
+	src.watch.init()
+	src.watch.volumes["douyu|77"] = 0.25
 	src.Player = Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"}
 	src.setRoomQuality("bilibili|1001", "原画")
+	src.setRoomLine("douyu|77", "线路二", "line-2")
 	src.Volume = 0.42
+	src.ThemeMode = themeModeDark
+	src.DanmuFilters = []string{"加微信"}
 	src.FollowsSectionOrder = []string{sectionIDSubs, sectionIDStreamers}
 
-	data, err := json.Marshal(src.buildConfigPayload())
+	data, err := json.Marshal(src.buildConfigFile())
 	if err != nil {
 		t.Fatalf("序列化失败：%v", err)
 	}
@@ -34,16 +41,37 @@ func TestConfigRoundTrip(t *testing.T) {
 	dst := NewMockApp()
 	dst.Follows = nil
 	dst.Subs = nil
+	dst.WatchRooms = nil
+	dst.DanmuFilters = nil
+	dst.ThemeMode = themeModeSystem
 	dst.Player = Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"}
 	sum := dst.applyConfig(parsed)
-	if sum.Follows != 2 || sum.Subs != 1 {
-		t.Fatalf("导入 %+v，期望 2 位关注 1 个订阅", sum)
+	if sum.Follows != 2 || sum.Subs != 1 || sum.Watch != 1 || sum.Filters != 1 {
+		t.Fatalf("导入 %+v，期望 2 位关注、1 个订阅、1 个观测盒、1 个屏蔽词", sum)
 	}
 	if len(dst.Follows) != 2 || dst.Follows[0].RoomID != "1001" {
 		t.Fatalf("关注没有正确落地：%+v", dst.Follows)
 	}
-	if got := dst.qualityFor("bilibili|1001"); got != "原画" || dst.Volume != 0.42 {
-		t.Errorf("播放设置没有覆盖：quality=%q volume=%v", got, dst.Volume)
+	if got := dst.qualityFor("bilibili|1001"); got != "原画" {
+		t.Errorf("清晰度没有覆盖：%q", got)
+	}
+	if c := dst.roomChoiceOf("douyu|77"); c.Line != "线路二" || c.LineID != "line-2" {
+		t.Errorf("线路没有覆盖：%+v", c)
+	}
+	if len(dst.WatchRooms) != 1 || watchKey(dst.WatchRooms[0]) != "douyu|77" {
+		t.Fatalf("观测盒没有落地：%+v", dst.WatchRooms)
+	}
+	if v := dst.watchVolume("douyu|77"); v != 0.25 {
+		t.Errorf("观测盒音量 %v，期望 0.25", v)
+	}
+	if dst.Volume != 0.42 {
+		t.Errorf("全局音量 %v，期望 0.42", dst.Volume)
+	}
+	if dst.ThemeMode != themeModeDark {
+		t.Errorf("日夜模式 %q，期望 %q", dst.ThemeMode, themeModeDark)
+	}
+	if !slices.Contains(dst.DanmuFilters, "加微信") {
+		t.Errorf("屏蔽词没有落地：%v", dst.DanmuFilters)
 	}
 	if got, want := dst.followsSectionOrder(), []string{sectionIDSubs, sectionIDStreamers, sectionIDWatch}; !equalStrings(got, want) {
 		t.Errorf("一级分区顺序 %v，期望 %v", got, want)
@@ -51,87 +79,85 @@ func TestConfigRoundTrip(t *testing.T) {
 
 	// 再导一次：已经有的不该重复加
 	again := dst.applyConfig(parsed)
-	if again.Follows != 0 || again.Subs != 0 {
+	if again.Follows != 0 || again.Subs != 0 || again.Watch != 0 || again.Filters != 0 {
 		t.Errorf("增量合并不幂等：%+v", again)
 	}
-	if len(dst.Follows) != 2 {
-		t.Errorf("重复导入后关注变成 %d 条", len(dst.Follows))
+	if len(dst.Follows) != 2 || len(dst.WatchRooms) != 1 {
+		t.Errorf("重复导入后关注 %d 条、观测盒 %d 个", len(dst.Follows), len(dst.WatchRooms))
 	}
 }
 
-// DTV 导出的配置文件也要能读：字段名和平台大小写都不一样。
-func TestParseDTVConfig(t *testing.T) {
-	entries := map[string]string{
-		"followedStreamers": `[{"id":"555","platform":"BILIBILI","nickname":"老王",` +
-			`"roomTitle":"老王的直播间","avatarUrl":"https://a/b.png",` +
-			`"liveStatus":"LIVE"}]`,
-		"dtv_custom_categories_v1": `[{"platform":"DOUYU","cate1Name":"网游",` +
-			`"cate2Id":"1_1","cate2Name":"英雄联盟"}]`,
-		"dtv_danmu_preferences_v1": `{"enabled":true,"settings":{"color":"#ff0000",` +
-			`"strokeColor":"#000000","fontSize":"22px","duration":8000,` +
-			`"area":0.5,"opacity":0.8,"colorful":true}}`,
-		"theme_preference":           "daylight",
-		"dtv_player_volume_v1":       "0.6",
-		"BILIBILI_preferred_quality": "高清",
+// 导出文件的顶层就是我们的领域划分，不许再出现外部客户端那层
+// kind / version / source / data 信封。
+func TestConfigFileHasNoEnvelope(t *testing.T) {
+	app := NewMockApp()
+	data, err := json.Marshal(app.buildConfigFile())
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
 	}
-	raw, err := json.Marshal(map[string]any{
-		"kind":    dtvConfigKind,
-		"version": 1,
-		"entries": entries,
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("解析失败：%v", err)
+	}
+	for _, banned := range []string{"kind", "version", "data", "entries", "source"} {
+		if _, ok := top[banned]; ok {
+			t.Errorf("导出文件里还有 %q 这层包装", banned)
+		}
+	}
+	if got := string(top["app"]); got != `"ALIVE"` {
+		t.Errorf("app 标识是 %s，期望 \"ALIVE\"", got)
+	}
+	want := []string{"theme", "follows", "subscriptions", "watchWall", "rooms", "player", "danmu", "platformOrder", "followsSections"}
+	for _, key := range want {
+		if _, ok := top[key]; !ok {
+			t.Errorf("导出文件缺少 %q 段", key)
+		}
+	}
+}
+
+// 导入不许弄丢本机已有的观测盒和别的房间的清晰度：列表只加不删，
+// 房间记录按房间合并。
+func TestImportMergesListsAndRoomChoices(t *testing.T) {
+	app := NewMockApp()
+	app.WatchRooms = []Streamer{{Platform: "huya", RoomID: "9", Name: "老张"}}
+	app.watch.init()
+	app.watch.volumes["huya|9"] = 0.3
+	app.setRoomQuality("huya|9", "蓝光")
+
+	app.applyConfig(configFile{
+		WatchWall: []watchRecord{
+			{Platform: "huya", RoomID: "9", Name: "老张"},
+			{Platform: "douyu", RoomID: "77", Name: "老李"},
+		},
+		Rooms: map[string]roomChoice{
+			"bilibili|1001": {Quality: "超清"},
+		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	d, err := parseConfigFile(raw)
-	if err != nil {
-		t.Fatalf("解析 dtv-config 失败：%v", err)
+	if len(app.WatchRooms) != 2 || watchKey(app.WatchRooms[0]) != "huya|9" || watchKey(app.WatchRooms[1]) != "douyu|77" {
+		t.Fatalf("观测盒合并结果不对：%+v", app.WatchRooms)
 	}
-
-	if len(d.Follows) != 1 {
-		t.Fatalf("关注解析出 %d 条", len(d.Follows))
+	if got := app.qualityFor("huya|9"); got != "蓝光" {
+		t.Errorf("本机别的房间被改掉了：%q", got)
 	}
-	f := d.Follows[0]
-	if f.Platform != "bilibili" || f.RoomID != "555" || f.Name != "老王" ||
-		f.Title != "老王的直播间" || f.AvatarURL != "https://a/b.png" || !f.Live {
-		t.Errorf("关注字段没对上：%+v", f)
-	}
-
-	if len(d.Subs) != 1 {
-		t.Fatalf("订阅解析出 %d 条", len(d.Subs))
-	}
-	s := d.Subs[0]
-	if s.PlatformID != "douyu" || s.Group != "网游" || s.Name != "英雄联盟" ||
-		s.CategoryID != "1_1" || s.Platform != "斗鱼" {
-		t.Errorf("订阅字段没对上：%+v", s)
-	}
-
-	if d.Palette != "daylight" {
-		t.Errorf("主题 %q", d.Palette)
-	}
-	if d.Volume == nil || *d.Volume != 0.6 {
-		t.Errorf("音量 %v", d.Volume)
-	}
-	if d.Quality != "高清" {
-		t.Errorf("清晰度 %q", d.Quality)
-	}
-	if d.Danmu == nil {
-		t.Fatal("弹幕设置没解析出来")
-	}
-	if d.Danmu.Font != 22 || d.Danmu.DurMs != 8000 || d.Danmu.Color[0] != 255 {
-		t.Errorf("弹幕字段没对上：%+v", *d.Danmu)
-	}
-	if d.DanmuOn == nil || !*d.DanmuOn {
-		t.Error("弹幕开关没带过来")
+	if got := app.qualityFor("bilibili|1001"); got != "超清" {
+		t.Errorf("文件里的房间没写进去：%q", got)
 	}
 }
 
 // 认不出来的文件要明确报错，不能静默合并成空结果。
-func TestParseConfigRejectsUnknownKind(t *testing.T) {
-	if _, err := parseConfigFile([]byte(`{"kind":"something-else"}`)); err == nil {
-		t.Error("陌生 kind 没有报错")
+func TestParseConfigRejectsUnknownFile(t *testing.T) {
+	cases := map[string]string{
+		"没有 app": `{"follows":[]}`,
+		"别家 app": `{"app":"DTV"}`,
+		"非 JSON": `not json`,
+		"字段类型错":  `{"app":"ALIVE","player":{"volume":"大声"}}`,
+		"数字溢出":   `{"app":"ALIVE","player":{"volume":1e40}}`,
 	}
-	if _, err := parseConfigFile([]byte(`not json`)); err == nil {
-		t.Error("非 JSON 没有报错")
+	for name, raw := range cases {
+		if _, err := parseConfigFile([]byte(raw)); err == nil {
+			t.Errorf("%s 没有报错", name)
+		}
 	}
 }

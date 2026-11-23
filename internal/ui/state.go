@@ -13,7 +13,7 @@ import (
 	"alive/internal/theme"
 )
 
-// danmuPrefs 是弹幕设置的落盘形状，对应 dtv_danmu_preferences_v1。
+// danmuPrefs 是弹幕设置的落盘形状，对应 state.json 与数据同步文件里的 danmu。
 type danmuPrefs struct {
 	Font     float32  `json:"font"`
 	DurMs    int64    `json:"durationMs"`
@@ -28,9 +28,8 @@ func colorBytes(c ui.Color) [4]uint8 { return [4]uint8{c.R, c.G, c.B, c.A} }
 
 // persisted 是落地到 %APPDATA%/alive/state.json 的 UI 状态。
 //
-// 各字段对应一个 localStorage 键：主题（theme_preference）、平台顺序
-// （dtv_platform_tab_order_v1）、关注（followedStreamers）、订阅
-// （dtv_custom_categories_v1）、播放器清晰度 / 线路 / 音量。
+// 键名就是下面这些 json tag，全部是 alive 自己的形状。改 tag 等于改文件
+// 格式，要连带迁移旧 state.json 和数据同步文件。
 // 指针字段用来区分「没存过」和「存了一个空值」：用户可以把订阅和关注清空，
 // 重启后必须还是空的。
 type persisted struct {

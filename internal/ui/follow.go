@@ -19,16 +19,16 @@ import (
 // 人气和在线状态是关注当时的快照，之后靠列表刷新补——关注面板本身
 // 不会为了十几个主播逐个去打房间信息接口。
 type FollowRecord struct {
-	Platform   string
-	RoomID     string
-	Name       string
-	Title      string
-	AvatarURL  string
-	CoverURL   string
-	Category   string
-	Viewers    int
-	Live       bool
-	FollowedAt time.Time
+	Platform   string    `json:"platform"`
+	RoomID     string    `json:"roomId"`
+	Name       string    `json:"name"`
+	Title      string    `json:"title,omitempty"`
+	AvatarURL  string    `json:"avatarUrl,omitempty"`
+	CoverURL   string    `json:"coverUrl,omitempty"`
+	Category   string    `json:"category,omitempty"`
+	Viewers    int       `json:"viewers,omitempty"`
+	Live       bool      `json:"live,omitempty"`
+	FollowedAt time.Time `json:"followedAt"`
 }
 
 // isFollowed 报告一位主播是否已关注。

@@ -151,7 +151,7 @@ type App struct {
 	danmuLanes  []danmuLane
 	danmuStageW float32
 
-	// 弹幕设置（落盘键 dtv_danmu_preferences_v1）
+	// 弹幕设置（落盘键 danmu）
 	DanmuSettingsOpen bool
 	// 颜色 / 描边的取色浮层各自一个开关。取色器比设置面板大，指针得挪到
 	// 面板外面去用，所以设置面板的 hover 关门逻辑要把这两个算进去。
@@ -347,6 +347,18 @@ type App struct {
 	// routeTransitionUntil 是表面之间连续过渡的结束时刻；零值表示当前
 	// 不播页面过渡。由 pushRoute 置、tickRouteTransition 收尾。
 	routeTransitionUntil time.Time
+	// playerFrom 是进播放页之前停留的那一页。退出时要靠它判断"退回去的
+	// 那一页还画不画这一间"——从墙格放大进来的才连续，从列表进的不连续。
+	// 由 trackRoute 每帧记录，是唯一来源。
+	playerFrom string
+	// lastRoute 是上一帧的路由，用来认出"这一帧刚换了页"。
+	lastRoute string
+	// exitMatchKey 是退出播放页时接管 Match 身份的会话 key。
+	//
+	// closeMedia 会清空焦点，而舞台的 Match 身份本来取自 focusKey。清空之后
+	// 源元素在退出那一帧就没了身份，Match 找不到起点，只能硬切。这个记号
+	// 让舞台在退出的那一帧继续带着同一个身份，飞完由 tickRouteTransition 清掉。
+	exitMatchKey string
 }
 
 // CategoryGroup 是一级分区及其下的二级分区。
@@ -515,6 +527,8 @@ func (a *App) Shell(c *ui.Context) {
 
 	// 表面之间的连续过渡到点收尾：恢复成"不播页面过渡"。
 	a.tickRouteTransition(time.Now())
+	// 记下这一帧的路由，退出过渡要靠它知道是从哪一页进来的。
+	a.trackRoute()
 
 	// 各平台登录头像提前进缓存：切平台换头像时才不会先画灰人再跳图。
 	a.syncAuthAvatars()
@@ -559,9 +573,9 @@ func (a *App) Shell(c *ui.Context) {
 			})
 			// 离开播放页：默认进后台收听，声音留着、画面关掉。
 			//
-			// 只有两条路是真退出——左上角的叉和 Esc——它们自己调 closeMedia。
-			// 其余离开方式（顶栏 tab、灵动岛、搜索跳转）都保留这一路的声音，
-			// 回来时接着看。
+			// 只有显式退出才真关——播放页灵动岛上的 X（全屏时是左上角那颗）、
+			// 以及 Esc——它们自己调 closeMedia。其余离开方式（顶栏 tab、
+			// 点岛回直播间、搜索跳转）都保留这一路的声音，回来时接着看。
 			//
 			// 换台不在这里判：从后台收听点开另一个直播间时，ensureMedia 会发现
 			// roomKey 变了，reset 之后重开一路，旧引擎在 stopPlayback 里关掉。
@@ -1089,8 +1103,10 @@ func (a *App) toastView(c *ui.Context) {
 	if maxW > 420 {
 		maxW = 420
 	}
+	// Center()：主轴和交叉轴都居中。MinHeight 撑出来的那点余量由它居中
+	// 分配——只写 AlignItems 时主轴仍是起始对齐，内容就贴着上边。
 	box := ui.Box(c).Absolute().Right(18).Bottom(18).MaxWidth(maxW).
-		MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
+		MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).Center().
 		Background(theme.BgElevated).Border(1, theme.Border).
 		Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact)
 
@@ -1103,7 +1119,7 @@ func (a *App) toastView(c *ui.Context) {
 	}
 
 	box.Children(func() {
-		ui.Row(c).Gap(9).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Gap(9).Center().Children(func() {
 			ui.Icon(c, toastIcon(a.ToastTone)).FontSize(15).
 				TextColor(toastIconColor(a.ToastTone))
 			ui.Text(c, a.ToastText).FontSize(theme.TextSM).
@@ -1428,6 +1444,7 @@ func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on 
 	if btn.Clicked() {
 		on()
 	}
+	down := btn.Pressed()
 	btn.Children(func() {
 		col := theme.TextSecondary
 		if hovered {
@@ -1438,5 +1455,6 @@ func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on 
 			}
 		}
 		ui.Icon(c, ico).FontSize(16).TextColor(col)
+		pressDim(c, down, theme.RadiusFull)
 	})
 }
