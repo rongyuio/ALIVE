@@ -17,8 +17,8 @@ func TestWatchActivateDeadTileDoesNotStealFocus(t *testing.T) {
 
 	liveKey, deadKey := watchKey(live), watchKey(dead)
 	app.WatchActive = liveKey
-	app.watch.sessions[liveKey] = &wallSession{key: liveKey, room: live}
-	app.watch.sessions[deadKey] = &wallSession{
+	app.watch.sessions[liveKey] = &roomSession{key: liveKey, room: live}
+	app.watch.sessions[deadKey] = &roomSession{
 		key: deadKey, room: dead, offline: true, err: "主播暂时没有开播",
 	}
 
@@ -39,10 +39,10 @@ func TestWatchActivateDeadTileDoesNotStealFocus(t *testing.T) {
 func TestWatchFailReleasesFocus(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		kill func(a *App, s *wallSession)
+		kill func(a *App, s *roomSession)
 	}{
-		{"取流失败", func(a *App, s *wallSession) { a.watchFail(s, "取流失败") }},
-		{"下播", func(a *App, s *wallSession) { a.watchOffline(s) }},
+		{"取流失败", func(a *App, s *roomSession) { a.watchFail(s, "取流失败") }},
+		{"下播", func(a *App, s *roomSession) { a.watchOffline(s) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app := NewMockApp()
@@ -53,7 +53,7 @@ func TestWatchFailReleasesFocus(t *testing.T) {
 			app.WatchActive = key
 			app.Player = room
 			app.Playing = true
-			s := &wallSession{key: key, room: room}
+			s := &roomSession{key: key, room: room}
 			app.watch.sessions[key] = s
 
 			tc.kill(app, s)

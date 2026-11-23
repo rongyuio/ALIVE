@@ -44,7 +44,7 @@ func (a *App) togglePip() {
 	// 主窗口要是正全屏着，先退出来：隐藏一个全屏窗口，恢复时的窗口状态不可预期
 	if a.Win != nil {
 		a.WinFull = false
-		if a.Win.IsFullScreen() {
+		if windowFullScreen(a.Win) {
 			a.Win.SetFullScreen(false)
 		}
 	}
@@ -106,7 +106,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 		// Video 必须画：MyGo 的播放器只在「窗口可见、并且这一帧把它画出来」
 		// 时推进，mpv 的画面也是那时才被取走。之前这里只有封面，主窗口一藏，
 		// 全应用就没有任何一帧在显示这个播放器，画面自然永远是静止的封面。
-		p := a.media.player
+		p := a.media.eng()
 		if p != nil {
 			ui.Video(c, p).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
 		}
@@ -166,8 +166,8 @@ func (a *App) MiniPlayer(c *ui.Context) {
 
 	// 续帧：播放器停帧不会主动报错，只靠用户操作触发帧会漏掉故障。
 	// 节拍和播放页一致——等首帧时催得紧，出图之后降成健康检查。
-	if p := a.media.player; a.Playing && p != nil && p.Err() == nil {
-		if !a.media.firstFrame {
+	if p := a.media.eng(); a.Playing && p != nil && p.Err() == nil {
+		if !a.media.firstFrame() {
 			c.After(firstFramePollInterval)
 		} else {
 			c.After(playbackHealthPollInterval)

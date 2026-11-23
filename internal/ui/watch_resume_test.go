@@ -64,7 +64,7 @@ func TestWatchCloseKeepsSignedURLForReconnect(t *testing.T) {
 	app := NewMockApp()
 	app.watch.init()
 	key := "bilibili|1000"
-	s := &wallSession{
+	s := &roomSession{
 		key: key,
 		up: live.Variant{
 			URL:     "https://example.invalid/live.flv",
@@ -94,7 +94,7 @@ func TestWatchCloseDropsExpiredURL(t *testing.T) {
 	app := NewMockApp()
 	app.watch.init()
 	key := "bilibili|1000"
-	s := &wallSession{
+	s := &roomSession{
 		key: key,
 		up:  live.Variant{URL: "https://example.invalid/live.flv", Expires: time.Now().Add(-time.Minute)},
 	}
@@ -112,7 +112,7 @@ func TestWatchCloseGuessesLifetimeWhenPlatformDoesNot(t *testing.T) {
 	app := NewMockApp()
 	app.watch.init()
 	key := "douyin|1000"
-	s := &wallSession{key: key, up: live.Variant{URL: "https://example.invalid/live.flv"}}
+	s := &roomSession{key: key, up: live.Variant{URL: "https://example.invalid/live.flv"}}
 	app.watch.sessions[key] = s
 
 	app.watchCloseSession(s)
@@ -196,7 +196,7 @@ func TestOfflineTileProbesSilentlyAndOpensWhenLive(t *testing.T) {
 	runOnMainNow(t)
 	app.Win = &mygo.Window{}
 
-	s := &wallSession{
+	s := &roomSession{
 		key: key, room: rooms[0], offline: true, err: "主播暂时没有开播",
 		failures: 1, retryAt: time.Now().Add(time.Minute),
 	}
@@ -223,7 +223,7 @@ func TestOfflineTileProbesSilentlyAndOpensWhenLive(t *testing.T) {
 func TestWatchOfflineSchedulesRetry(t *testing.T) {
 	app := NewMockApp()
 	app.watch.init()
-	s := &wallSession{key: "bilibili|1", room: Streamer{Platform: "bilibili", RoomID: "1"}}
+	s := &roomSession{key: "bilibili|1", room: Streamer{Platform: "bilibili", RoomID: "1"}}
 	app.watch.sessions[s.key] = s
 
 	app.watchOffline(s)

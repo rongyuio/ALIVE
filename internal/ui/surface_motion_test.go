@@ -59,15 +59,14 @@ func TestWallToPlayerIsContinuous(t *testing.T) {
 	}
 }
 
-// 退出播放页是硬切，而且回到墙的第一帧就得是画面，不能先闪封面/黑底。
+// 退出播放页是连续过渡（反向收缩），而且全程不出现封面/黑底。
 //
-// 为什么退出不做 Match：一个 VideoPlayer 只能被一个 ui.Video 画出来（实测
-// 两个元素只有一个出画），而退出时必须把画面交回墙上的格子——播放舞台这一侧
-// 就没有引擎可画了。TransitionMatch 会在淡出期间把旧页面重建一次，那一帧
-// 舞台的 player 是 nil，整块闪成封面或黑底（帧探针实测第 0–2 帧全黑，之后
-// 才淡入）。硬切则新墙第一帧就带着同一路画面，没有空窗。
+// 这条曾经反过来写过：当时退出是硬切，理由是「视频交回墙上之后播放页那一侧
+// 没有引擎可画」。那个理由建立在一个已经被拆掉的模型上——墙格和播放页各存
+// 一份引擎、靠 adopt/release 搬。现在一间房一个 roomSession，两边画的是
+// 同一个播放器，退出时只要**把放手推迟到过渡演完**，旧页面就全程有画面。
 //
-// 先红后绿过：把 exitPlayer 换回 TransitionMatch，第 0 帧就是黑。
+// 判据：退出后每一帧墙格中心都必须是视频画面，且路由处于 TransitionMatch。
 func TestExitToWallKeepsThePicture(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
@@ -93,22 +92,34 @@ func TestExitToWallKeepsThePicture(t *testing.T) {
 	if err := tt.Click("退出直播间"); err != nil {
 		t.Fatal(err)
 	}
+	sawMatch := false
 	for i := 0; i < 6; i++ {
 		tt.Frame()
 		if got := app.Router.Path(); got != routeFollows {
 			t.Fatalf("第 %d 帧还没回到墙：route=%q", i, got)
 		}
-		if app.Router.Transition != ui.TransitionNone {
-			t.Fatalf("退出走了页面过渡（%v）：旧页面会重建，舞台这一侧没有引擎", app.Router.Transition)
+		if app.Router.Transition == ui.TransitionMatch {
+			sawMatch = true
 		}
-		r, g, b, ok := tilePixel(tt, rooms[0])
+		// 过渡中页面在交叉淡化，格子颜色是红与背景的混合值——所以这里只
+		// 拦「黑帧」（引擎已放手、那一侧没画面可画），落定再要求是纯视频。
+		tr, ok := tt.Find(watchTileLabel(rooms[0]))
 		if !ok {
 			t.Fatalf("第 %d 帧墙格不在场", i)
 		}
-		if !isVideoRed(r, g, b) {
-			t.Fatalf("第 %d 帧墙格是 %d,%d,%d，不是视频画面：退出时闪成了封面/黑底", i, r, g, b)
+		if l := regionLuma(tt.Image(), tr); l >= 0 && l < 5 {
+			t.Fatalf("第 %d 帧墙格是黑的：退出时引擎放手太早", i)
 		}
 		tt.Advance(16 * time.Millisecond)
+	}
+	if !sawMatch {
+		t.Fatal("退出没有走连续过渡：同一间房缩回格子应该是飞的，不是硬切")
+	}
+	// 过渡演完之后，格子必须落成视频画面（不是封面）。
+	tt.Advance(routeTransitionDur + time.Second)
+	tt.Frame()
+	if r, g, b, ok := tilePixel(tt, rooms[0]); !ok || !isVideoRed(r, g, b) {
+		t.Fatalf("落定格是 %d,%d,%d，不是视频画面", r, g, b)
 	}
 }
 
@@ -305,7 +316,7 @@ func (e *steadyEngine) Close() error                  { return nil }
 //
 // 地址和刷新时刻必须给：接管进媒体层之后，一条 Expires 为零的变体会被
 // 看门狗当成「地址到期」，立刻重取流——测试会从 20ms 变成一次真实请求。
-func steadySession(t *testing.T, app *App, room Streamer) *wallSession {
+func steadySession(t *testing.T, app *App, room Streamer) *roomSession {
 	t.Helper()
 	s := fakeSession(t, app, room)
 	p := ui.NewEngineVideoPlayer(&steadyEngine{})
@@ -363,3 +374,174 @@ func redRect(img *image.RGBA) image.Rectangle {
 
 // isVideoRed 认 steadyEngine 那一帧红：封面（浅灰）和视频井（近黑）都不满足。
 func isVideoRed(r, g, b uint8) bool { return r > 200 && g < 40 && b < 40 }
+
+// listOpenedPlayer 是从分区卡片直接打开播放页的样子：这一间不在观测盒里
+// （watchHas 为假），媒体层握着引擎。用户报的「Esc 没动画」「点岛收不起」
+// 都发生在这一格——退回去的首页没有这一间的画面可接。
+func listOpenedPlayer(t *testing.T) (*App, *ui.Tester, Streamer) {
+	t.Helper()
+	t.Setenv("AppData", t.TempDir())
+	app := NewMockApp()
+	room := Streamer{Platform: "bilibili", RoomID: "42", Name: "甲", Title: "标题", Live: true}
+	app.Router = ui.NewRouter(routeHome)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	// 卡片点击：设房间、推路由。媒体层直接给了这一间的引擎，等价于
+	// 「从分区列表点进来、已经出画」。
+	app.Player = room
+	app.media.roomKey = watchKey(room)
+	app.media.session = &roomSession{room: room, player: gifPlayer(t)}
+	app.Router.Push(routePlayer)
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	app.tickRouteTransition(time.Now().Add(routeTransitionDur + time.Second))
+	tt.Frame()
+	return app, tt, room
+}
+
+// Esc 从哪来回哪去：从关注页（关注主播列表）打开的，回关注主播，
+// 不能因为这一间恰好在观测盒里就跳到观测墙。而且画面缩回它来的那一行。
+func TestEscReturnsToFollowsRowItCameFrom(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	room := Streamer{Platform: "bilibili", RoomID: "42", Name: "甲", Title: "标题", Live: true}
+	app := NewMockApp()
+	app.Streamers = []Streamer{room}
+	app.WatchRooms = []Streamer{room}
+	app.Router = ui.NewRouter(routeFollows)
+	app.FollowsSection = followsSectionStreamers
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	tt.Advance(time.Millisecond)
+	tt.Frame()
+	// 窗口已经稳定：首帧会把 resizedAt 拨到此刻，而 matchable() 按墙钟
+	// 挡掉改尺寸后 400ms 内的 Match。测试里墙钟不走，这里显式让窗口
+	// 处于稳定态——和真实使用时按 Esc 那一刻一样。
+	app.resizedAt = time.Now().Add(-time.Second)
+
+	label := "关注的主播 " + room.Name
+	if err := tt.Click(label); err != nil {
+		t.Fatalf("点不到关注行：%v", err)
+	}
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	app.tickRouteTransition(time.Now().Add(routeTransitionDur + time.Second))
+	tt.Frame()
+	if got := app.Router.Path(); got != routePlayer {
+		t.Fatalf("没有进播放页：route=%q", got)
+	}
+
+	tt.Key(0, ui.KeyEscape)
+	stepFrames(tt)
+	if got := app.Router.Path(); got != routeFollows {
+		t.Fatalf("Esc 之后路由是 %q，期望回关注页 %q", got, routeFollows)
+	}
+	if app.FollowsSection != followsSectionStreamers {
+		t.Fatalf("Esc 把关注页的分区改了：%d，期望留在关注主播", app.FollowsSection)
+	}
+	if app.Router.Transition != ui.TransitionMatch {
+		t.Fatalf("Esc 退出是 %v，期望 Match：画面要缩回它来的那一份", app.Router.Transition)
+	}
+	if _, ok := tt.Find(label); !ok {
+		t.Fatal("回到关注页后找不到那一行")
+	}
+}
+
+// stepFrames 跑几帧，让「离开播放页」的两拍走完：第一趟把舞台的 Match
+// 身份挂上，第二趟记下它在哪，第三趟才换路由。
+func stepFrames(tt *ui.Tester) {
+	for range 6 {
+		tt.Frame()
+		tt.Advance(16 * time.Millisecond)
+	}
+}
+
+// 从观测墙点进去的，Esc 回墙，画面飞回那一格。
+func TestEscFromWallOpenedPlayerFliesToWall(t *testing.T) {
+	rooms := watchTestRooms(2)
+	app, tt := newWatchMock(t, rooms)
+	fakeSession(t, app, rooms[0])
+	tt.Frame()
+
+	if err := tt.Click(watchTileLabel(rooms[0])); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	app.tickRouteTransition(time.Now().Add(routeTransitionDur + time.Second))
+	tt.Frame()
+	if app.Router.Path() != routePlayer {
+		t.Fatalf("没有进播放页：%q", app.Router.Path())
+	}
+	// 窗口已经稳定：matchable() 按墙钟挡掉改尺寸后 400ms 内的 Match，
+	// 测试里墙钟走得慢，这里显式让窗口处于稳定态。
+	app.resizedAt = time.Now().Add(-time.Second)
+
+	tt.Key(0, ui.KeyEscape)
+	stepFrames(tt)
+	if got := app.Router.Path(); got != routeFollows {
+		t.Fatalf("Esc 之后路由是 %q，期望回观测墙", got)
+	}
+	if app.FollowsSection != followsSectionWatch {
+		t.Fatal("Esc 回墙后关注页没落在观测分区")
+	}
+	if app.Router.Transition != ui.TransitionMatch {
+		t.Fatalf("Esc 回墙是 %v，期望 Match", app.Router.Transition)
+	}
+	// 飞行真的在跑：墙格的矩形从舞台尺寸收下来。
+	first, ok := tt.Find(watchTileLabel(rooms[0]))
+	if !ok {
+		t.Fatal("回到墙上找不到那一格")
+	}
+	tt.Advance(160 * time.Millisecond)
+	tt.Frame()
+	settled, ok := tt.Find(watchTileLabel(rooms[0]))
+	if !ok {
+		t.Fatal("飞行途中那一格不见了")
+	}
+	if first.W <= settled.W {
+		t.Fatalf("墙格没有从舞台缩回来：%v → %v", first, settled)
+	}
+}
+
+// Esc 在盒外的播放页上：退回打开它之前那一页，声音留着，页面过渡。
+//
+// 以前这里是 TransitionNone 硬切，现在是 Match 的交叉淡化；判据落在
+// 「路由回首页 + 这一路没关 + 过渡不是 None」。
+func TestEscOnPlayerOutsideBoxGoesBackKeepingSound(t *testing.T) {
+	app, tt, room := listOpenedPlayer(t)
+
+	tt.Key(0, ui.KeyEscape)
+	stepFrames(tt)
+	if got := app.Router.Path(); got != routeHome {
+		t.Fatalf("Esc 之后路由是 %q，期望回首页", got)
+	}
+	if app.Router.Transition != ui.TransitionMatch {
+		t.Fatalf("Esc 退出是 %v，期望 Match（页面过渡），不是硬切", app.Router.Transition)
+	}
+	if app.media.roomKey != watchKey(room) || app.focusKey() != watchKey(room) {
+		t.Fatalf("Esc 之后这一路没了：roomKey=%q focus=%q", app.media.roomKey, app.focusKey())
+	}
+}
+
+// 播放页上点岛 = 收起这一路。以前热区把「在播放页」算成目标仍是播放页，
+// 点一下等于原地不动——用户报的「点灵动岛不能收起直播间」。
+func TestIslandClickOnPlayerCollapses(t *testing.T) {
+	app, tt, room := listOpenedPlayer(t)
+	key := watchKey(room)
+
+	if err := tt.Click("回到直播间"); err != nil {
+		t.Fatal(err)
+	}
+	stepFrames(tt)
+	tt.Advance(time.Second)
+	tt.Frame()
+	if got := app.Router.Path(); got == routePlayer {
+		t.Fatalf("点岛之后还停在播放页：热区把目标算成了当前页")
+	}
+	if app.media.roomKey != key || app.focusKey() != key {
+		t.Fatalf("点岛把这一路关了：roomKey=%q focus=%q", app.media.roomKey, app.focusKey())
+	}
+}

@@ -71,7 +71,7 @@ func TestOfflineProbeKeepsTheTileUnchanged(t *testing.T) {
 	runOnMainNow(t)
 	app.Win = &mygo.Window{}
 
-	s := &wallSession{
+	s := &roomSession{
 		key: key, room: rooms[0], offline: true, err: "主播暂时没有开播",
 		failures: 1,
 	}
@@ -106,7 +106,7 @@ func TestOfflineProbeDoesNothingOffWall(t *testing.T) {
 	app.Win = &mygo.Window{}
 	app.Router = ui.NewRouter(routeHome)
 
-	s := &wallSession{
+	s := &roomSession{
 		key: key, room: rooms[0], offline: true, err: "主播暂时没有开播",
 	}
 	app.watch.init()
@@ -134,7 +134,7 @@ func TestOfflineProbeRunsImmediatelyBackOnWall(t *testing.T) {
 	runOnMainNow(t)
 	app.Win = &mygo.Window{}
 
-	s := &wallSession{
+	s := &roomSession{
 		key: key, room: rooms[0], offline: true, err: "主播暂时没有开播",
 		failures: 4, retryAt: time.Now().Add(4 * time.Minute),
 	}
@@ -185,7 +185,7 @@ func TestFirstFrameTimeoutAsksPlatform(t *testing.T) {
 // 永远循环。
 func TestFirstFrameResetsFailures(t *testing.T) {
 	app := NewMockApp()
-	s := &wallSession{failures: 3, retryAt: time.Now().Add(time.Minute)}
+	s := &roomSession{failures: 3, retryAt: time.Now().Add(time.Minute)}
 
 	app.watchFirstFrame(s)
 	if !s.firstFrame {

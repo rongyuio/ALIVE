@@ -83,7 +83,19 @@ func (a *App) handleEscape() {
 		a.ShortcutsOpen = false
 		return
 	}
+	if a.Router == nil {
+		return
+	}
 	if a.Router.Path() != routePlayer {
+		// 第二档：已经收进岛（后台收听），或者在墙上开着声音。
+		// 结束这一路——和岛上那颗 X 同一个动作：在盒里只收声、格子留成
+		// 静音预览，不在盒里就彻底关掉。没有焦点时什么都不做。
+		switch {
+		case a.WatchActive != "":
+			a.watchDeactivate()
+		case a.media.roomKey != "":
+			a.closeMedia()
+		}
 		return
 	}
 	// 窗口全屏是我们自己的状态，一定要在系统全屏之前退：
@@ -93,8 +105,8 @@ func (a *App) handleEscape() {
 		a.lastFullscreenExit = time.Now()
 		return
 	}
-	// 全屏时 Esc 只退出全屏，绝不顺手把用户踢回列表
-	if a.Win != nil && a.Win.IsFullScreen() {
+	// 全屏时 Esc 只退出全屏，绝不顺手把用户踢出直播间
+	if windowFullScreen(a.Win) {
 		a.Win.SetFullScreen(false)
 		a.lastFullscreenExit = time.Now()
 		return
@@ -103,9 +115,9 @@ func (a *App) handleEscape() {
 	if time.Since(a.lastFullscreenExit) < 500*time.Millisecond {
 		return
 	}
-	// Esc 和左上角的叉一样是明确退出：关引擎、断弹幕，不留后台声音。
-	// 只按 Esc 退全屏的那两条分支已经在上面的 return 里走掉了。
-	a.exitPlayer()
+	// 第一档：收进岛。引擎、取流、声音全留着，岛不动，接着出声；
+	// 再按一次才结束这一路。左上角的叉才是「退出直播间」。
+	a.collapsePlayer()
 }
 
 // toggleWinFull 切换应用内窗口全屏（铺满应用窗口、
@@ -118,7 +130,7 @@ func (a *App) toggleWinFull() {
 		a.WinFull = false
 		return
 	}
-	if a.Win != nil && a.Win.IsFullScreen() {
+	if windowFullScreen(a.Win) {
 		a.Win.SetFullScreen(false)
 	}
 	a.WinFull = true
@@ -132,7 +144,7 @@ func (a *App) toggleFullscreen() {
 	if a.Win == nil {
 		return
 	}
-	full := a.Win.IsFullScreen()
+	full := windowFullScreen(a.Win)
 	if !full {
 		a.WinFull = false
 	}

@@ -15,7 +15,7 @@ func TestIslandSkipsOfflineActiveTile(t *testing.T) {
 	key := watchKey(room)
 	app.WatchRooms = []Streamer{room}
 	app.WatchActive = key
-	app.watch.sessions[key] = &wallSession{
+	app.watch.sessions[key] = &roomSession{
 		key: key, room: room, offline: true,
 	}
 

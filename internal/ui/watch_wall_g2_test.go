@@ -66,7 +66,7 @@ func TestWatchReloadRetriesOfflineTile(t *testing.T) {
 	app, tt := newWatchMock(t, rooms)
 	key := watchKey(rooms[0])
 
-	s := &wallSession{
+	s := &roomSession{
 		key: key, room: rooms[0], offline: true,
 		err: "主播暂时没有开播", failures: 3, retryAt: time.Now().Add(time.Minute),
 	}
@@ -104,7 +104,7 @@ func TestWatchReloadActiveWallSession(t *testing.T) {
 	app, tt := newWatchMock(t, rooms)
 	key := watchKey(rooms[0])
 
-	s := &wallSession{
+	s := &roomSession{
 		key: key, room: rooms[0], offline: true,
 		err: "主播暂时没有开播", failures: 2,
 	}
@@ -185,9 +185,9 @@ func TestWatchReleaseCarriesFirstFrameClock(t *testing.T) {
 
 	app.watch.init()
 	app.watch.rects[key] = watch.Rect{W: 640, H: 360}
-	app.media.player = stalledPlayer(t)
+	app.media.session = &roomSession{player: stalledPlayer(t)}
 	app.media.roomKey = key
-	app.media.openedAt = now.Add(-firstFrameBudget - time.Second)
+	app.media.setOpened(now.Add(-firstFrameBudget - time.Second))
 
 	app.watchReleaseActive()
 
@@ -216,7 +216,7 @@ func TestWatchAdoptKeepsFirstFramePending(t *testing.T) {
 	opened := time.Now().Add(-firstFrameBudget / 2)
 
 	app.watch.init()
-	s := &wallSession{key: key, room: rooms[0], player: stalledPlayer(t)}
+	s := &roomSession{key: key, room: rooms[0], player: stalledPlayer(t)}
 	s.openedAt = opened
 	app.watch.sessions[key] = s
 	app.WatchActive = key
@@ -230,15 +230,15 @@ func TestWatchAdoptKeepsFirstFramePending(t *testing.T) {
 	if !app.watchAdoptActive(false) {
 		t.Fatal("接管失败")
 	}
-	if app.media.firstFrame {
+	if app.media.firstFrame() {
 		t.Fatal("引擎还没出图，媒体层却记成已出图：首帧预算从此不再管这一路")
 	}
-	if !app.media.openedAt.Equal(opened) {
-		t.Fatalf("接管没有带上墙上的起播时刻：openedAt=%v，期望 %v", app.media.openedAt, opened)
+	if !app.media.opened().Equal(opened) {
+		t.Fatalf("接管没有带上墙上的起播时刻：openedAt=%v，期望 %v", app.media.opened(), opened)
 	}
 }
 
-// 缺陷 #12 / #41：wallSession.prov 从未赋值，watchEnded 里的 RoomInfoer
+// 缺陷 #12 / #41：roomSession.prov 从未赋值，watchEnded 里的 RoomInfoer
 // 断言恒为 false，于是「平台说 live=false 就落未开播」永远走不到，判死一律
 // 白走一整轮取流。修复要求 nil 字段也能按平台现查一次。
 func TestWatchEndedAsksPlatformWhenProvMissing(t *testing.T) {
@@ -261,7 +261,7 @@ func TestWatchEndedAsksPlatformWhenProvMissing(t *testing.T) {
 	t.Cleanup(func() { runOnMain = oldRun })
 
 	app.watch.init()
-	s := &wallSession{key: key, room: rooms[0], player: gifPlayer(t)}
+	s := &roomSession{key: key, room: rooms[0], player: gifPlayer(t)}
 	app.watch.sessions[key] = s
 
 	app.watchEnded(s, "播放器报告结束")

@@ -170,6 +170,8 @@ func seededApp(t *testing.T) *App {
 	a := NewMockApp()
 	a.Player = Streamer{Platform: "douyu", RoomID: "123", Name: "主播"}
 	a.media.roomKey = "douyu|123"
+	// 媒体层现在只是这一间房的一个视图：房间自己住在 roomStore 里。
+	a.media.session = a.sessionFor("douyu|123", a.Player)
 	// 媒体层的状态机默认站在播放页上：attachMedia 有路由判据，
 	// 留在 NewMockApp 给的首页就等于「人在别的页面」，那条路测不到。
 	if a.Router == nil || a.Router.Path() != routePlayer {
@@ -240,7 +242,7 @@ func TestStartStreamUsesSelectedVariant(t *testing.T) {
 
 	a := seededApp(t)
 	a.setRoomQuality("douyu|123", "原画") // 请求原画，但服务端只给了蓝光
-	a.media.stream = live.Stream{Variants: menu}
+	a.media.session.stream = live.Stream{Variants: menu}
 
 	a.startStream(false)
 	// 一次取流结果上屏，一次打开播放引擎。
@@ -268,7 +270,7 @@ func TestQualityDowngradeShowsNotice(t *testing.T) {
 	}
 	useProvider(t, prov)
 	a := seededApp(t)
-	a.media.stream = live.Stream{Variants: prov.full.Variants}
+	a.media.session.stream = live.Stream{Variants: prov.full.Variants}
 	a.media.roomKey = "douyu|1"
 	a.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "主播"}
 
@@ -333,7 +335,7 @@ func TestPickQualityFetchesOnDemand(t *testing.T) {
 	useProvider(t, prov)
 
 	a := seededApp(t)
-	a.media.stream = live.Stream{Variants: []live.Variant{
+	a.media.session.stream = live.Stream{Variants: []live.Variant{
 		{ID: "origin", Label: "原画"},
 		{ID: "hd", Label: "高清"},
 	}}
@@ -357,7 +359,7 @@ func TestPickQualityPlaysDirectlyWhenURLPresent(t *testing.T) {
 	useProvider(t, prov)
 
 	a := seededApp(t)
-	a.media.stream = live.Stream{Variants: []live.Variant{
+	a.media.session.stream = live.Stream{Variants: []live.Variant{
 		{ID: "origin", Label: "原画", URL: "https://example.invalid/origin.flv"},
 		{ID: "hd", Label: "高清", URL: "https://example.invalid/hd.flv"},
 	}}
@@ -477,10 +479,10 @@ func TestNeedFirstFrameTimeout(t *testing.T) {
 		at      time.Duration
 		want    bool
 	}{
-		{"预算内", playerMedia{openedAt: opened}, true, firstFrameBudget / 2, false},
-		{"到点", playerMedia{openedAt: opened}, true, firstFrameBudget, true},
-		{"已出图", playerMedia{openedAt: opened, firstFrame: true}, true, time.Hour, false},
-		{"暂停中", playerMedia{openedAt: opened}, false, time.Hour, false},
+		{"预算内", playerMedia{session: &roomSession{openedAt: opened}}, true, firstFrameBudget / 2, false},
+		{"到点", playerMedia{session: &roomSession{openedAt: opened}}, true, firstFrameBudget, true},
+		{"已出图", playerMedia{session: &roomSession{openedAt: opened, firstFrame: true}}, true, time.Hour, false},
+		{"暂停中", playerMedia{session: &roomSession{openedAt: opened}}, false, time.Hour, false},
 		{"还没打开", playerMedia{}, true, time.Hour, false},
 	} {
 		if got := tc.m.needFirstFrameTimeout(opened.Add(tc.at), tc.playing); got != tc.want {
@@ -492,7 +494,7 @@ func TestNeedFirstFrameTimeout(t *testing.T) {
 // 首帧预算里要扣掉用户暂停的时间，否则网络抖动一次就过早判失败。
 func TestStartupElapsedExcludesPause(t *testing.T) {
 	opened := time.Now()
-	m := playerMedia{openedAt: opened}
+	m := playerMedia{session: &roomSession{openedAt: opened}}
 	// 播了 1 秒，然后暂停 10 秒，再继续。
 	m.observeStartupPause(true, opened.Add(time.Second))
 	m.observeStartupPause(false, opened.Add(time.Second))
@@ -529,10 +531,10 @@ func TestLiveWithoutVariantsReportsError(t *testing.T) {
 	// 一次是房间详情上屏，一次是「没有档位」的终态。
 	stubs.pump(t)
 	stubs.pump(t)
-	if a.media.loading {
+	if a.media.isLoading() {
 		t.Fatal("没有可播地址仍停在加载态")
 	}
-	if a.media.err == "" {
+	if a.media.errText() == "" {
 		t.Fatal("没有可播地址却没报错")
 	}
 }
@@ -640,7 +642,9 @@ func useTrack(t *testing.T, a *App, spy *trackSpy) {
 	old := engineOf
 	engineOf = func(*ui.VideoPlayer) videoTrack { return spy }
 	t.Cleanup(func() { engineOf = old })
-	a.media.player = nil
+	if a.media.session != nil {
+		a.media.session = &roomSession{player: nil}
+	}
 }
 
 // 离开播放页进后台收听：全尺寸呈现关掉、房间记号留着、引擎不关。
@@ -682,7 +686,7 @@ func TestAttachResumesSameEngine(t *testing.T) {
 
 	a.detachMedia()
 	before := a.media.seq
-	epoch := a.media.openedAt
+	epoch := a.media.opened()
 	a.attachMedia()
 
 	if a.media.background {
@@ -691,7 +695,7 @@ func TestAttachResumesSameEngine(t *testing.T) {
 	if a.media.seq != before {
 		t.Fatal("回来重新起播了：后台那一路的声音本来就没断")
 	}
-	if a.media.loading {
+	if a.media.isLoading() {
 		t.Fatal("回来进了 loading：画面上只剩加载层，最后一帧被盖掉了")
 	}
 	if got, ok := spy.last(); !ok || got != (presentSize{}) {
@@ -700,7 +704,7 @@ func TestAttachResumesSameEngine(t *testing.T) {
 	if n := spy.count(); n != 2 {
 		t.Fatalf("呈现推了 %d 次（小图 + 全尺寸应当正好 2 次）", n)
 	}
-	if !a.media.openedAt.Equal(epoch) {
+	if !a.media.opened().Equal(epoch) {
 		t.Fatal("回来把打开时刻重置了：首帧预算会从头再算一遍")
 	}
 }
@@ -752,7 +756,7 @@ func TestCloseMediaClearsBackground(t *testing.T) {
 	if a.media.background {
 		t.Fatal("关掉媒体之后还挂着后台收听标记")
 	}
-	if a.media.player != nil {
+	if a.media.eng() != nil {
 		t.Fatal("关掉媒体之后播放器还在")
 	}
 }
@@ -767,12 +771,12 @@ func TestBackgroundIgnoresFirstFrameBudget(t *testing.T) {
 	a.detachMedia()
 
 	// 把打开时刻拨到很久以前：真按首帧预算算，这一下必然超时。
-	a.media.openedAt = time.Now().Add(-time.Minute)
+	a.media.setOpened(time.Now().Add(-time.Minute))
 
 	a.trackFirstFrame()
 
-	if a.media.err != "" {
-		t.Fatalf("后台收听被首帧预算判成了失败：%s", a.media.err)
+	if a.media.errText() != "" {
+		t.Fatalf("后台收听被首帧预算判成了失败：%s", a.media.errText())
 	}
 	if a.media.background == false {
 		t.Fatal("后台收听被首帧预算关掉了")
@@ -894,5 +898,40 @@ func TestApplyPresentForceAlwaysPushes(t *testing.T) {
 
 	if n := len(spy.presentSizes()); n != 3 {
 		t.Fatalf("强制推只发生 %d 次，期望 3", n)
+	}
+}
+
+// 媒体层已经握着这一间、房间记号却被某次收尾清掉时，接手不能把它自己关掉。
+//
+// ensureMedia 的接手分支先调 a.media.reset()：如果 media.session 正是要接手的
+// 那个 session，reset → stopPlayback 会把播放器 Close 掉、session.player 置空，
+// 下一行 old.player.SetVolume 就是 nil 解引用（dev 里崩过一次）。从分区打开
+// 播放页、Esc 收起、再回来的路径能走到这里。
+func TestEnsureMediaKeepsPlayerItAlreadyHolds(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	room := Streamer{Platform: "bilibili", RoomID: "42", Name: "甲", Title: "标题", Live: true}
+	key := watchKey(room)
+	app := NewMockApp()
+	app.WatchRooms = []Streamer{room}
+	app.watch.init()
+	p := gifPlayer(t)
+	s := &roomSession{key: key, room: room, player: p}
+	app.watch.sessions[key] = s
+	// 媒体层还指着这一间，但房间记号已经被一次收尾清空了。
+	app.media.session = s
+	app.media.roomKey = ""
+	app.Router = ui.NewRouter(routeHome)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	app.Player = room
+	app.Router.Push(routePlayer)
+	tt.Frame()
+
+	if s.player == nil {
+		t.Fatal("接手把这一间的播放器关了")
+	}
+	if app.media.session != s || app.media.roomKey != key {
+		t.Fatalf("接手后媒体层指着 roomKey=%q session=%v，期望 %q / 同一份",
+			app.media.roomKey, app.media.session != nil, key)
 	}
 }

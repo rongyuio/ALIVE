@@ -113,7 +113,7 @@ func TestBackdropDrawnOnResizeFrame(t *testing.T) {
 	// 暂停：不然 GIF 每帧都申请下一帧，Tester 的 settle 会一次跑好几帧，
 	// 量到的就不是「拉窗后的第一帧」了。
 	p.Pause()
-	app.media.player = p
+	app.media.session = &roomSession{player: p}
 	app.Player = Streamer{Name: "测试", CoverURL: "https://example.invalid/cover.jpg"}
 	useBackdropBitmap(t, solidBitmap(4, 4, color.RGBA{0, 200, 0, 255}))
 	tt := ui.NewTester(func(c *ui.Context) {
@@ -164,7 +164,7 @@ func gifPlayerSize(t *testing.T, w, h int) *ui.VideoPlayer {
 // 拿到尺寸之后黑边区就该有内容。窗口拉宽拉高时黑边跟着变，但底一直在。
 func TestStageFrameDrawsBackdrop(t *testing.T) {
 	app := NewMockApp()
-	app.media.player = gifPlayerSize(t, 32, 18)
+	app.media.session = &roomSession{player: gifPlayerSize(t, 32, 18)}
 	app.Player = Streamer{Name: "测试", CoverURL: "https://example.invalid/cover.jpg"}
 	useBackdropBitmap(t, solidBitmap(4, 4, color.RGBA{0, 200, 0, 255}))
 	tt := ui.NewTester(func(c *ui.Context) {

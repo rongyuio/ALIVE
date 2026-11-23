@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 
@@ -65,8 +66,8 @@ func (a *App) PlayerPage(c *ui.Context) {
 	//
 	// 首帧后按 250ms 看一眼：播放器停帧不会主动报错，只靠用户操作触发帧会
 	// 漏掉故障。
-	if a.Playing && a.media.player != nil && a.media.player.Err() == nil {
-		if !a.media.firstFrame {
+	if a.Playing && a.media.eng() != nil && a.media.eng().Err() == nil {
+		if !a.media.firstFrame() {
 			c.After(firstFramePollInterval)
 		} else {
 			c.After(playbackHealthPollInterval)
@@ -90,28 +91,24 @@ func (a *App) PlayerPage(c *ui.Context) {
 		if !full {
 			shell.Radius(theme.RadiusXL).Clip()
 		}
+		// 飞到墙格、从墙格飞进来的，是这一块外壳，不是它里面的舞台。
+		//
+		// 圆角属于外壳（舞台 + 弹幕面板的整体），也只有外壳知道自己在不在
+		// 全屏。把 Match 挂在舞台上的话，飞行元素得自己再声明一份半径去
+		// 模拟外壳的圆角——而那两角在面板打开时根本不是圆角（右侧是内部
+		// 边）。挂在外壳上，形状只有一处来源：它自己的 Radius。
+		//
+		// 过渡窗口里挂，另外「离开播放页」的第一拍也要挂：退出的飞行要从
+		// 上一帧的舞台起飞，按 Esc 那一帧舞台身上还没有身份（见 exitArm）。
+		if key := a.stageMatchKey(); key != "" && (a.exitArm || (a.matchable() && !a.routeTransitionUntil.IsZero())) {
+			shell.Transition(ui.ElementTransition{
+				Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
+			})
+		}
 
 		shell.Children(func() {
 			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
-				// 圆角必须挂在舞台自己身上，不能只靠外壳的 Clip。
-				//
-				// MyGo 的飞行取的是元素自己的 radius（match.go 的 lookOf），
-				// 途中在源元素与目标元素之间插值（mixLook）。只在 shell 上
-				// Clip 时舞台自己是 0，于是从墙格的 8 一路插到 0——飞行那
-				// 几百毫秒屏幕上是越来越方的画面，落定之后才被外壳裁圆。
-				// 挂成和外壳一样的 16，两端相同，全程一致。
-				if !full {
-					stage.Radius(theme.RadiusXL).Clip()
-				}
-				// 这一块是焦点会话在全尺寸表面上的那一份。从墙上放大进来时
-				// 它拿同一个身份，于是从格子那块矩形长过来（surface_motion.go）。
-				// 只在路由过渡期间挂 Match：常挂着会让窗口改尺寸也走尺寸动画。
-				if key := a.stageMatchKey(); key != "" && !a.routeTransitionUntil.IsZero() {
-					stage.Transition(ui.ElementTransition{
-						Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
-					})
-				}
 				// 悬浮 chrome 的自动隐藏：先按指针位置和空闲时长算出这一帧
 				// 的显隐，拖窗条和 chrome 都跟着它走。
 				a.syncChromeIdle(c, stage)
@@ -159,7 +156,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 					switch {
 					case a.WinFull:
 						a.WinFull = false
-					case a.Win != nil && a.Win.IsFullScreen():
+					case windowFullScreen(a.Win):
 						a.Win.SetFullScreen(false)
 					default:
 						a.WinFull = true
@@ -282,7 +279,15 @@ func (a *App) playerFullscreen() bool {
 // 单拎出来是因为有两处只关心系统全屏、不关心窗口全屏：系统全屏下不画
 // 弹幕侧栏，飞幕的宽度也就不能扣掉面板。
 func (a *App) sysFullscreen() bool {
-	return a.Win != nil && a.Win.IsFullScreen()
+	return windowFullScreen(a.Win)
+}
+
+// windowFullScreen 问系统这一扇窗是不是全屏。测试里换成常量：零值
+// *mygo.Window 的任何方法都要走 onMain，而 Tester 的 backend 有 mainID，
+// 非主线程等 done 会永久阻塞。真实播放用例需要一个「有窗口」的凭据，
+// 但不需要真的问系统。
+var windowFullScreen = func(w *mygo.Window) bool {
+	return w != nil && w.IsFullScreen()
 }
 
 // leavePlayer 收掉播放页留下的窗口级与界面级状态，离开播放页时调用。
@@ -298,7 +303,7 @@ func (a *App) sysFullscreen() bool {
 // 幂等，每帧调用都没问题；判据由调用方给（Router 不是播放页）。
 func (a *App) leavePlayer() {
 	a.WinFull = false
-	if a.Win != nil && a.Win.IsFullScreen() {
+	if windowFullScreen(a.Win) {
 		a.Win.SetFullScreen(false)
 	}
 	a.ChromeHidden = false
@@ -323,7 +328,7 @@ func (a *App) stageFrame(c *ui.Context, stage ui.Element) {
 	// 底下就空出一条黑边（控制条会浮在那条黑边上）。
 	// contain 是有意选的：宁可留黑边也不裁、不拉伸，
 	// 弹幕层再盖到黑边上去。
-	p := a.media.player
+	p := a.media.eng()
 	// 封面只在这两种时候出现：播放器还没开，或者开了但首帧没到。
 	var cover *ui.Bitmap
 	if p == nil || !p.Ready() {
@@ -479,17 +484,17 @@ func (a *App) stageOverlay(c *ui.Context) {
 	// 下首片、建解码器，实测 2~4 秒才出第一帧。原来 loading 一撤覆盖层就
 	// 没了，而 Video 还是黑的——观感就是「loading → 黑屏几秒 → 突然有画面」。
 	// 所以这里把加载态延到播放器真的 Ready 为止。
-	case m.loading || (m.player != nil && !m.player.Ready() && m.player.Err() == nil):
+	case m.isLoading() || (m.eng() != nil && !m.eng().Ready() && m.eng().Err() == nil):
 		a.overlayLayer(c, func() {
 			spinner(c, 30)
 			a.overlayText(c, "正在拉取直播流…")
 		})
 
-	case m.err != "":
+	case m.errText() != "":
 		a.overlayLayer(c, func() {
-			a.overlayText(c, m.err)
+			a.overlayText(c, m.errText())
 			// 多线路平台失败过才提示，单线路说了也没用
-			if len(m.stream.Lines) > 1 {
+			if len(m.streamNow().Lines) > 1 {
 				ui.Text(c, "可以在控制条切换线路后重试").
 					FontSize(theme.TextXS).TextColor(ui.RGBA(255, 255, 255, 0.6)).
 					TextAlign(ui.Center).LineHeight(1.7)
@@ -499,13 +504,13 @@ func (a *App) stageOverlay(c *ui.Context) {
 
 	// 播放器开出来了但解码失败（首片坏、编码不支持）。这种时候它永远
 	// Ready 不了，不单独列一个分支就会一直卡在加载层上。
-	case m.player != nil && m.player.Err() != nil:
+	case m.eng() != nil && m.eng().Err() != nil:
 		a.overlayLayer(c, func() {
 			a.overlayText(c, "播放失败，请重试或切换线路")
 			a.overlayButton(c, "重试", a.retryStream)
 		})
 
-	case m.stream.RoomID != "" && !m.stream.Live:
+	case m.streamNow().RoomID != "" && !m.streamNow().Live:
 		a.overlayLayer(c, func() {
 			// 58 圆底 + 26 图标
 			icon := ui.Box(c).Size(58, 58).Radius(29).Margin(0, 0, 4, 0).
@@ -570,8 +575,8 @@ func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 // 判定看的是「画面有没有在动」，不是 VideoPlayer.Buffering() ——
 // 后者在直播 HLS 上会永久卡在 true（原因见 playerMedia.stalled）。
 func (a *App) bufferingPill(c *ui.Context) {
-	p := a.media.player
-	if p == nil || a.media.loading || !a.media.stalled(p) {
+	p := a.media.eng()
+	if p == nil || a.media.isLoading() || !a.media.stalled(p) {
 		return
 	}
 	ui.Row(c).Absolute().Left(16).Bottom(76).Height(30).
@@ -619,7 +624,8 @@ func (a *App) current() Streamer {
 //
 // 窗口模式下这颗 X 归灵动岛：岛在播放页展开时最右那颗就是「退出直播间」，
 // 和墙上 active 那颗同一个位置、同一个动作来源。全屏时整个岛不画
-// （见 Shell），这里必须留着，否则退出只剩 Esc。
+// （见 Shell），这里必须留着，否则全屏里退出只剩 Esc——而 Esc 现在是
+// 收进岛，不是退出。
 //
 // 直播间信息在顶栏那枚灵动岛里（见 island.go），这里不再重复一份——
 // 同一个直播间在画面上出现两条一模一样的头像加标题，属于历史遗留。
@@ -756,7 +762,7 @@ func (a *App) playerControls(c *ui.Context) {
 				}
 				a.playerIconBtn(c, winFullIcon, playerIconSize, a.WinFull, winFullLabel, a.toggleWinFull)
 
-				isFull := a.Win != nil && a.Win.IsFullScreen()
+				isFull := windowFullScreen(a.Win)
 				fullIcon := iconFullscreen
 				if isFull {
 					fullIcon = iconMinimize2

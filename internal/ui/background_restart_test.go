@@ -11,7 +11,7 @@ func TestAdoptBackgroundKeepsPresentingOff(t *testing.T) {
 
 	a.Router.Push(routeHome)
 	a.media.roomKey = "huya|333003"
-	a.media.loading = false
+	a.media.setLoading(false)
 
 	a.adoptBackgroundPresentingOff()
 
@@ -50,20 +50,20 @@ func TestIslandListensWhileRestarting(t *testing.T) {
 	a.media.roomKey = "huya|333003"
 
 	a.media.background = false
-	a.media.loading = true
-	if a.islandFormOf() != islandListening {
+	a.media.setLoading(true)
+	if a.islandFormOf() != islandOpen {
 		t.Fatal("正在重开这一路时岛掉回了默认态")
 	}
 
 	// 取流失败：没声音了就不该再显示在收听。
-	a.media.loading = false
-	if a.islandFormOf() == islandListening {
+	a.media.setLoading(false)
+	if a.islandFormOf() == islandOpen {
 		t.Fatal("取流失败后岛还挂着「在收听」")
 	}
 
 	// 引擎活着、人离开播放页：这才是常态的后台收听。
 	a.media.background = true
-	if a.islandFormOf() != islandListening {
+	if a.islandFormOf() != islandOpen {
 		t.Fatal("后台收听时岛没显示")
 	}
 

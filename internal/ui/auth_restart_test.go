@@ -21,7 +21,7 @@ func TestAuthChangeRestartsStreamOnLogout(t *testing.T) {
 	if a.media.seq == before {
 		t.Fatal("退出登录后没有重取流")
 	}
-	if !a.media.loading {
+	if !a.media.isLoading() {
 		t.Fatal("重取流没进入起播流程")
 	}
 	if a.authLogged["douyu"] {

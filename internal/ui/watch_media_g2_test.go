@@ -35,7 +35,7 @@ func (plainProvider) Search(context.Context, string) ([]live.Room, error) { retu
 //
 // 复现的是"媒体层握着 K、引擎还没出来"。watchActivate 调 watchReleaseActive，
 // 而后者在 player==nil 时直接返回：不 cancel、不推进 seq、不清 roomKey。
-// 于是 K 的取流结果回来仍被 applyMedia 接纳，在 K 的格子里按 a.Volume 出声，
+// 于是 K 的取流结果回来仍被 applyMedia 接纳，在 K 的格子里按 app.Volume 出声，
 // 焦点却已经在 C 上，墙上控件也关不掉它。
 func TestWatchActivateInvalidatesPendingActiveFetch(t *testing.T) {
 	rooms := watchTestRooms(2)
@@ -54,8 +54,8 @@ func TestWatchActivateInvalidatesPendingActiveFetch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	app.media.roomKey = keyA
-	app.media.loading = true
-	app.media.player = nil
+	app.media.setLoading(true)
+	app.media.session = &roomSession{player: nil}
 	app.media.ctx, app.media.cancel = ctx, cancel
 	app.media.seq = 7
 	app.WatchActive = keyA
@@ -63,7 +63,7 @@ func TestWatchActivateInvalidatesPendingActiveFetch(t *testing.T) {
 	app.Playing = true
 	app.Volume = 0.6
 	app.watch.init()
-	app.watch.sessions[keyA] = &wallSession{key: keyA, room: rooms[0], loading: true}
+	app.watch.sessions[keyA] = &roomSession{key: keyA, room: rooms[0], loading: true}
 
 	// 这一轮取流交给后台时打包出来的凭据。
 	pending := playbackSession{seq: 7, ctx: ctx, id: "取流#7", start: time.Now()}
@@ -112,7 +112,7 @@ func TestWatchDropActiveKeepsSessionInBox(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.media.player != first.player {
+	if app.media.eng() != first.player {
 		t.Fatal("墙上激活之后引擎没有进媒体层")
 	}
 
@@ -156,12 +156,12 @@ func TestWatchReleaseActiveClosesOverwrittenSession(t *testing.T) {
 
 	app.watch.init()
 	app.watch.rects[key] = watch.Rect{W: 640, H: 360}
-	stale := &wallSession{key: key, room: rooms[0], player: gifPlayer(t)}
+	stale := &roomSession{key: key, room: rooms[0], player: gifPlayer(t)}
 	stalePlayer := stale.player
 	app.watch.sessions[key] = stale
 
 	held := gifPlayer(t)
-	app.media.player = held
+	app.media.session = &roomSession{player: held}
 	app.media.roomKey = key
 
 	app.watchReleaseActive()

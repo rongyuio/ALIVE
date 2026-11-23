@@ -103,13 +103,16 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 		Cursor(ui.CursorPointer).Focusable().
 		Label(watchTileLabel(room))
 	tile.InsetShadow(0, 1, 0, 0, theme.TopLight)
-	// 这一格是"同一间房"在墙上的那一份。进播放页时舞台拿同一个身份，
-	// 于是画面从这块矩形长到整屏，而不是硬切（见 surface_motion.go）。
+	// 这一格是"同一间房"在墙上的那一份：播放页的舞台凭同一个身份飞过来，
+	// 画面从这块矩形长到整屏，而不是硬切（见 surface_motion.go）。
 	//
-	// 只在路由过渡期间挂：常挂着等于告诉 MyGo「这个元素的尺寸变化要动画」，
-	// 于是最大化/还原时格子一帧帧弹过去，视频每帧重新适配——就是用户看到的
-	// 「最大化会闪」。文档里 resize 本来就不该 animate。
-	if !a.routeTransitionUntil.IsZero() {
+	// Match 必须常挂。只在该过渡窗口里挂的话，点击进播放页那一次墙页早已
+	// 构建完，格子身上没有身份，飞行没有起点（实测直接跳大，没有动画）。
+	//
+	// 唯一的例外是「刚改过窗口尺寸」：带 Match 的元素在 resize 时会做尺寸
+	// 动画，整墙格子一帧帧弹过去、视频每帧重新适配——就是「最大化会闪」。
+	// 所以那几百毫秒里不挂（见 matchable）。
+	if a.matchable() {
 		tile.Transition(ui.ElementTransition{
 			Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
 		})
@@ -133,7 +136,13 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 	if dragging {
 		tile.Opacity(0.35)
 	}
+	// 过渡中同一个播放器只让**去的那一侧**画：进入播放页时是舞台，
+	// 回墙上时是格子。一个 VideoPlayer 只能被一个 ui.Video 画出来
+	// （实测两个元素只有一个出画），两边都画等于飞行元素是空的。
 	player := a.watchPlayer(key)
+	if player != nil && a.Router != nil && a.Router.Path() == routePlayer && !a.routeTransitionUntil.IsZero() {
+		player = nil
+	}
 	sess := a.watch.sessions[key]
 	tile.Children(func() {
 		// 视频井、视频、封面都是绝对定位的图层，不参与流式布局。
@@ -495,14 +504,14 @@ func platformBrand(id string) ui.Color {
 //
 // 加载态直接复用播放页的整块遮罩、30px spinner 和同一句文案，不再自己画
 // 小胶囊；未开播/失败才是顶部的小提示。
-func (a *App) watchState(c *ui.Context, room Streamer, sess *wallSession, player *ui.VideoPlayer) {
+func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player *ui.VideoPlayer) {
 	key := watchKey(room)
 	msg, loading := "", false
 	switch {
-	case key == a.WatchActive && a.media.loading:
+	case key == a.WatchActive && a.media.isLoading():
 		loading = true
-	case key == a.WatchActive && a.media.err != "" && a.media.player == nil:
-		msg = a.media.err
+	case key == a.WatchActive && a.media.errText() != "" && a.media.eng() == nil:
+		msg = a.media.errText()
 	case key == a.WatchActive && player != nil && !player.Ready():
 		loading = true
 	case sess != nil && sess.offline:

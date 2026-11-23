@@ -28,15 +28,15 @@ import (
 // 不经过取流：这批测试验的是所有权与表面，不是网络。音量必须和真实开格
 // 一致从 0 起（watchOpenSession 里就是 SetVolume(0)），否则"至多一路出声"
 // 的判据会被夹具自己的初值污染。
-func fakeSession(t *testing.T, a *App, room Streamer) *wallSession {
+func fakeSession(t *testing.T, a *App, room Streamer) *roomSession {
 	t.Helper()
 	a.watch.init()
 	p := gifPlayer(t)
 	p.SetVolume(0)
-	s := &wallSession{
+	s := &roomSession{
 		key: watchKey(room), room: room,
 		player: p, track: &trackSpy{},
-		firstFrame: true, renderW: 640, renderH: 360,
+		firstFrame: true,
 	}
 	a.watch.sessions[s.key] = s
 	return s
@@ -49,7 +49,7 @@ func fakeSession(t *testing.T, a *App, room Streamer) *wallSession {
 func audibleCount(a *App) int {
 	n := 0
 	seen := map[*ui.VideoPlayer]bool{}
-	if p := a.media.player; p != nil && !seen[p] {
+	if p := a.media.eng(); p != nil && !seen[p] {
 		seen[p] = true
 		if p.Volume() > 0 {
 			n++
@@ -86,8 +86,8 @@ func stubEngines(t *testing.T) *trackSpy {
 	return spy
 }
 
-// wallSessionOf 返回墙为这一间持有的会话（不论有没有播放器）。
-func wallSessionOf(a *App, key string) *wallSession { return a.watch.sessions[key] }
+// roomSessionOf 返回墙为这一间持有的会话（不论有没有播放器）。
+func roomSessionOf(a *App, key string) *roomSession { return a.watch.sessions[key] }
 
 // 不变量 1：至多一路出声。
 func TestInvariantAtMostOneAudible(t *testing.T) {
@@ -142,7 +142,7 @@ func TestInvariantOneEnginePerRoom(t *testing.T) {
 
 	// 模拟"从列表进过播放页再离开"：媒体层持有这一间，在后台出声。
 	app.media.roomKey = key
-	app.media.player = gifPlayer(t)
+	app.media.session = &roomSession{player: gifPlayer(t)}
 	app.media.background = true
 	app.Player = rooms[0]
 	app.Playing = true
@@ -163,7 +163,7 @@ func TestInvariantOneEnginePerRoom(t *testing.T) {
 	app.FollowsSection = followsSectionWatch
 	app.watchShow(map[string]watch.Rect{key: {W: 640, H: 360}})
 
-	if s := wallSessionOf(app, key); s != nil {
+	if s := roomSessionOf(app, key); s != nil {
 		t.Fatal("墙上为媒体层已经持有的房间又建了一个会话：同一间房两个所有者")
 	}
 }
@@ -188,7 +188,7 @@ func TestInvariantCloseKeepsSessionInBox(t *testing.T) {
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("双击没有进播放页，route=%q", app.Router.Path())
 	}
-	if app.media.player != sess.player {
+	if app.media.eng() != sess.player {
 		t.Fatal("进播放页之后媒体层拿到的不是墙上那一路")
 	}
 
@@ -215,7 +215,7 @@ func TestInvariantFocusSwitchKeepsPrevious(t *testing.T) {
 	tt.Frame()
 
 	listenOnWall(t, tt, rooms[0])
-	if app.media.player != first.player {
+	if app.media.eng() != first.player {
 		t.Fatal("第一间没有进媒体层")
 	}
 
@@ -299,8 +299,8 @@ func TestInvariantIslandMatchesFocus(t *testing.T) {
 
 	// 媒体层持有另一间（不在盒里），在后台出声。
 	app.media.roomKey = "bilibili|9999"
-	app.media.player = gifPlayer(t)
-	app.media.player.SetVolume(0.6)
+	app.media.session = &roomSession{player: gifPlayer(t)}
+	app.media.eng().SetVolume(0.6)
 	app.media.background = true
 	app.Player = Streamer{Platform: "bilibili", RoomID: "9999", Name: "盒子外的主播"}
 	app.Playing = true
@@ -309,8 +309,8 @@ func TestInvariantIslandMatchesFocus(t *testing.T) {
 	if got := app.focusKey(); got != "bilibili|9999" {
 		t.Fatalf("焦点是 %q，期望 bilibili|9999", got)
 	}
-	if got := app.islandFormOf(); got != islandListening {
-		t.Fatalf("声音在响，岛形态是 %v，期望 listening", got)
+	if got := app.islandFormOf(); got != islandOpen {
+		t.Fatalf("声音在响，岛形态是 %v，期望 open", got)
 	}
 
 	// 界面上的岛必须能被点回那一间，而不是停在时钟。
@@ -327,7 +327,7 @@ func TestInvariantIslandMatchesFocus(t *testing.T) {
 // 第二套机制一旦回潮，墙 → 播放页就会重新停在格子分辨率（bf2a98a 那次）。
 func TestNoSecondPresentMechanism(t *testing.T) {
 	assertOnlyIn(t, "SetPresentSize", map[string][]string{
-		"player_media.go": {"presentSizeFor", "applyPresent", "applyPresentForce"},
+		"player_media.go": {"presentSizeFor", "applyPresent", "applyPresentForce", "applyPresentTo"},
 		// 墙上的每一格自己开流、自己设渲染目标，和播放页那条 presentSizeFor
 		// 是两套按设计分开的机制。acceptWallEngine 是 watchOpenSession 里
 		// 那段接纳逻辑的搬移，不是第二个入口。
@@ -381,7 +381,7 @@ func assertOnlyIn(t *testing.T, method string, allowed map[string][]string) {
 //
 // 用户离开的正是那面墙，那里还有它的格子。直接跳进播放页等于替他做了一个
 // 没要求的决定，而且会让"我离开的那一屏去哪了"没有答案。
-func TestIslandReturnsToWallWhenFocusIsInBox(t *testing.T) {
+func TestIslandReturnsToTheRoomEvenWhenItIsInBox(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
 	key := watchKey(rooms[0])
@@ -396,19 +396,19 @@ func TestIslandReturnsToWallWhenFocusIsInBox(t *testing.T) {
 	// 离开墙，去首页。焦点还在那一间，它仍在盒里。
 	app.Router.Push(routeHome)
 	tt.Frame()
-	if got := app.islandFormOf(); got != islandListening {
-		t.Fatalf("离开墙之后岛形态是 %v，期望 listening", got)
+	if got := app.islandFormOf(); got != islandOpen {
+		t.Fatalf("离开墙之后岛形态是 %v，期望 open", got)
 	}
 
 	if err := tt.Click("回到直播间"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if got := app.Router.Path(); got != routeFollows {
-		t.Fatalf("点岛回到了 %q，期望观测墙", got)
+	if got := app.Router.Path(); got != routePlayer {
+		t.Fatalf("点岛回到了 %q，期望播放页", got)
 	}
-	if app.FollowsSection != followsSectionWatch {
-		t.Fatalf("回到关注页却不在观测分区（%d）", app.FollowsSection)
+	if watchKey(app.Player) != key {
+		t.Fatalf("点岛打开的是 %q，期望 %q", watchKey(app.Player), key)
 	}
 	if app.focusKey() != key {
 		t.Fatalf("回墙之后焦点变成了 %q", app.focusKey())
@@ -525,9 +525,9 @@ func TestDeactivateStopsSoundWhileLoading(t *testing.T) {
 
 	// 这一格正在取流：会话在，播放器还没有。
 	app.watch.init()
-	app.watch.sessions[key] = &wallSession{key: key, room: rooms[0], loading: true}
+	app.watch.sessions[key] = &roomSession{key: key, room: rooms[0], loading: true}
 	app.media.roomKey = key
-	app.media.loading = true
+	app.media.setLoading(true)
 	app.WatchActive = key
 	app.Player = rooms[0]
 	app.Playing = true

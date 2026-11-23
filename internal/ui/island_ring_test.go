@@ -63,7 +63,7 @@ func TestIslandRingIsAnArcNotARing(t *testing.T) {
 // 只要有透明停靠点，岛沿就得靠另一层底色兜底——两层各自抗一次锯齿，
 // 弧段上就会叠出比两侧都暗的边（见 TestIslandOutlineHasNoDarkFringe）。
 func TestIslandSurfaceIsOneOpaqueFill(t *testing.T) {
-	stops := islandGlowStops(1)
+	stops := islandGlowStops()
 	if len(stops) < 2 {
 		t.Fatal("岛面没有停靠点")
 	}
@@ -89,22 +89,6 @@ func TestIslandSurfaceIsOneOpaqueFill(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("色带上没有 108° 那个头")
-	}
-}
-
-// 收起态不画流光；首页和展开态必须画。
-func TestIslandRingStates(t *testing.T) {
-	if ring, _ := islandRings(false, false, 1); ring == 0 {
-		t.Fatal("首页时钟岛没有流光")
-	}
-	if ring, _ := islandRings(true, false, 0); ring == 0 {
-		t.Fatal("展开态没有流光")
-	}
-	if ring, _ := islandRings(true, false, 1); ring != 0 {
-		t.Fatal("收起成正圆之后还在画流光")
-	}
-	if ring, breath := islandRings(false, true, 1); ring != 0 || breath == 0 {
-		t.Fatalf("后台收听态：ring=%v breath=%v，应当是纯呼吸环", ring, breath)
 	}
 }
 

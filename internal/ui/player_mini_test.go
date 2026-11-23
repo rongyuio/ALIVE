@@ -56,7 +56,7 @@ func TestMiniPlayerShowsVideo(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(p.Close)
-	app.media.player = p
+	app.media.session = &roomSession{player: p}
 
 	tt := ui.NewTester(app.MiniPlayer, miniW, miniH)
 	tt.Advance(600 * time.Millisecond)

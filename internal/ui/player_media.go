@@ -25,19 +25,22 @@ import (
 //	player   ui/video 的播放器，走系统媒体框架解码
 //	danmaku  一条 WebSocket 弹幕连接
 type playerMedia struct {
-	player  *ui.VideoPlayer
 	danmaku live.DanmakuStream
-	stream  live.Stream
 
-	// roomKey 是 platform|roomID：换房间时对比它就知道要不要重连
+	// roomKey 是 platform|roomID：换房间时对比它就知道要不要重连。
+	//
+	// 引擎、流、档位、首帧预算都不在这里——它们住 roomStore 里这一间的
+	// roomSession。播放页和墙格画的是同一个对象，谁在前台只是查表拿它。
+	// 以前两边各存一份、靠 adopt/release 搬，那个「搬」就是把同一间房
+	// 拆成两个直播间的全部原因。
 	roomKey string
+	// session 是 roomKey 对应的那一间；nil 表示当前没有房间。
+	session *roomSession
 	// seq 是这一轮起播的代号。每开一轮就 +1，之前派出去的一切结果都变成过期
 	// 结果，由接纳回调负责把它们的资源关掉。
 	seq int
-	// loading 表示取流还在进行
-	loading bool
-	// err 是取流失败的原因，直接显示在状态覆盖层上
-	err string
+	// loading / err 是这一间房的状态，住在 roomSession 里。
+	// 这里只转发——同一间房只该有一份「在取流 / 失败了」。
 
 	// cancel / ctx 是这一轮起播的寿命：换房间、换档位、换线路、离开播放页都会
 	// 取消它，后台还在取流或起 ffmpeg 的 goroutine 据此提前收手。
@@ -49,26 +52,16 @@ type playerMedia struct {
 	roomCtx     context.Context
 	roomCancel  context.CancelFunc
 	// id / start 是这一轮的关联 ID 与起点，日志里的毫秒数都相对 start。
-	id    string
-	start time.Time
-	// firstFrame 表示这一轮已经记过「首帧可用」。
-	firstFrame   bool
-	openedAt     time.Time
+	id           string
+	start        time.Time
 	pauseStarted time.Time
 	pausedFor    time.Duration
-	// upstream 是已经接到播放器上的那一档。
-	upstream live.Variant
-
 	// danmuSeq 单独管弹幕连接。换清晰度不该让同一房间的聊天断掉，也不能因为
 	// 画面那一路的代号变了，就把刚连上的弹幕当成过期结果丢掉。
 	danmuSeq int
 	// danmuRetryAt 是弹幕连接失败后的退避点。ensureDanmaku 每帧都会问，
 	// 没有它会在平台拒绝时每帧重连。
 	danmuRetryAt time.Time
-	// present 是这一路该呈现多大，也是唯一的呈现意图。换引擎、进页面、
-	// 进后台都只是重新求一次它再推给引擎，不再有第二套状态去猜。
-	present presentSize
-
 	// 画面推进的观测点。不能直接信 VideoPlayer.Buffering()：Media
 	// Foundation 在直播 HLS 上每一次 playlist 滚动都会发一次 WAITING，而把
 	// 状态清回 Ready 靠的是 PLAYING / CANPLAY 事件——直播流上这两个不会再
@@ -93,8 +86,6 @@ type playerMedia struct {
 	// mpv 不 ended、不报错，本地实测 150 秒仍是 playing。没有这条上限，
 	// 播放页就会永远停在最后一帧。
 	bufferStallSince time.Time
-	// refreshAt 是当前这条地址到期前该换新地址的时刻；零值表示平台没声明寿命。
-	refreshAt time.Time
 	// refreshing 表示已经派出去一次热切换，避免每帧重复派。
 	refreshing bool
 	// lastSwapAt / swapFailures 用来退避：连续失败时不要每帧都重开一路。
@@ -103,7 +94,8 @@ type playerMedia struct {
 
 	// background 表示正在后台收听：引擎活着、音频在走、解码不停，
 	// 只是全尺寸呈现关掉了（渲染目标 160×90）。
-	// 离开播放页但没点叉 / 没按 Esc 时进入，回到播放页时退出。
+	// 离开播放页但没点叉时进入（Esc、顶栏 tab、点岛回直播间都走这条），
+	// 回到播放页时退出。
 	//
 	// 这一态下 roomKey 和 player 都留着——它要的就是「还是那一路、还在出声」，
 	// 和 closeMedia 的「全关掉」是两件事。
@@ -124,6 +116,78 @@ type playerMedia struct {
 	detachedAt time.Time
 	// tickPending 表示后台收听的定时心跳已经排上，避免每帧重复排。
 	tickPending bool
+}
+
+// 下面这些是这一间房的运行态，住在 roomStore 的 roomSession 里。
+// 播放页只是它的一个视图，所以这里转发——只有主线程能读写。
+// 房间级状态的转发。nil session 时读零值、写丢弃——没有房间就没有这些状态。
+func (m *playerMedia) firstFrame() bool {
+	return m.session != nil && m.session.firstFrame
+}
+func (m *playerMedia) setFirstFrame(v bool) {
+	if m.session != nil {
+		m.session.firstFrame = v
+	}
+}
+func (m *playerMedia) opened() time.Time {
+	if m.session == nil {
+		return time.Time{}
+	}
+	return m.session.openedAt
+}
+func (m *playerMedia) setOpened(t time.Time) {
+	if m.session != nil {
+		m.session.openedAt = t
+	}
+}
+func (m *playerMedia) refresh() time.Time {
+	if m.session == nil {
+		return time.Time{}
+	}
+	return m.session.refreshAt
+}
+func (m *playerMedia) setRefresh(t time.Time) {
+	if m.session != nil {
+		m.session.refreshAt = t
+	}
+}
+func (m *playerMedia) isLoading() bool {
+	return m.session != nil && m.session.loading
+}
+func (m *playerMedia) setLoading(v bool) {
+	if m.session != nil {
+		m.session.loading = v
+	}
+}
+func (m *playerMedia) errText() string {
+	if m.session == nil {
+		return ""
+	}
+	return m.session.err
+}
+func (m *playerMedia) setErr(v string) {
+	if m.session != nil {
+		m.session.err = v
+	}
+}
+
+func (m *playerMedia) eng() *ui.VideoPlayer {
+	if m.session == nil {
+		return nil
+	}
+	return m.session.player
+}
+func (m *playerMedia) streamNow() live.Stream {
+	if m.session == nil {
+		return live.Stream{}
+	}
+	return m.session.stream
+}
+func (m *playerMedia) up() live.Variant {
+	if m.session == nil {
+		return live.Variant{}
+	}
+	return m.session.up
 }
 
 // stalledThreshold 是判定「画面停住」的阈值。
@@ -167,17 +231,20 @@ func (m *playerMedia) reset() {
 	m.cancelSession()
 	m.closeDanmaku()
 	m.stopPlayback()
-	m.stream = live.Stream{}
-	m.loading = false
-	m.err = ""
-	m.firstFrame = false
+	if m.session != nil {
+		m.session.stream = live.Stream{}
+		m.session.up = live.Variant{}
+	}
+	m.setLoading(false)
+	m.setErr("")
+	m.setFirstFrame(false)
 	m.notice = ""
 	m.noticeUntil = time.Time{}
 	m.pendingQualityPick = ""
-	m.upstream = live.Variant{}
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 	m.stillPos, m.stillAt = 0, time.Time{}
-	m.refreshAt, m.lastSwapAt = time.Time{}, time.Time{}
+	m.setRefresh(time.Time{})
+	m.lastSwapAt = time.Time{}
 	m.refreshing = false
 	m.bufferStallSince = time.Time{}
 	m.swapFailures = 0
@@ -185,7 +252,6 @@ func (m *playerMedia) reset() {
 	m.detachedAt = time.Time{}
 	m.tickPending = false
 	// 呈现意图跟着房间走，换房间必须归零；否则上一间的格子尺寸会套到下一路。
-	m.present = presentSize{}
 }
 
 // cancelSession 结束当前这一轮起播。
@@ -232,7 +298,7 @@ func (m *playerMedia) stalled(p *ui.VideoPlayer) bool {
 // 视图里没有视频元素在请求帧，所以还额外挂一条定时器，见 kickMediaTick。
 func (a *App) mediaTick() {
 	a.watchTick(time.Now())
-	if a.media.player == nil {
+	if a.media.eng() == nil {
 		return
 	}
 	a.trackFirstFrame()
@@ -252,7 +318,7 @@ func (a *App) kickMediaTick() {
 		a.watch.tickPending = false
 		return
 	}
-	if m.background && m.player != nil && !m.tickPending {
+	if m.background && m.eng() != nil && !m.tickPending {
 		m.tickPending = true
 		win := a.Win
 		time.AfterFunc(playbackHealthPollInterval, func() {
@@ -308,18 +374,10 @@ func (a *App) closeMedia() {
 	if key != "" && a.watchHas(key) {
 		// 房间还在盒里：把引擎移回墙上的会话，静音但不停播。
 		a.watchReleaseActive()
-		// 交还墙上那一刻，引擎还是播放页的全尺寸呈现（present=0,0）。而
-		// watchReleaseActive 会把新会话的 renderW/H 按格子尺寸**预填**，
-		// watchShow 的推送判据是「renderW/H 与这一帧的格子不一致」——预填之后
-		// 两端恒等，永远不会补推。于是这一格长期按源分辨率（1080p/2K）解码
-		// 渲染，违反 surfaces.md 不变量 4，也超出墙的并发预算。
-		//
-		// 清零让下一帧 watchShow 发现差异后按格子物理像素补推一次。呈现尺寸
-		// 仍只从 presentSizeFor 求解（surface_invariants_test 守着这一条），
-		// 这里只改会话记录，不自己调 SetPresentSize。
-		if s := a.watch.sessions[key]; s != nil && s.player != nil {
-			s.renderW, s.renderH = 0, 0
-		}
+		// 呈现尺寸不用在这里清零：applyPresent 每帧从 presentSizeFor 求一次，
+		// 离开播放页之后它会自己变成格子的物理像素。以前这里存一份 renderW/H
+		// 再预填、再清零，是为了让 watchShow 那一侧的判据能看见差异——
+		// 两个真相互相追，正是「整格按 1080p 解码」的来源。
 		if a.media.roomKey == key {
 			// 这一路还没有引擎（取流还在路上），release 没有东西可交接。
 			// 必须把这一轮取流收掉：只清焦点、留着 roomKey 的话，下一帧
@@ -327,6 +385,7 @@ func (a *App) closeMedia() {
 			// 声音就永远停不掉。
 			a.media.reset()
 			a.media.roomKey = ""
+			a.media.session = nil
 		}
 		if a.WatchActive == key {
 			a.WatchActive = ""
@@ -341,6 +400,7 @@ func (a *App) closeMedia() {
 	}
 	a.media.reset()
 	a.media.roomKey = ""
+	a.media.session = nil
 }
 
 // detachMedia 进入后台收听：全尺寸呈现关掉，解码与声音留着。
@@ -372,7 +432,7 @@ func (a *App) detachMedia() {
 	}
 	e := m.engine()
 	if e == nil {
-		if m.loading {
+		if m.isLoading() {
 			return
 		}
 		key := m.roomKey
@@ -381,6 +441,7 @@ func (a *App) detachMedia() {
 		}
 		m.reset()
 		m.roomKey = ""
+		m.session = nil
 		if a.WatchActive == key {
 			a.WatchActive = ""
 			a.WatchPending = ""
@@ -412,12 +473,12 @@ func (a *App) detachMedia() {
 	a.danmuStill = 0
 	a.danmuLast = time.Time{}
 	hwdec := ""
-	if m.player != nil {
-		if eng, ok := m.player.Engine().(*playback.Engine); ok {
+	if m.eng() != nil {
+		if eng, ok := m.eng().Engine().(*playback.Engine); ok {
 			hwdec = eng.Debug().HWDec
 		}
 	}
-	logStage(m.id, m.start, "detach", "quality", m.upstream.Label, "hwdec", hwdec)
+	logStage(m.id, m.start, "detach", "quality", m.up().Label, "hwdec", hwdec)
 }
 
 // attachMedia 从后台收听回到播放页：接上现有这一路，只恢复全尺寸呈现。
@@ -448,7 +509,7 @@ func (a *App) attachMedia() {
 	m.background = false
 	m.detachedAt = time.Time{}
 	e := m.engine()
-	logStage(m.id, m.start, "attach", "quality", m.upstream.Label)
+	logStage(m.id, m.start, "attach", "quality", m.up().Label)
 	if e == nil {
 		a.startStream(true)
 		return
@@ -494,47 +555,73 @@ type presentSize struct{ W, H int }
 //	播放页          → 0,0（视频原始尺寸）
 //	观测墙 active   → 格子物理像素
 //	后台收听        → 160×90（只解码不给人看）
+//
+// 判据是「这一间此刻被画在哪」，不是「谁持有它」——房间只有一个，视图有两个。
 func (a *App) presentSizeFor() presentSize {
+	return a.presentSizeForSession(a.media.session)
+}
+
+// presentSizeForSession 求某一间该呈现多大。
+//
+// 同一间房在墙格和播放页之间切换时，这里就是唯一改变的东西：0,0 与
+// 格子像素之间换一下。引擎、流、连接一概不动。
+func (a *App) presentSizeForSession(s *roomSession) presentSize {
+	if s == nil {
+		return presentSize{}
+	}
 	// 播放页且不在后台：全尺寸。background 必须先看——离开播放页的那一帧
 	// 路由可能还停在播放页上，只看路由会把「已经收进后台」的一路算成全尺寸。
-	if !a.media.background && a.Router != nil && a.Router.Path() == routePlayer {
+	onPlayer := !a.media.background && a.Router != nil && a.Router.Path() == routePlayer
+	if onPlayer && s == a.media.session {
 		return presentSize{}
 	}
 	if a.onWatchWall() {
-		if r, ok := a.watch.rects[a.media.roomKey]; ok {
+		if r, ok := a.watch.rects[s.key]; ok {
 			w, h := watchSize(r)
 			return presentSize{W: w, H: h}
 		}
-		// 墙上但还没量到格子：保持现状，别把画面缩成 160×90 再跳回来。
-		return a.media.present
+		return s.present
 	}
 	return presentSize{W: 160, H: 90}
 }
 
-// applyPresent 把 present 意图推给当前引擎。没有引擎时什么都不做——
-// 意图留着，下一路引擎接上时由 adopt 再推一次。
+// applyPresent 把呈现尺寸推给**当前该看的那一间**。值没变就不推：
+// SetPresentSize 每次都会让引擎立刻重渲染一帧，每帧都调等于按帧率重画。
 //
-// 值没变就不推：SetPresentSize 每次都会让引擎立刻重渲染一帧，每帧都调
-// 等于把画面按帧率重画一遍。
+// 只有一个入口：墙格和播放页都从这里推，判据是「这一间此刻被画在哪」。
 func (a *App) applyPresent() {
-	want := a.presentSizeFor()
-	tr := a.media.engine()
-	if want == a.media.present && tr != nil {
+	a.applyPresentTo(a.media.session)
+}
+
+// applyPresentForce 无条件推一次。只给「换了新引擎」用：新引擎上的尺寸
+// 还是它自己的默认值，和 present 相等不代表已经推过。
+func (a *App) applyPresentForce() {
+	s := a.media.session
+	if s == nil {
 		return
 	}
-	a.media.present = want
-	if tr != nil {
-		tr.SetPresentSize(want.W, want.H)
+	s.present = a.presentSizeForSession(s)
+	if tr := s.videoTrack(); tr != nil {
+		tr.SetPresentSize(s.present.W, s.present.H)
 	}
 }
 
-// applyPresentForce 无条件推一次。只给「换了新引擎」用：新引擎上的呈现
-// 尺寸还是它自己的默认值，和 present 相等不代表已经推过。
-func (a *App) applyPresentForce() {
-	a.media.present = a.presentSizeFor()
-	if tr := a.media.engine(); tr != nil {
-		tr.SetPresentSize(a.media.present.W, a.media.present.H)
+// applyPresentTo 把某一间的呈现尺寸推到它的引擎。墙格上的每一格用它，
+// 播放页的当前这一间也用它——同一个函数，没有第二套。
+func (a *App) applyPresentTo(s *roomSession) {
+	if s == nil {
+		return
 	}
+	want := a.presentSizeForSession(s)
+	if want == s.present {
+		return
+	}
+	tr := s.videoTrack()
+	if tr == nil {
+		return
+	}
+	s.present = want
+	tr.SetPresentSize(want.W, want.H)
 }
 
 // engineOf 从播放器取出它的引擎。生产实现是类型断言；测试里换成假的。
@@ -556,7 +643,7 @@ var engineOf = func(p *ui.VideoPlayer) videoTrack {
 //
 // ui.VideoPlayer 把引擎藏在内部，只在这一处需要摸到它——呈现的开关是
 // 渲染尺寸，不是播放器接口的一部分。
-func (m *playerMedia) engine() videoTrack { return engineOf(m.player) }
+func (m *playerMedia) engine() videoTrack { return engineOf(m.eng()) }
 
 // CloseMedia 在窗口关闭前取消取流与房间会话，并异步释放连接及转封装资源。
 // 必须从主线程调用；后台资源回收不依赖后续 Window.Update 回调。
@@ -593,21 +680,65 @@ func (a *App) ensureMedia(c *ui.Context) {
 	// 这里（roomKey 相同就早退了），用户的暂停态照旧保留。
 	a.Playing = true
 
-	// 这一间在墙上可能已经有一路静音预览。放着不管就会为同一间房再开一路
-	// 引擎（违反「一间房至多一个引擎」）；退出播放页时 watchReleaseActive 还会
-	// 把新的一路写进同一个 key，旧引擎失去唯一引用，mpv 线程活到进程退出。
+	// 这一间在墙上可能已经活着。**接手那一个 session**，不关掉重开——
+	// 以前这里是 watchCloseSession(old)，把墙上正在播的引擎关了，再从头
+	// 取一次流。用户看到的就是「点进直播间，画面黑了重新加载」，以及
+	// 「盒子里的和页面上的不是同一个直播间」。
 	//
-	// 墙上 active 那一间不走这条：PlayerPage 已经用 watchAdoptActive 把它的
-	// 会话交给了媒体层（会话条目随之删除）；交接没成立时也由 PlayerPage 关掉。
-	// WatchActive 还等于 key 说明交接正在进行，这里不能抢着关。
-	if a.WatchActive != key {
-		if old := a.watch.sessions[key]; old != nil {
-			a.watchCloseSession(old)
+	// 接手之后什么都不用搬：引擎、流、档位、首帧预算都在那个 session 上，
+	// 播放页只是换一种尺寸画它。
+	if old := a.watch.sessions[key]; old != nil {
+		if old.player != nil {
+			// 媒体层已经握着这一间时不能 reset：reset → stopPlayback 会把
+			// 马上要接手的这个播放器 Close 掉、old.player 置空，下一行
+			// old.player.SetVolume 就是 nil 解引用。房间记号被某次收尾
+			// 清过之后（从分区打开、Esc 收起、再回来）这条是可达的。
+			if a.media.session != old {
+				a.media.reset()
+			} else {
+				// 同一间：只收掉上一轮还在跑的后台工作，不动这个 session
+				// 自己的播放器和流。
+				a.media.cancelSession()
+			}
+			slog.Info("播放页接手墙上的这一间", "key", key, "ready", old.player.Ready())
+			a.media.roomKey = key
+			// 会话**留在** a.watch.sessions 里，不搬。媒体层只是多指了它一下：
+			// 墙格按格子画、播放页按全尺寸画，画的是同一个对象。
+			a.media.session = old
+			old.active = true
+			a.media.seq++
+			a.media.ctx, a.media.cancel = context.WithCancel(context.Background())
+			a.media.win = a.Win
+			a.media.id = fmt.Sprintf("取流#%d", a.media.seq)
+			a.media.start = time.Now()
+			if old.openedAt.IsZero() {
+				old.openedAt = time.Now()
+			}
+			a.media.setRefresh(refreshAtFor(old.up))
+			a.Volume = a.watchVolume(key)
+			a.pushedVolume = float64(a.Volume)
+			old.player.SetVolume(float64(a.Volume))
+			old.player.Play()
+			a.applyPresentForce()
+			a.Player = old.room
+			a.Playing = true
+			a.closeDanmaku()
+			a.media.danmuRetryAt = time.Time{}
+			a.DanmuLog = nil
+			a.Danmu = nil
+			a.panelSeen = 0
+			a.panelPending = 0
+			a.invalidateWindows()
+			return
 		}
+		// 那一格还是死的（取流中 / 失败 / 未开播）：收掉，走正常起播。
+		a.watchCloseSession(old)
 	}
 
+	// 全新的一间：建 session，再取流。
 	a.media.reset()
 	a.media.roomKey = key
+	a.media.session = a.sessionFor(key, s)
 	slog.Info("进入播放页，开始取流", "key", key)
 	a.startStream(false)
 }
@@ -627,13 +758,15 @@ func (a *App) beginSession(stage string) playbackSession {
 	m.win = a.Win
 	m.id = fmt.Sprintf("%s#%d", stage, m.seq)
 	m.start = time.Now()
-	m.firstFrame = false
-	m.openedAt = time.Time{}
+	m.setFirstFrame(false)
+	m.setOpened(time.Time{})
 	m.pauseStarted = time.Time{}
 	m.pausedFor = 0
-	m.upstream = live.Variant{}
-	m.loading = true
-	m.err = ""
+	if m.session != nil {
+		m.session.up = live.Variant{}
+	}
+	m.setLoading(true)
+	m.setErr("")
 	m.buffering = false
 	m.bufferingSince = time.Time{}
 
@@ -661,18 +794,24 @@ func (a *App) startStream(keepDanmaku bool) {
 	}
 	prov, ok := providerFor(live.Platform(s.Platform))
 	if !ok {
-		a.media.loading = false
-		a.media.err = "该平台还不支持取流"
+		a.media.setLoading(false)
+		a.media.setErr("该平台还不支持取流")
 		return
 	}
 	_, hasStream := prov.(live.Streamer)
 	_, hasPlayback := prov.(live.PlaybackStreamer)
 	if !hasStream && !hasPlayback {
-		a.media.loading = false
-		a.media.err = "该平台还不支持取流"
+		a.media.setLoading(false)
+		a.media.setErr("该平台还不支持取流")
 		return
 	}
 
+	// 这一间必须有 session：从列表直接进播放页时，墙上没有这一格。
+	keyNow := watchKey(s)
+	if a.media.session == nil {
+		a.media.roomKey = keyNow
+		a.media.session = a.sessionFor(keyNow, s)
+	}
 	// 新的一轮：停掉旧画面（两路 ffmpeg 同时拉会抢带宽，播放器也会争硬件
 	// 解码器），取消上一轮的后台工作，再记下这一轮的关联 ID 与起点。
 	sess := a.beginSession("取流")
@@ -693,7 +832,7 @@ func (a *App) startStream(keepDanmaku bool) {
 	streamKey := watchKey(s)
 	var known live.Stream
 	if a.media.roomKey == streamKey {
-		known = a.media.stream
+		known = a.media.streamNow()
 	}
 	lineLabel := a.lineFor(streamKey)
 	line, want := a.lineIDForLabel(streamKey, known, lineLabel), a.qualityFor(streamKey)
@@ -724,8 +863,8 @@ func (a *App) startStream(keepDanmaku bool) {
 			}
 			logStage(sess.id, sess.start, "fetch-failed", "error", errClass(err))
 			a.applyMedia(sess, func() {
-				a.media.loading = false
-				a.media.err = "取流失败，请重试或切换线路"
+				a.media.setLoading(false)
+				a.media.setErr("取流失败，请重试或切换线路")
 			}, nil)
 			return
 		}
@@ -735,7 +874,9 @@ func (a *App) startStream(keepDanmaku bool) {
 
 		// 房间详情先上屏：标题、头像、是否在播都不依赖转封装
 		a.applyMedia(sess, func() {
-			a.media.stream = info
+			if a.media.session != nil {
+				a.media.session.stream = info
+			}
 			a.learnRoomChoice(streamKey, info, selected)
 			// 平台可以给不了所点的档位（斗鱼对匿名请求会把「原画」降成
 			// 「蓝光4M」）。默默换掉会让人以为切档没生效，所以明说一次。
@@ -746,15 +887,15 @@ func (a *App) startStream(keepDanmaku bool) {
 		}, nil)
 
 		if !info.Live {
-			a.applyMedia(sess, func() { a.media.loading = false }, nil)
+			a.applyMedia(sess, func() { a.media.setLoading(false) }, nil)
 			return
 		}
 		if len(info.Variants) == 0 {
 			// 开播了但平台没给任何档位：菜单和地址都是空的。只落 loading=false
 			// 会让覆盖层四个分支一个都不命中，画面停在封面上，连重试都点不到。
 			a.applyMedia(sess, func() {
-				a.media.loading = false
-				a.media.err = "平台没有返回可播放的清晰度"
+				a.media.setLoading(false)
+				a.media.setErr("平台没有返回可播放的清晰度")
 			}, nil)
 			return
 		}
@@ -765,8 +906,8 @@ func (a *App) startStream(keepDanmaku bool) {
 			// 按需取流的平台在地址解析失败时会走到这里：菜单完整但没有任何
 			// 一项能播，报错比让用户对着加载层干等强。
 			a.applyMedia(sess, func() {
-				a.media.loading = false
-				a.media.err = "没有拿到可播放的地址"
+				a.media.setLoading(false)
+				a.media.setErr("没有拿到可播放的地址")
 			}, nil)
 			return
 		}
@@ -803,8 +944,8 @@ func (a *App) startPlayback(sess playbackSession, upstream live.Variant) {
 	}
 	// 没有窗口就无处呈现。
 	a.applyMedia(sess, func() {
-		a.media.loading = false
-		a.media.err = "窗口未就绪，无法播放"
+		a.media.setLoading(false)
+		a.media.setErr("窗口未就绪，无法播放")
 	}, nil)
 }
 
@@ -840,8 +981,8 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) b
 			}
 			runOnMain(win, func() {
 				a.applyMedia(sess, func() {
-					a.media.loading = false
-					a.media.err = "播放组件打不开这个流，请重试或切换线路"
+					a.media.setLoading(false)
+					a.media.setErr("播放组件打不开这个流，请重试或切换线路")
 				}, nil)
 			})
 			return
@@ -874,14 +1015,14 @@ func cleanupOnCancel(ctx context.Context, closeResource func()) func() {
 //
 // 只在主线程、且代号已被采纳时调用。
 func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream live.Variant) {
-	a.media.openedAt = time.Now()
+	a.media.setOpened(time.Now())
 	a.media.pauseStarted = time.Time{}
 	a.media.pausedFor = 0
-	a.media.player = p
-	a.media.upstream = upstream
-	a.media.refreshAt = refreshAtFor(upstream)
-	a.media.loading = false
-	a.media.err = ""
+	a.media.session.player = p
+	a.media.session.up = upstream
+	a.media.setRefresh(refreshAtFor(upstream))
+	a.media.setLoading(false)
+	a.media.setErr("")
 	// 新引擎接上，按当前位置求一次呈现尺寸。墙上 active 重开仍是格子，
 	// 播放页是全尺寸，判断只在 presentSizeFor 一处。必须无条件推：新引擎
 	// 上的尺寸还是它自己的默认值，和 present 相等不代表已经推过。
@@ -893,7 +1034,7 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 	p.SetVolume(volume)
 	a.pushedVolume = volume
 	if !a.Playing {
-		a.media.pauseStarted = a.media.openedAt
+		a.media.pauseStarted = a.media.opened()
 		p.Pause()
 	}
 	a.adoptBackgroundPresentingOff()
@@ -961,7 +1102,7 @@ func refreshAtFor(v live.Variant) time.Time {
 // 两条要的是同一件事——再要一份能播的地址——所以走同一条路。
 func (a *App) scheduleSwap(reason string) {
 	m := &a.media
-	if m.refreshing || m.player == nil {
+	if m.refreshing || m.eng() == nil {
 		return
 	}
 	if !m.lastSwapAt.IsZero() && time.Since(m.lastSwapAt) < swapRetryDelay {
@@ -971,8 +1112,8 @@ func (a *App) scheduleSwap(reason string) {
 	m.lastSwapAt = time.Now()
 	sess := a.session()
 	cur := a.current()
-	line := a.lineIDFor(m.roomKey, m.stream)
-	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: line, quality: m.upstream.Label, background: m.background}
+	line := a.lineIDFor(m.roomKey, m.streamNow())
+	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: line, quality: m.up().Label, background: m.background}
 	logStage(sess.id, sess.start, "swap-start", "reason", reason)
 	go a.runHotSwap(sess, req, reason)
 }
@@ -1005,7 +1146,7 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 				a.startStream(true)
 				return
 			}
-			a.media.refreshAt = time.Now().Add(swapRetryDelay)
+			a.media.setRefresh(time.Now().Add(swapRetryDelay))
 		})
 	}
 	prov, ok := providerFor(req.platform)
@@ -1080,11 +1221,11 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 
 // adoptSwap 把新的一路接到媒体层上，并关掉旧的。
 func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant, reason string) {
-	old := a.media.player
+	old := a.media.eng()
 	p := ui.NewEngineVideoPlayer(e)
-	a.media.player = p
-	a.media.upstream = v
-	a.media.refreshAt = refreshAtFor(v)
+	a.media.session.player = p
+	a.media.session.up = v
+	a.media.setRefresh(refreshAtFor(v))
 	a.media.refreshing = false
 	a.media.swapFailures = 0
 	// 新引擎按当前位置求一次呈现尺寸：墙上是格子，播放页是全尺寸，后台
@@ -1106,13 +1247,14 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 }
 
 func (m *playerMedia) stopPlayback() {
-	if m.player != nil {
-		m.player.Close()
-		m.player = nil
+	if m.eng() != nil {
+		m.eng().Close()
+		m.session.player = nil
 	}
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 	m.stillPos, m.stillAt = 0, time.Time{}
-	m.refreshAt, m.lastSwapAt = time.Time{}, time.Time{}
+	m.setRefresh(time.Time{})
+	m.lastSwapAt = time.Time{}
 	m.refreshing = false
 	m.swapFailures = 0
 	// 引擎没了，后台收听就不成立：不清这一位，灵动岛会挂着一颗「正在收听」
@@ -1136,8 +1278,8 @@ func (a *App) failPlayback(class, msg string) {
 	m := &a.media
 	logStage(m.id, m.start, class, "mode", m.mode())
 	a.stopPlayback()
-	m.loading = false
-	m.err = msg
+	m.setLoading(false)
+	m.setErr(msg)
 	// 小窗里没有错误层，播放器一收它只能看到一张旧封面：重画一次，
 	// 至少让「画面没了」和「播放器被收掉」发生在同一帧上。
 	a.invalidateWindows()
@@ -1219,13 +1361,13 @@ func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
 // 日志按「首帧可用」标注，别当成精确的观感时间。
 func (a *App) trackFirstFrame() {
 	m := &a.media
-	p := m.player
+	p := m.eng()
 	if p == nil {
 		return
 	}
 	now := time.Now()
 	a.trackContinuity(p, now)
-	if !m.firstFrame {
+	if !m.firstFrame() {
 		m.observeStartupPause(a.Playing, now)
 	}
 	// 播放器报错时 Ready 仍可能为真，这个判断必须排在记录首帧之前。
@@ -1246,17 +1388,17 @@ func (a *App) trackFirstFrame() {
 		a.trackBackground(p, now)
 		return
 	}
-	if m.firstFrame || p.Ready() {
-		if !m.firstFrame {
-			m.firstFrame = true
+	if m.firstFrame() || p.Ready() {
+		if !m.firstFrame() {
+			m.setFirstFrame(true)
 			w, h := p.Size()
 			hwdec := ""
 			if e, ok := p.Engine().(*playback.Engine); ok {
 				hwdec = e.Debug().HWDec
 			}
-			logStage(m.id, m.start, "首帧可用", "mode", m.mode(), "hwdec", hwdec, "upstream_codec", m.upstream.Codec,
-				"declared_width", m.upstream.Width, "declared_height", m.upstream.Height,
-				"declared_bitrate", m.upstream.Bitrate, "declared_fps", m.upstream.FrameRate,
+			logStage(m.id, m.start, "首帧可用", "mode", m.mode(), "hwdec", hwdec, "upstream_codec", m.up().Codec,
+				"declared_width", m.up().Width, "declared_height", m.up().Height,
+				"declared_bitrate", m.up().Bitrate, "declared_fps", m.up().FrameRate,
 				"decoded_width", w, "decoded_height", h, "buffering", p.Buffering())
 		}
 		// 两条触发，最后都落到「换一份新地址」：
@@ -1270,7 +1412,7 @@ func (a *App) trackFirstFrame() {
 				a.scheduleSwap("dead-" + why)
 			}
 		}
-		if !m.refreshAt.IsZero() && !now.Before(m.refreshAt) {
+		if !m.refresh().IsZero() && !now.Before(m.refresh()) {
 			a.scheduleSwap("expire")
 		}
 		return
@@ -1319,7 +1461,7 @@ func (a *App) trackBackground(p *ui.VideoPlayer, now time.Time) {
 	}
 	m.stillPos, m.stillAt = 0, time.Time{}
 	// 地址到期同样要续：后台没人看画面，但声音不能断。
-	if !m.refreshAt.IsZero() && !now.Before(m.refreshAt) {
+	if !m.refresh().IsZero() && !now.Before(m.refresh()) {
 		a.scheduleSwap("expire")
 		return
 	}
@@ -1373,7 +1515,7 @@ func (m *playerMedia) deadReason(ready, playing, buffering bool, pos time.Durati
 // libmpv 收到 loadfile 就返回，流能不能连上要等它自己解析；没有这条兜底，
 // 上游给了个死地址时界面会永远停在「正在拉取直播流…」。
 func (m *playerMedia) needFirstFrameTimeout(now time.Time, playing bool) bool {
-	if !playing || m.firstFrame || m.openedAt.IsZero() {
+	if !playing || m.firstFrame() || m.opened().IsZero() {
 		return false
 	}
 	return m.startupElapsed(now) >= firstFrameBudget
@@ -1396,14 +1538,14 @@ func (m *playerMedia) observeStartupPause(playing bool, now time.Time) {
 // 这一段补进 pausedFor。这样即使某一帧在暂停中间跑（点击、动画驱动），预算也
 // 不会被暂停时间吃掉。
 func (m *playerMedia) startupElapsed(now time.Time) time.Duration {
-	if m.openedAt.IsZero() {
+	if m.opened().IsZero() {
 		return 0
 	}
 	end := now
 	if !m.pauseStarted.IsZero() {
 		end = m.pauseStarted
 	}
-	return end.Sub(m.openedAt) - m.pausedFor
+	return end.Sub(m.opened()) - m.pausedFor
 }
 
 // PickQuality 是控制条上选中某个清晰度之后的动作。
@@ -1427,7 +1569,7 @@ func (a *App) PickQuality(label string) {
 	if ok && v.URL != "" {
 		a.media.pendingQualityPick = ""
 		sess := a.beginSession("换档")
-		a.media.upstream = v
+		a.media.session.up = v
 		go a.startPlayback(sess, v)
 		return
 	}
@@ -1442,7 +1584,7 @@ func (a *App) PickQuality(label string) {
 // 重新取一次 stream；弹幕连接保留。
 func (a *App) pickLine(label string) {
 	// 选项来自当前这一路的档位表，标签 → 节点 id 就在这份表里换。
-	a.setRoomLine(a.choiceKey(), label, lineIDIn(a.media.stream.Lines, label))
+	a.setRoomLine(a.choiceKey(), label, lineIDIn(a.media.streamNow().Lines, label))
 	if a.media.roomKey != "" {
 		a.startStream(true)
 	}
@@ -1454,7 +1596,7 @@ func (a *App) pickLine(label string) {
 // {"原画"} 撑位，但平台根本没有叫「原画」的档位，用户会先看到一个
 // 不存在的选项，等真档位回来再被替换掉。
 func (a *App) qualityOptions() []string {
-	variants := a.media.stream.Variants
+	variants := a.media.streamNow().Variants
 	if len(variants) == 0 {
 		return nil
 	}
@@ -1470,7 +1612,7 @@ func (a *App) qualityOptions() []string {
 // 没有线路就返回空：抖音这类平台本来就没有多线路，控制条上不该多出
 // 一个只能选「自动」的控件——网页端也没有这种东西。
 func (a *App) lineOptions() []string {
-	lines := a.media.stream.Lines
+	lines := a.media.streamNow().Lines
 	if len(lines) == 0 {
 		return nil
 	}
@@ -1483,7 +1625,7 @@ func (a *App) lineOptions() []string {
 
 // variantByLabel 按界面上的档位名找真实档位。
 func (m *playerMedia) variantByLabel(label string) (live.Variant, bool) {
-	for _, v := range m.stream.Variants {
+	for _, v := range m.streamNow().Variants {
 		if v.Label == label {
 			return v, true
 		}
@@ -1714,7 +1856,7 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 // 每帧调用，值没变时直接返回——VideoPlayer 的方法都很便宜，
 // 但播放 / 暂停来回切换会打断解码，所以只推变化。
 func (a *App) syncPlayer() {
-	p := a.media.player
+	p := a.media.eng()
 	if p == nil {
 		return
 	}
@@ -1794,7 +1936,7 @@ func (a *App) retryStream() {
 // 开始。正常状态仍然只是翻一个 UI 意图。
 func (a *App) togglePlayback() {
 	m := &a.media
-	if m.err != "" || (m.player != nil && m.player.Err() != nil) {
+	if m.errText() != "" || (m.eng() != nil && m.eng().Err() != nil) {
 		a.Playing = true
 		a.markDirty()
 		a.retryStream()

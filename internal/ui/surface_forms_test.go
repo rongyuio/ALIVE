@@ -8,21 +8,21 @@ import (
 	"time"
 )
 
-// 岛的形态只有三种：时钟 / 展开 / 后台收听。
+// 岛的形态只有两种：时钟，或者「这一路」。
 //
-// 以前是四种（full / tile / listening / idle），而 full 和 tile 在渲染上
-// 完全一样——同一个展开宽度、同一棵内容树、同样的流光环。差别只有"点它回
-// 哪"，那是点击处理该看表面决定的事，不该在形态里分叉。多一种形态就多一处
-// 要同步维护的判据，而这处判据本身没有任何可观察的差别。
-func TestIslandHasThreeForms(t *testing.T) {
+// 以前是四种（full / tile / listening / idle）。full 和 tile 在渲染上完全
+// 一样——同一个宽度、同一棵内容树、同样的流光环，差别只有"点它回哪"，那是
+// 点击处理该看表面决定的事；listening 曾经缩成一颗圆，后来整条去掉，后台
+// 听也是同一条岛。多一种形态就多一处要同步维护的判据，而它没有任何可观察
+// 的差别。
+func TestIslandHasTwoForms(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		form islandForm
 		want string
 	}{
 		{"时钟", islandIdle, "idle"},
-		{"展开", islandOpen, "open"},
-		{"后台收听", islandListening, "listening"},
+		{"有焦点", islandOpen, "open"},
 	} {
 		if got := tc.form.String(); got != tc.want {
 			t.Errorf("%s：String() = %q，期望 %q", tc.name, got, tc.want)

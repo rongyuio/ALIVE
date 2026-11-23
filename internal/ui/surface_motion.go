@@ -48,28 +48,124 @@ func (a *App) pushRoute(target string) {
 		a.Router.Transition = ui.TransitionMatch
 		a.routeTransitionUntil = time.Now().Add(routeTransitionDur + 120*time.Millisecond)
 	}
+	// 又进播放页：上一次「离开播放页」的收尾还没演完就取消，别把刚接上
+	// 的这一路当后台收听 detach 掉。
+	if target == routePlayer {
+		a.exitDetach = false
+	}
 	a.Router.Push(target)
 }
 
-// exitPlayer 结束这一路焦点，退回上一页。三个退出入口共用。
+// exitPlayer 结束这一路焦点，退回上一页。岛上的 X、全屏时左上角那颗按钮
+// 走这里：明确退出，关引擎、断弹幕，不留后台声音。
 //
-// 岛上的 X、Esc、全屏时左上角那颗按钮要的是同一件事，所以只有一个入口。
+// Esc 不走这里——它是「收进岛」（见 collapsePlayer）：同一间房换个形态
+// 继续放，不是结束。
 //
-// 退出是硬切，不做页面过渡。不是懒：一个 VideoPlayer 只能被一个 ui.Video
-// 画出来（两个元素只有一个出画），而退出时画面必须已经交回墙上的格子——
-// 播放舞台这一侧就没有引擎可画了。TransitionMatch 会在淡出期间重建旧页面，
-// 那一帧舞台的 player 是 nil，整块闪成封面或黑底（帧探针实测第 0–2 帧全黑，
-// 之后才淡入）。硬切则新墙的第一帧就带着同一路画面，没有空窗。
+// 退出也是连续过渡，而且**引擎要留到过渡结束才放手**。这是唯一能让收缩
+// 动画有画面的排法：
 //
-// 进场（墙格 → 播放页）仍然连续：那边画面在进来的舞台上，出去的是墙，
-// 飞行元素有东西可画。
+//   - Router 在淡出期间会重建旧页面（播放页）。如果这时媒体层已经松手，
+//     旧页面那一侧没有引擎可画，第 0 帧就是黑的（帧探针实测 0,0,0）；
+//   - 留着引擎，旧页面的舞台继续画这一路，新的墙格画的是**同一个
+//     roomSession** 的同一个播放器，两边的画面天然一致。
+//
+// 放手延迟到 tickRouteTransition 到点（280+120ms）。playback.Options 的
+// 引擎生命周期归 *ui.VideoPlayer，延迟这几百毫秒只是晚一点收声。
+//
+// 判据要在 closeMedia 之前取——焦点是连续过渡的前提。
 func (a *App) exitPlayer() {
 	if a.Router == nil {
 		return
 	}
-	// 进场后 400ms 内就退出时，路由器可能还停在 TransitionMatch。
-	a.Router.Transition = ui.TransitionNone
-	a.closeMedia()
+	key := a.focusKey()
+	fly := key != "" && a.watchHas(key) && a.media.eng() != nil
+	if !fly {
+		// 退回去的那一页没有这一间的画面可接（从列表进的播放页退回首页）。
+		// 给内容层加交叉淡化违反 0010，硬切才是对的。
+		a.Router.Transition = ui.TransitionNone
+		a.closeMedia()
+		a.Router.Back()
+		return
+	}
+	a.Router.Transition = ui.TransitionMatch
+	a.routeTransitionUntil = time.Now().Add(routeTransitionDur + 120*time.Millisecond)
+	// 到点再放手，见 tickRouteTransition。
+	a.exitRelease = true
+	a.exitDetach = false
+	a.Router.Back()
+}
+
+// collapsePlayer 是 Esc / 点岛的第一档：离开播放页，这一路留着。
+//
+// 和 exitPlayer 的区别只在演完之后的放手方式：这里 detach 而不是 close——
+// 引擎、取流、签了名还没过期的地址、房间记号全都留着，岛继续显示这一路，
+// 点它回来接着看。
+//
+// 退回的是**打开播放页之前那一页**——从观测墙点进来的回墙，从关注页、
+// 首页卡片点进来的回那一页。不能因为这一间恰好在观测盒里就跳去墙：用户
+// 离开的根本不是那面墙。
+//
+// 退回观测墙时是连续过渡：上一帧的舞台带着 Match 身份，回去那一页里同一间
+// 的墙格也带着，画面就缩回那一格。退回列表页（首页卡片、关注行）时不飞：
+// 那里没有和舞台同形的元素，把整张卡片拉成全屏再缩回去，看到的是一块白板
+// 盖住内容——那种情况走页面过渡。
+func (a *App) collapsePlayer() {
+	if a.Router == nil {
+		return
+	}
+	if a.focusKey() == "" {
+		// 没有声音焦点：岛上画的是时钟，没有可以收起的那一条。
+		a.Router.Transition = ui.TransitionNone
+		a.Router.Back()
+		return
+	}
+	// 只有退回去那一页可能画着同一间（观测墙）才值得这两拍。退到首页卡片、
+	// 关注行时那边没有能接住的元素，飞行没有终点——发一块白板盖住列表，
+	// 比直接淡过去更糟；那种情况当场换路由。
+	if a.FollowsSection != followsSectionWatch {
+		a.finishCollapse()
+		return
+	}
+	// 连按不抢跑：第一拍只让舞台带上 Match 身份，等 tickExitArm 把两趟
+	// 走完再换路由；中间再按一次什么都不做。
+	if a.exitArm {
+		return
+	}
+	a.exitArm = true
+	a.exitArmAt = a.buildSeq
+	a.invalidateWindows()
+}
+
+// tickExitArm 是「离开播放页」的第二拍：上一帧的舞台已经带上身份，
+// 这一帧换路由，退回去那一页里的同一间从舞台的矩形收回去。
+//
+// 每帧在 Shell 开头、构建之前调用：这一帧的 Router 就会同时建出离开的
+// 播放页（带身份）和回去的那一页。
+func (a *App) tickExitArm() {
+	// 等两趟：第一趟只是把身份挂上（Transition 新建的那一帧不参与匹配），
+	// 第二趟才把它记进「上一帧在哪」，第三趟换路由才有起点。
+	if !a.exitArm || a.buildSeq < a.exitArmAt+2 {
+		return
+	}
+	a.exitArm = false
+	a.finishCollapse()
+}
+
+func (a *App) finishCollapse() {
+	if a.Router == nil || a.Router.Path() != routePlayer {
+		return
+	}
+	if a.focusKey() == "" {
+		a.Router.Transition = ui.TransitionNone
+		a.Router.Back()
+		return
+	}
+	a.exitRelease = false
+	// 演完再放手：过渡期间呈现尺寸还得是全尺寸，提前收成格子就糊了。
+	a.exitDetach = true
+	a.Router.Transition = ui.TransitionMatch
+	a.routeTransitionUntil = time.Now().Add(routeTransitionDur + 120*time.Millisecond)
 	a.Router.Back()
 }
 
@@ -103,6 +199,42 @@ func (a *App) tickRouteTransition(now time.Time) {
 	a.routeTransitionUntil = time.Time{}
 	if a.Router != nil {
 		a.Router.Transition = ui.TransitionNone
+	}
+	if a.exitRelease {
+		// 退出过渡演完了：现在才让媒体层放手，墙格接手继续画同一个播放器。
+		a.exitRelease = false
+		a.closeMedia()
+	}
+	if a.exitDetach {
+		// 收进岛演完了：只关呈现，引擎和声音留着。
+		a.exitDetach = false
+		a.detachMedia()
+	}
+}
+
+// matchable 报告此刻能不能给元素挂 Match。
+//
+// 刚改过窗口尺寸的一小段时间里不能：带 Match 的元素在 resize 时会做尺寸
+// 动画，整墙的格子会一帧帧弹过去、视频每帧重新适配（用户报的「最大化会闪」）。
+// 窗口稳定之后恢复，飞行的起点就又有了。
+func (a *App) matchable() bool {
+	return time.Since(a.resizedAt) > matchSettleAfter
+}
+
+// matchSettleAfter 是窗口改尺寸之后多久才重新挂 Match。
+//
+// 比一次布局重排宽裕得多，又比用户点下一格快：实测 resize 的尺寸动画持续
+// 十几帧（约 200ms）。
+const matchSettleAfter = 400 * time.Millisecond
+
+// noteWindowSize 记下窗口尺寸变化，供 matchable 判断。每帧调用。
+func (a *App) noteWindowSize(w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	if a.lastWindowW != w || a.lastWindowH != h {
+		a.lastWindowW, a.lastWindowH = w, h
+		a.resizedAt = time.Now()
 	}
 }
 

@@ -25,7 +25,7 @@ func TestDetachWhileBackgroundRecomputesPresent(t *testing.T) {
 	useTrack(t, a, spy)
 
 	a.media.background = true
-	a.media.present = presentSize{W: 1280, H: 720}
+	a.media.session.present = presentSize{W: 1280, H: 720}
 	a.Router = ui.NewRouter(routeHome)
 
 	a.detachMedia()
@@ -66,8 +66,8 @@ func TestStaleHotSwapFailureDoesNotPolluteSession(t *testing.T) {
 	if a.media.swapFailures != 0 {
 		t.Fatalf("过期会话的失败记到了新会话上：swapFailures=%d", a.media.swapFailures)
 	}
-	if !a.media.refreshAt.IsZero() {
-		t.Fatalf("过期失败把新会话的换地址推迟到了 %v", a.media.refreshAt)
+	if !a.media.refresh().IsZero() {
+		t.Fatalf("过期失败把新会话的换地址推迟到了 %v", a.media.refresh())
 	}
 	if !a.media.refreshing {
 		t.Fatal("过期失败清掉了新会话的 refreshing")

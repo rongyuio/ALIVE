@@ -105,7 +105,7 @@ type App struct {
 	// 观测盒：最多 watch.MaxRooms 间，顺序即墙上的布局顺序。
 	WatchRooms []Streamer
 	// WatchActive 是当前激活（出声）的房间 key：platform|roomID。
-	// 它可能由 a.media 持有（从播放页回来），也可能是墙上的 wallSession。
+	// 它可能由 a.media 持有（从播放页回来），也可能是墙上的 roomSession。
 	WatchActive string
 	// WatchPending 是点了但还没出首帧的激活目标。
 	WatchPending string
@@ -353,6 +353,23 @@ type App struct {
 	// routeTransitionUntil 是表面之间连续过渡的结束时刻；零值表示当前
 	// 不播页面过渡。由 pushRoute 置、tickRouteTransition 收尾。
 	routeTransitionUntil time.Time
+	// resizedAt / lastWindowW/H 是窗口尺寸的观测点：刚改过尺寸的一小段
+	// 时间里不挂 Match（见 matchable）。
+	resizedAt                time.Time
+	lastWindowW, lastWindowH int
+	// exitRelease 表示退出过渡演完之后才让媒体层放手（见 exitPlayer）。
+	// 过渡期间引擎必须留着，否则旧页面那一侧没有画面可画。
+	exitRelease bool
+	// exitDetach 是同一段过渡的另一种收尾：演完只 detach，不关（Esc 收进岛）。
+	// 演完之前同样不能提前 detach，理由和 exitRelease 一样。
+	exitDetach bool
+	// exitArm 是离开播放页的第一拍：让舞台这一帧带上 Match 身份，下一拍
+	// 再换路由。Match 的起点取自上一帧，同一帧里刚加上的身份没有起点。
+	exitArm bool
+	// buildSeq 是 Shell 的构建序号；exitArmAt 记下 arm 发生在哪一趟，
+	// 同一趟里不能立刻换路由，否则带身份的那一帧根本不存在。
+	buildSeq  uint64
+	exitArmAt uint64
 }
 
 // CategoryGroup 是一级分区及其下的二级分区。
@@ -507,8 +524,13 @@ func (a *App) currentAuth() live.Authenticator {
 // feTurbulence 平铺、opacity 5%，原生侧暂时省掉（视觉上几乎不可见，
 // 而且每帧重绘一张噪点纹理不划算）。
 func (a *App) Shell(c *ui.Context) {
+	a.buildSeq++
 	// 一帧只让第一个 spinner 驱动动画时钟，其余的读它的相位
 	resetSpinFrame()
+	// 窗口尺寸的观测点：刚改过尺寸时不挂 Match，避免整墙做尺寸动画。
+	if w, h := c.Size(); w > 0 {
+		a.noteWindowSize(int(w), int(h))
+	}
 
 	// 系统外观要在 SetTheme 之前读：SetTheme 之后 Context 返回的是我们这套
 	// 配色，就再也看不到系统是深色还是浅色了。
@@ -565,13 +587,16 @@ func (a *App) Shell(c *ui.Context) {
 			})
 			// 离开播放页：默认进后台收听，声音留着、画面关掉。
 			//
-			// 只有显式退出才真关——播放页灵动岛上的 X（全屏时是左上角那颗）、
-			// 以及 Esc——它们自己调 closeMedia。其余离开方式（顶栏 tab、
-			// 点岛回直播间、搜索跳转）都保留这一路的声音，回来时接着看。
+			// 只有 X 才真关——播放页灵动岛上的 X（全屏时是左上角那颗），
+			// 它自己调 closeMedia。Esc 收进岛，顶栏 tab、点岛回直播间、
+			// 搜索跳转也都保留这一路的声音，回来时接着看。
 			//
 			// 换台不在这里判：从后台收听点开另一个直播间时，ensureMedia 会发现
 			// roomKey 变了，reset 之后重开一路，旧引擎在 stopPlayback 里关掉。
-			if a.Router.Path() != routePlayer && a.media.roomKey != "" {
+			// 退出过渡期间不 detach：那会把呈现尺寸收成格子大小，而飞出去的
+			// 舞台这一拍还在按全尺寸画——画面会在飞行途中变糊。过渡结束由
+			// tickRouteTransition 收尾（它负责放手）。
+			if a.Router.Path() != routePlayer && a.media.roomKey != "" && !a.exitRelease && !a.exitDetach {
 				a.detachMedia()
 			}
 			// 墙不可见时关掉非 active 的格子；active 留着出声。播放页打开时
@@ -603,6 +628,10 @@ func (a *App) Shell(c *ui.Context) {
 	// 全局键盘放在整棵视图构建完之后：PopoverBase 的 Esc 是在构建浮层时
 	// 消费的，这里如果先跑，一次 Esc 会同时关掉浮层和它外面的东西。
 	a.shellKeys(c)
+	// 离开播放页的第二拍：这一帧的舞台已经带着 Match 身份建完，现在换
+	// 路由，下一帧退回去那一页的同一间就有起点可飞。必须放在构建之后：
+	// 放在构建之前的话，带身份的那一帧和换路由的是同一帧，起点还是空的。
+	a.tickExitArm()
 }
 
 // Home 是首页内容：分区栏 + 卡片网格。

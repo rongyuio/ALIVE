@@ -304,7 +304,7 @@ func TestWatchOpenDeadTileTargetsThatRoom(t *testing.T) {
 		dead := rooms[1]
 		key := watchKey(dead)
 		app.watch.init()
-		app.watch.sessions[key] = &wallSession{
+		app.watch.sessions[key] = &roomSession{
 			key: key, room: dead, offline: true, err: "主播暂时没有开播",
 		}
 		return app, tt, dead, key
@@ -337,12 +337,12 @@ func TestWatchOpenDeadTileTargetsThatRoom(t *testing.T) {
 			t.Fatalf("点死格没进播放页，route=%q", app.Router.Path())
 		}
 		if got := watchKey(app.Player); got != key {
-			t.Fatalf("播放页没有目标房间：a.Player=%+v", app.Player)
+			t.Fatalf("播放页没有目标房间：app.Player=%+v", app.Player)
 		}
 
 		// 取流结果回来确认未开播：画面上要有提示和刷新入口，不是一片黑。
-		app.media.loading = false
-		app.media.stream = live.Stream{
+		app.media.setLoading(false)
+		app.media.session.stream = live.Stream{
 			Platform: live.Platform(dead.Platform), RoomID: dead.RoomID, Live: false,
 		}
 		tt.Frame()
@@ -507,7 +507,7 @@ func TestWatchLoadingUsesPlayerOverlay(t *testing.T) {
 	app, tt := newWatchMock(t, rooms)
 	key := watchKey(rooms[0])
 	app.watch.init()
-	app.watch.sessions[key] = &wallSession{key: key, room: rooms[0], loading: true}
+	app.watch.sessions[key] = &roomSession{key: key, room: rooms[0], loading: true}
 	tt.Frame()
 	if !tt.HasText("正在拉取直播流…") {
 		t.Fatalf("加载态没有复用播放页文案：texts=%q", tt.Texts())
@@ -803,7 +803,7 @@ func TestWatchReloadReopensOfflineSession(t *testing.T) {
 	rooms := watchTestRooms(1)
 	app, tt := newWatchMock(t, rooms)
 	key := watchKey(rooms[0])
-	s := &wallSession{
+	s := &roomSession{
 		key: key, room: rooms[0], offline: true, err: "主播暂时没有开播", failures: 3,
 	}
 	app.watch.init()
@@ -897,5 +897,39 @@ func TestWatchPlaceholderMatchesCoverArt(t *testing.T) {
 	want := theme.BgTertiary
 	if got.R != want.R || got.G != want.G || got.B != want.B {
 		t.Fatalf("占位底色 %v，期望首页封面占位的 %v", got, want)
+	}
+}
+
+// 进观测墙不能把收在岛里的那一间关掉。
+//
+// 后台收听的那一间不在盒里，但媒体层正握着它。watchShow 收尾时对
+// 「不在盒里」的会话一律 watchCloseSession——它还会先让媒体层放手，
+// 于是点一下「悲鸣观测」，声音、会话、岛上的主播条一起消失。
+func TestWallKeepsTheRoomCollapsedIntoTheIsland(t *testing.T) {
+	app, tt := newWatchMock(t, watchTestRooms(1))
+	room := Streamer{Platform: "bilibili", RoomID: "9999", Name: "盒外的主播"}
+	key := watchKey(room)
+	app.media.roomKey = key
+	p := gifPlayer(t)
+	app.media.session = &roomSession{key: key, room: room, player: p}
+	app.watch.sessions[key] = app.media.session
+	app.media.background = true
+	app.Player = room
+	app.Playing = true
+	app.Volume = 0.6
+
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	if app.media.session == nil || app.media.roomKey != key {
+		t.Fatalf("进观测墙之后收在岛里的那一间被关了：roomKey=%q session=%v",
+			app.media.roomKey, app.media.session != nil)
+	}
+	if got := app.focusKey(); got != key {
+		t.Fatalf("焦点变成了 %q，期望还是后台那一间 %q", got, key)
+	}
+	if p.Volume() <= 0 {
+		t.Fatalf("这一路的音量是 %v：声音被观测墙顺手关了", p.Volume())
 	}
 }

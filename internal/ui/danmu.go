@@ -202,7 +202,7 @@ func (a *App) advanceDanmuClock() {
 	if dt <= 0 {
 		return
 	}
-	if p := a.media.player; p != nil {
+	if p := a.media.eng(); p != nil {
 		pos := p.Position()
 		add, still := danmuAdvance(dt, true, a.Playing, pos, a.danmuPos, a.danmuStill)
 		a.danmuPos, a.danmuStill = pos, still

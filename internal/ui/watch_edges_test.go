@@ -129,7 +129,7 @@ func TestWatchWallTilesCoverTheirEdges(t *testing.T) {
 					}
 					w, h := watchSize(watch.Rect{X: r.X, Y: r.Y, W: r.W, H: r.H})
 					key := watchKey(room)
-					app.watch.sessions[key] = &wallSession{
+					app.watch.sessions[key] = &roomSession{
 						key: key, room: room,
 						player: solidClip(t, color.RGBA{255, 0, 0, 255}, w, h),
 					}

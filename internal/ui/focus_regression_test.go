@@ -134,9 +134,34 @@ func TestEnteringPlayerClosesWallPreviewOfSameRoom(t *testing.T) {
 	app.Router.Push(routePlayer)
 	tt.Frame()
 
-	if s, ok := app.watch.sessions[key]; ok {
-		t.Fatalf("进播放页以后墙上这一间的预览会话还在（player=%v）：同一间房有了两个引擎", s.player != nil)
+	// 真正的风险是「同一间房有两个引擎在解同一路流」，不是「墙上还留着这条
+	// 会话」。现在同一间房只有一个 roomSession，进播放页只是让媒体层指它，
+	// 所以断言改成：这一间在手上一份引擎，且媒体层和墙指的是同一个对象。
+	s := app.watch.sessions[key]
+	if s == nil {
+		t.Fatal("进播放页以后墙上这一间的会话没了：它应该还在册，只是换个尺寸画")
 	}
+	if s.player == nil {
+		t.Fatal("这一间没有引擎：进播放页不该把墙上的引擎关掉重开")
+	}
+	if app.media.session != nil && app.media.session != s {
+		t.Fatal("媒体层和墙各拿着一份会话：同一间房被拆成了两个")
+	}
+	if n := countRoomEngines(app, key); n > 1 {
+		t.Fatalf("同一间房有 %d 个引擎在解同一路流", n)
+	}
+}
+
+// countRoomEngines 数这一间到底有几个引擎对象在跑。
+func countRoomEngines(a *App, key string) int {
+	seen := map[*ui.VideoPlayer]bool{}
+	if s := a.watch.sessions[key]; s != nil && s.player != nil {
+		seen[s.player] = true
+	}
+	if a.media.roomKey == key && a.media.eng() != nil {
+		seen[a.media.eng()] = true
+	}
+	return len(seen)
 }
 
 // 取流失败 / 未开播后离开播放页，岛上不能永远停在「后台收听」。
@@ -161,9 +186,9 @@ func TestLeavingAfterStreamFailureClearsIslandFocus(t *testing.T) {
 	// 取流回来：平台说没开播，loading 落回 false，引擎始终没有建出来。
 	stubs.pump(t)
 	stubs.pump(t)
-	if app.media.roomKey == "" || app.media.player != nil || app.media.loading {
+	if app.media.roomKey == "" || app.media.eng() != nil || app.media.isLoading() {
 		t.Fatalf("夹具状态不对：roomKey=%q player=%v loading=%v",
-			app.media.roomKey, app.media.player != nil, app.media.loading)
+			app.media.roomKey, app.media.eng() != nil, app.media.isLoading())
 	}
 
 	// 顶栏 tab 离开播放页：Shell 走 detachMedia（和用户点 tab 同一条路）。
