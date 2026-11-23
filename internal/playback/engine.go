@@ -53,6 +53,12 @@ type Options struct {
 	StartSilent bool
 	// SkipAudioGate 不压画面等音频时钟。墙上的格子只要画面，等音频会白压两秒。
 	SkipAudioGate bool
+	// NoBackBuffer 关掉 demuxer 的回退缓存。
+	//
+	// 直播不能回退，这份缓存永远不会被读到，却按 mpv 的默认上限占着内存。
+	// 观测墙一屏最多 12 路，每路各留一份是纯浪费。对画面没有影响：前向
+	// 缓存（抗抖动那段）不动。
+	NoBackBuffer bool
 }
 
 // Engine 是一路直播的播放引擎，实现 media.Engine。
@@ -177,14 +183,15 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
 	p, err := video.New(video.Options{
-		Library:    lib,
-		Headers:    opts.Headers,
-		Width:      opts.Width,
-		Height:     opts.Height,
-		MaxWidth:   opts.MaxWidth,
-		MaxHeight:  opts.MaxHeight,
-		Silent:     opts.Silent,
-		ClientName: audioClientName,
+		Library:      lib,
+		Headers:      opts.Headers,
+		Width:        opts.Width,
+		Height:       opts.Height,
+		MaxWidth:     opts.MaxWidth,
+		MaxHeight:    opts.MaxHeight,
+		Silent:       opts.Silent,
+		ClientName:   audioClientName,
+		NoBackBuffer: opts.NoBackBuffer,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)

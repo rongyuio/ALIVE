@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/live"
@@ -56,6 +57,9 @@ type wallSession struct {
 	firstFrame bool
 	lastPos    time.Duration
 	stillSince time.Time
+	// stalled 表示画面停住了但还没到判死阈值：这一格在缓冲。
+	// 必须报出来——"看起来在播、其实落后了"比缓冲本身更糟。
+	stalled bool
 
 	// renderW/H 是这一格的软件渲染目标，按格子物理像素给。
 	renderW, renderH int
@@ -69,12 +73,32 @@ type wallMedia struct {
 	// 墙上仍只有一路出声，但音量不再共用 a.Volume 一份：调哪格只动哪格，
 	// 切走再切回来还是它自己的值，静音一格也不会把别的格改成 0。
 	volumes map[string]float32
+	// resume 是关掉引擎时留下的签名地址与档位表，按 platform|roomID 记。
+	// 直播重连里最贵的一段不是网络，是重新问平台要地址；地址还在有效期
+	// 内就直接 loadfile。只留元数据，不留引擎、不留连接。
+	resume map[string]wallResume
 	// tickPending 表示墙的心跳定时器已经排上，避免每帧重复排。
 	tickPending bool
-	// hiddenSince 是墙变成不可见的时刻；零值表示墙可见。超过
-	// watchRetention 之后 watchReap 回收非焦点会话。
+	// hiddenSince 是墙变成不可见的时刻；零值表示墙可见。只有用户开了
+	// 「暂离时省流量」才在 watchReapGrace 之后回收。
 	hiddenSince time.Time
 }
+
+// wallResume 是一格关掉引擎之后留下的"重启凭据"。
+//
+// 只有地址和档位表，没有引擎、没有连接、没有解码器。几 KB 的元数据，
+// 换来的是回来时省掉一次平台往返（要签名地址 → 拿档位表）。
+type wallResume struct {
+	stream live.Stream
+	up     live.Variant
+	until  time.Time
+}
+
+// watchResumeGuess 是平台没声明地址寿命时，保留凭据的保守窗口。
+//
+// 猜短了只是多一次完整取流，猜长了会先失败一次再退回完整取流——两条路都
+// 不会让用户看到错误，所以这里不需要精确。
+const watchResumeGuess = 45 * time.Second
 
 func (m *wallMedia) init() {
 	if m.sessions == nil {
@@ -85,6 +109,9 @@ func (m *wallMedia) init() {
 	}
 	if m.volumes == nil {
 		m.volumes = make(map[string]float32)
+	}
+	if m.resume == nil {
+		m.resume = make(map[string]wallResume)
 	}
 }
 
@@ -338,15 +365,15 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 	a.watchSyncActiveAudio()
 }
 
-// watchRetention 是墙不可见后会话的保留窗口。
+// watchReapGrace 是"墙看不见"到"真的回收"之间的防抖窗口。
 //
-// "看不见"和"关掉"是两个决定，中间留一段时间：去首页瞄一眼就回来，整面墙
-// 还是活的，直接出画；超过这段才回收。以前两者焊在一起，离开几秒回来 11 格
-// 同时重新取流，按实测 224ms–4.3s 不等。
+// 它不是一个策略性保留期：策略已经交给用户（WatchKeepPlaying）。这里只挡
+// 一种情况——点进直播间、马上又退回来，一个来回不到两秒；为此把 11 路全拆
+// 掉再重建纯属浪费。
 //
-// 30 秒是取舍：够一次"看一眼就回来"，又不会在用户真的去干别的时一直占着
-// 12 路解码。代价写在 doc/decisions/0012。
-const watchRetention = 30 * time.Second
+// 以前这里是 30 秒，担的是"去首页瞄一眼就回来"这个场景。那条路现在由
+// "离开后继续播放"开关和保留签名地址承担，不需要用解码时长去换。
+const watchReapGrace = 2 * time.Second
 
 // watchHide 在墙不可见时调用：标记不可见，回收交给保留窗口。
 //
@@ -359,15 +386,39 @@ func (a *App) watchHide() {
 	}
 }
 
-// watchReap 在墙持续不可见超过保留窗口后回收非焦点会话。
+// WatchHidden 是"窗口整体看不见"的入口：最小化、或者主窗口被小窗换下去。
 //
-// 每拍调用，幂等：窗口没到什么都不做，收完把标记清掉，下次隐藏重新计时。
+// 和 watchHide 的区别只在调用者：Shell 每帧按路由判断"墙在不在屏上"，
+// 而最小化时 Shell 根本不重建，所以那条路走不到它。没有这个入口，用户
+// 开着「暂离时省流量」把窗口最小化，墙上的会话就永远不会被回收。
+func (a *App) WatchHidden() { a.watchHide() }
+
+// WatchShown 是它的反向：窗口回来了，保留窗口从头计。
+// 墙真的重建时会由 watchShow 再清一次，这里只是让"最小化 → 恢复"这段
+// 不留下一个已经到期的 hiddenSince。
+func (a *App) WatchShown() {
+	a.watch.init()
+	a.watch.hiddenSince = time.Time{}
+}
+
+// watchReap 回收墙上已经看不见的会话——只在用户要求省流量时。
+//
+// 默认什么都不做：看不见的会话留着，只是不再渲染（见插件的渲染门控）。
+// "暂离"的全部意义就是还会回来，拆掉再建就是把它变成"离开"。
+//
+// 用户开了「暂离时省流量」才回收：离开墙 watchReapGrace（2 秒防抖）之后
+// 关掉非焦点会话，回来重新取流。这时省的是带宽，付的是回来的一次加载。
+//
+// 每拍调用，幂等：条件没到什么都不做，收完把标记清掉，下次隐藏重新计时。
 func (a *App) watchReap(now time.Time) {
 	a.watch.init()
 	if a.watch.hiddenSince.IsZero() {
 		return
 	}
-	if now.Sub(a.watch.hiddenSince) < watchRetention {
+	if !a.WatchSaveData {
+		return
+	}
+	if now.Sub(a.watch.hiddenSince) < watchReapGrace {
 		return
 	}
 	focus := a.focusKey()
@@ -380,10 +431,42 @@ func (a *App) watchReap(now time.Time) {
 	a.watch.hiddenSince = time.Time{}
 }
 
+// takeResume 取走这一格保留的签名地址（一次性），过期了就丢掉。
+func (a *App) takeResume(key string) (wallResume, bool) {
+	a.watch.init()
+	r, ok := a.watch.resume[key]
+	if !ok {
+		return wallResume{}, false
+	}
+	delete(a.watch.resume, key)
+	if !time.Now().Before(r.until) {
+		return wallResume{}, false
+	}
+	return r, true
+}
+
+// rememberResume 在关掉引擎时留下签名地址，供下次重连直接用。
+func (a *App) rememberResume(s *wallSession) {
+	if s == nil || s.up.URL == "" {
+		return
+	}
+	until := s.up.Expires
+	if until.IsZero() {
+		until = time.Now().Add(watchResumeGuess)
+	}
+	if !time.Now().Before(until) {
+		return
+	}
+	a.watch.init()
+	a.watch.resume[s.key] = wallResume{stream: s.stream, up: s.up, until: until}
+}
+
 func (a *App) watchCloseSession(s *wallSession) {
 	if s == nil {
 		return
 	}
+	// 关引擎之前把签名地址留下来：下次重连能省掉一次平台往返。
+	a.rememberResume(s)
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
@@ -398,8 +481,13 @@ func (a *App) watchCloseSession(s *wallSession) {
 
 // watchOpenSession 取流并起这一格的引擎。所有结果都回到主线程再接纳。
 func (a *App) watchOpenSession(s *wallSession) {
-	if s == nil || s.loading || s.offline || s.player != nil {
+	if s == nil || s.loading || s.player != nil {
 		return
+	}
+	// 离线格也允许重开：蹲开播靠的就是它。调用方负责退避。
+	if s.offline {
+		s.offline = false
+		s.err = ""
 	}
 	if a.Win == nil {
 		// 视图测试没有窗口；真实窗口在 NewApp 之后就有了。
@@ -431,7 +519,17 @@ func (a *App) watchOpenSession(s *wallSession) {
 	quality := a.qualityFor(s.key)
 	line := a.lineIDFor(s.key, s.stream)
 	room := s.room
+	// 保留的凭据必须在主线程取走：那张表只属于主线程。
+	resume, fromResume := a.takeResume(s.key)
 	go func() {
+		// 先试保留的签名地址：重连最贵的一段不是网络，是重新问平台要地址。
+		// 打不开（过期 / 房间没了）就退回完整取流，不额外退避。
+		if fromResume {
+			if e, err := openNative(context.Background(), resume.up.URL, wallPlaybackOptions(resume.up)); err == nil {
+				a.acceptWallEngine(s, ctx, seq, win, e, resume.stream, resume.up)
+				return
+			}
+		}
 		fctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		info, v, err := fetchStream(fctx, prov, room.RoomID, line, quality)
@@ -462,14 +560,7 @@ func (a *App) watchOpenSession(s *wallSession) {
 			return
 		}
 		// 引擎不挂取流 ctx：同一路可能被交接给播放页 / 墙上的另一格。
-		e, err := openNative(context.Background(), v.URL, playback.Options{
-			Headers:       v.Headers,
-			Width:         v.Width,
-			Height:        v.Height,
-			FrameRate:     v.FrameRate,
-			StartSilent:   true,
-			SkipAudioGate: true,
-		})
+		e, err := openNative(context.Background(), v.URL, wallPlaybackOptions(v))
 		if err != nil {
 			if ctx.Err() == nil {
 				runOnMain(win, func() {
@@ -480,47 +571,68 @@ func (a *App) watchOpenSession(s *wallSession) {
 			}
 			return
 		}
-		runOnMain(win, func() {
-			if ctx.Err() != nil || a.watch.sessions[s.key] != s || s.seq != seq {
-				_ = e.Close()
-				return
-			}
-			p := ui.NewEngineVideoPlayer(e)
-			// 起播先按 0 音量，激活时 adopt 再落这一格自己的值。
-			//
-			// 不能用 SetMuted：MyGo 把静音视频当「一张画」调度，系统要求
-			// 减少动效、窗口被遮住或元素不再显示时会把它按住不播，时间轴
-			// 随之停住——墙的看门狗就会把一路好好的流当断流重连。静音一律
-			// 走 SetVolume(0)，播放器保持非静音。
-			p.SetVolume(0)
-			// 格子按自己的物理像素呈现：源流档位、解码分辨率都不动，只把
-			// 呈现尺寸收到格子大小。这是唯一的呈现旋钮，接管进播放页时
-			// 放回 0 就恢复全尺寸。
-			if s.renderW > 0 && s.renderH > 0 {
-				e.SetPresentSize(s.renderW, s.renderH)
-			}
-			s.player, s.track = p, e
-			// 引擎已经开出来了：首帧预算从这里重新计时，播放器迟迟不出图
-			// 时由 watchTick 接手，不能让取流阶段的耗时提前吃掉这段预算。
-			s.openedAt = time.Now()
-			s.stream, s.up = info, v
-			// 平台确认的档位写回这一格自己的记录：激活 / 进播放页时读的就是它。
-			a.learnRoomChoice(s.key, info, v)
-			s.loading = false
-			s.err = ""
-			s.firstFrame = p.Ready()
-			s.failures = 0
-			s.refreshAt = refreshAtFor(v)
-			s.stillSince = time.Now()
-			s.lastPos = 0
-			if s.key == a.WatchActive {
-				a.WatchPending = ""
-				a.watchAdoptActive(true)
-				a.watchSyncActiveAudio()
-			}
-			a.invalidateWindows()
-		})
+		a.acceptWallEngine(s, ctx, seq, win, e, info, v)
 	}()
+}
+
+// wallPlaybackOptions 是墙上每一格起播时的选项。
+//
+// 和播放页唯一的差别是 NoBackBuffer：直播不能回退，回退缓存永远不会被读到，
+// 一屏 12 路各留一份是纯浪费。前向缓存不动，抗抖动靠的是它。
+func wallPlaybackOptions(v live.Variant) playback.Options {
+	return playback.Options{
+		Headers:       v.Headers,
+		Width:         v.Width,
+		Height:        v.Height,
+		FrameRate:     v.FrameRate,
+		StartSilent:   true,
+		SkipAudioGate: true,
+		NoBackBuffer:  true,
+	}
+}
+
+// acceptWallEngine 把开好的引擎接到这一格上。必须在主线程调用（内部走 runOnMain）。
+func (a *App) acceptWallEngine(s *wallSession, ctx context.Context, seq int, win *mygo.Window, e *playback.Engine, info live.Stream, v live.Variant) {
+	runOnMain(win, func() {
+		if ctx.Err() != nil || a.watch.sessions[s.key] != s || s.seq != seq {
+			_ = e.Close()
+			return
+		}
+		p := ui.NewEngineVideoPlayer(e)
+		// 起播先按 0 音量，激活时 adopt 再落这一格自己的值。
+		//
+		// 不能用 SetMuted：MyGo 把静音视频当「一张画」调度，系统要求
+		// 减少动效、窗口被遮住或元素不再显示时会把它按住不播，时间轴
+		// 随之停住——墙的看门狗就会把一路好好的流当断流重连。静音一律
+		// 走 SetVolume(0)，播放器保持非静音。
+		p.SetVolume(0)
+		// 格子按自己的物理像素呈现：源流档位、解码分辨率都不动，只把
+		// 呈现尺寸收到格子大小。这是唯一的呈现旋钮，接管进播放页时
+		// 放回 0 就恢复全尺寸。
+		if s.renderW > 0 && s.renderH > 0 {
+			e.SetPresentSize(s.renderW, s.renderH)
+		}
+		s.player, s.track = p, e
+		// 引擎已经开出来了：首帧预算从这里重新计时，播放器迟迟不出图
+		// 时由 watchTick 接手，不能让取流阶段的耗时提前吃掉这段预算。
+		s.openedAt = time.Now()
+		s.stream, s.up = info, v
+		// 平台确认的档位写回这一格自己的记录：激活 / 进播放页时读的就是它。
+		a.learnRoomChoice(s.key, info, v)
+		s.loading = false
+		s.err = ""
+		s.firstFrame = p.Ready()
+		s.failures = 0
+		s.refreshAt = refreshAtFor(v)
+		s.stillSince = time.Now()
+		s.lastPos = 0
+		if s.key == a.WatchActive {
+			a.WatchPending = ""
+			a.watchAdoptActive(true)
+			a.watchSyncActiveAudio()
+		}
+		a.invalidateWindows()
+	})
 }
 
 func (a *App) watchFail(s *wallSession, msg string) {
@@ -559,6 +671,10 @@ func (a *App) watchOffline(s *wallSession) {
 	s.offline = true
 	s.err = "主播暂时没有开播"
 	s.firstFrame = false
+	// 蹲开播：下一拍之后按退避自动再问一次平台。
+	// failures 不清零——一个长期没开播的房间不该每 2 秒问一次。
+	s.failures++
+	s.retryAt = time.Now().Add(watchBackoff(s.failures))
 	if s.key == a.WatchActive {
 		// 下播就是没有声音：焦点跟着收掉，绿点和岛一起消失。
 		a.watchDeactivate()
@@ -643,6 +759,14 @@ func watchDeadReason(ready, playing, buffering, ended bool, pos time.Duration,
 	return ""
 }
 
+// wallStalled 报告这一格是不是在缓冲：有画面、在播，但时间轴停住了。
+//
+// 判据和播放页的 bufferingPill 同源：不信 VideoPlayer.Buffering()（直播 HLS
+// 上它会永久停在 true），看时间轴有没有动。
+func wallStalled(ready, playing bool, since, now time.Time) bool {
+	return ready && playing && !since.IsZero() && now.Sub(since) > stalledThreshold
+}
+
 // watchTick 驱动墙上所有非 media 持有的会话：首帧预算、断流、地址到期、重试。
 //
 // active 若由 a.media 持有，不在这里驱动——playerMedia 自己的心跳管它。
@@ -660,6 +784,16 @@ func (a *App) watchTick(now time.Time) {
 				continue
 			}
 			if s.offline {
+				// 蹲开播：离线格按退避自动重试。
+				//
+				// 以前这里直接 continue，于是"把关注的房间摆上墙等它开播"
+				// 这个场景根本不成立——只能手点。退避和失败重连共用一套，
+				// 免得对一个长期没开播的房间每拍问一次平台。
+				if !s.retryAt.IsZero() && now.Before(s.retryAt) {
+					continue
+				}
+				s.retryAt = now.Add(watchBackoff(s.failures + 1))
+				a.watchOpenSession(s)
 				continue
 			}
 			if !s.retryAt.IsZero() && now.Before(s.retryAt) {
@@ -683,6 +817,7 @@ func (a *App) watchTick(now time.Time) {
 			a.watchEnded(s, why)
 			continue
 		}
+		s.stalled = wallStalled(s.player.Ready(), s.player.Playing(), s.stillSince, now)
 		if !s.refreshAt.IsZero() && now.After(s.refreshAt) {
 			a.watchRestart(s, "地址到期")
 			continue

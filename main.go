@@ -63,6 +63,14 @@ func main() {
 		//
 		// OnClose 在状态捕获（closeState）之前同步触发，自绘的关闭按钮和
 		// Alt+F4 / 窗口菜单都走这一条，所以只需要挂在这里。
+		// 最小化时 Shell 不再重建，墙的"看不见"判据就走不到了。
+		// 挂在这里让「暂离时省流量」在最小化时也成立；恢复时清掉标记。
+		win.OnMinimize(func() {
+			win.Update(func() { app.WatchHidden() })
+		})
+		win.OnRestore(func() {
+			win.Update(func() { app.WatchShown() })
+		})
 		win.OnClose(func(e *mygo.CloseEvent) {
 			// 关窗时立即取消起播和弹幕任务，避免结果回到已销毁的窗口。
 			app.CloseMedia()

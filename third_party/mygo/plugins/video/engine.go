@@ -234,6 +234,12 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 	// 每片新建连接（实测 380ms vs 复用 40ms）才是直播卡顿的主因，而它在这条
 	// 路上无解。详见 doc/decisions/0009-live-continuity.md「第五轮」。
 	_ = e.option(n.handle, "cache-pause-wait", "0.2")
+	// 回退缓存：直播不能回退，这份缓存永远不会被读到。ALIVE 本地补丁，
+	// 只在调用方明确要求时关掉（观测墙一屏最多 12 路，每路各留一份纯浪费）。
+	// 前向缓存不动，抗抖动靠的是它。
+	if opts.NoBackBuffer {
+		_ = e.option(n.handle, "demuxer-max-back-bytes", "0")
+	}
 	// 直播流几乎都要回源请求头（B站/虎牙/斗鱼的 Referer、抖音的 UA）。mpv 自己
 	// 不会编这些，必须由调用方给。http-header-fields 是逗号分隔的列表，每个
 	// 元素原样作为一行 header 发出去。

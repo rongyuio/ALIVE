@@ -44,6 +44,7 @@ type persisted struct {
 	FollowRecords       *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
 	Subs                *[]Subscription `json:"subscriptions,omitempty"`
 	WatchRooms          *[]watchRecord  `json:"watchRooms,omitempty"`
+	WatchSaveData       *bool           `json:"watchSaveData,omitempty"`
 	// RoomChoices 是每个直播间自己的清晰度 / 线路（键 platform|roomID）。
 	RoomChoices map[string]roomChoice `json:"roomChoices,omitempty"`
 	// Quality / Line 是旧版的全局字段。新模型按房间存，读旧文件时无法
@@ -135,6 +136,7 @@ func (a *App) saveState() {
 		watchRooms = append(watchRooms, a.watchRecordOf(s))
 	}
 	volume := a.Volume
+	saveData := a.WatchSaveData
 	panelW := a.panelWidth()
 	panelOn := a.DanmuPanelOn
 	danmuOn := a.DanmuOn
@@ -159,6 +161,7 @@ func (a *App) saveState() {
 		FollowRecords:       &follows,
 		Subs:                &subs,
 		WatchRooms:          &watchRooms,
+		WatchSaveData:       &saveData,
 		RoomChoices:         a.roomChoices,
 		Volume:              &volume,
 		DanmuOn:             &danmuOn,
@@ -233,6 +236,9 @@ func (a *App) restore() {
 			}
 		}
 		a.WatchRooms = normalizeWatchRooms(rooms)
+	}
+	if p.WatchSaveData != nil {
+		a.WatchSaveData = *p.WatchSaveData
 	}
 	if p.RoomChoices != nil {
 		a.roomChoices = p.RoomChoices

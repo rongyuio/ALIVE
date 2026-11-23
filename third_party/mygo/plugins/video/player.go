@@ -65,6 +65,13 @@ type Options struct {
 	// --title 展开出的标题再把会话名覆盖一遍，默认模板是「<媒体名> - mpv」，
 	// 所以只设 audio-client-name 会被这行覆盖回 mpv。
 	ClientName string
+
+	// NoBackBuffer 关掉 demuxer 的回退缓存（demuxer-max-back-bytes=0）。
+	//
+	// ALIVE 本地补丁。直播不能回退，那份缓存永远不会被读到，却按 mpv 的
+	// 默认上限占着内存；观测墙一屏最多 12 路，每路各留一份是纯浪费。
+	// 对画面没有任何影响：前向缓存（抗抖动要用的那段）不动。
+	NoBackBuffer bool
 }
 
 // Capabilities reflects a successfully created native renderer. Codec/container
@@ -100,6 +107,9 @@ type State struct {
 	VideoSpeed, AudioSpeed   float64       // 音视频各自的校正倍率（1.0 = 不校正）
 	AVSync                   float64       // 当前音画偏差（秒）
 	HWDec                    string        // 实际启用的硬解；空或 "no" 表示软件解码
+	// Renders 是累计真正做过的渲染次数（跳过的不算）。
+	// 用来验证渲染门控：没人看时它应当停止增长。
+	Renders uint64
 
 	// Log 是 mpv 自己报的错误 / 警告，最近若干条（旧的在前面）。
 	//
@@ -139,6 +149,12 @@ type Player struct {
 	rawW, rawH         int
 	presentW, presentH int  // 非零时按这个尺寸渲染（后台听收不解全尺寸画面）
 	forceRender        bool // 尺寸变化后立刻用当前帧重渲染一次
+	// lastPull 是上一次有人取帧的时刻，renderIdle 据此决定要不要跳过渲染。
+	// pull 只发生在真正显示这一路的帧里，所以它就是"有没有人在看"。
+	lastPull  time.Time
+	rendering bool // 当前是否处于"跳过渲染"状态（只为恢复时补一次强制渲染）
+	// skipDecode 表示解码器已经挂起（vd-lavc-skipframe=all）。
+	skipDecode bool
 	// mpvLog 是最近的 mpv 错误 / 警告，环形缓冲，State.Log 交出去给上层落盘。
 	mpvLog    []LogLine
 	mpvLogSeq uint64
@@ -309,6 +325,30 @@ func (p *Player) SetRate(rate float64) error {
 		return errors.New("video: rate must be between 0.25 and 4")
 	}
 	return p.send([]string{"set", "speed", strconv.FormatFloat(rate, 'f', 3, 64)}, false)
+}
+
+// renderIdleAfter 是"没人取帧"多久之后停止渲染。
+//
+// 渲染只服务于显示。没有 Video 元素在画这一路时，逐帧做 YUV→RGB 再回读
+// 是纯浪费：观测墙隐藏时 12 格各按格子尺寸转一遍，一秒几百 MB 的拷贝，
+// 却没有任何地方会看到它。
+//
+// 300ms 足够厚：一帧的构建间隔、一次布局重排、Tester 的慢帧都不会误判；
+// 又足够薄：真正的隐藏在一秒内就省下来了。
+//
+// ALIVE 本地补丁。恢复靠 Frame()：取帧的人回来了就强制渲一帧，画面立刻
+// 追上，不需要重新加载。
+const renderIdleAfter = 300 * time.Millisecond
+
+// renderIdle 报告这一刻该不该跳过渲染。
+//
+// 纯函数，好在测试里穷举：还没渲过第一帧时不跳（那会让 Ready 永远为假），
+// 有人刚取过帧时不跳，其余一律跳。
+func renderIdle(hasFrame bool, lastPull, now time.Time) bool {
+	if !hasFrame || lastPull.IsZero() {
+		return false
+	}
+	return now.Sub(lastPull) > renderIdleAfter
 }
 
 // SetPresentSize 把软件渲染目标固定为 w×h（按偶数取整），0 表示按视频原始
@@ -574,13 +614,29 @@ func (p *Player) frames() {
 		closed := p.state.Phase == Closed
 		force := p.forceRender
 		p.forceRender = false
+		idle := !force && renderIdle(p.frame != nil, p.lastPull, time.Now())
+		p.rendering = !idle
 		p.mu.Unlock()
 		if closed {
 			return
 		}
+		if idle {
+			// 没人看：不渲、不回读。
+			//
+			// 再把视频解码挂起（vd-lavc-skipframe=all）。实测（2026-11-23，
+			// B 站 1080P 原画，d3d11va-copy）：挂起期间 demuxer 照常读，
+			// 时间轴按 1x 前进、缓存 0–7 秒、没有一次 idle；恢复时第一次取帧
+			// 到出新画面 6–37ms，之后立刻按 1x 走。音频不解码不受影响。
+			//
+			// 注意不能用 nonkey：那一个会让 vfps 归零、缓存清零，管线停住。
+			p.setSkipDecode(true)
+			continue
+		}
+		p.setSkipDecode(false)
 		w, h := p.target()
 		frame, fresh, err := p.native.render(w, h, force)
 		p.mu.Lock()
+		p.state.Renders++
 		if p.state.Phase != Closed {
 			if err == nil {
 				if fresh {
@@ -645,10 +701,43 @@ func (p *Player) target() (int, int) {
 // 序号每次成功渲染自增，调用方据此判断有没有换帧——比反复比较像素便宜得多。
 // 返回的切片指向引擎内部轮换的缓冲，三次渲染之后才会被覆写，所以调用方可以
 // 把它交给上屏线程，不必自己拷。
+// setSkipDecode 挂起或恢复视频解码。幂等，可在渲染线程里调。
+//
+// 挂起期间视频包照常被 demuxer 消费（解码器仍然取包，只是不解），所以
+// 连接和缓存都不断——这是"消费继续、解码停"的全部机关。
+func (p *Player) setSkipDecode(skip bool) {
+	p.mu.Lock()
+	if p.skipDecode == skip || p.state.Phase == Closed {
+		p.mu.Unlock()
+		return
+	}
+	p.skipDecode = skip
+	p.mu.Unlock()
+	value := "none"
+	if skip {
+		value = "all"
+	}
+	_ = p.send([]string{"set", "options/vd-lavc-skipframe", value}, false)
+}
+
 func (p *Player) Frame() (*Frame, uint64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.frame, p.serial
+	p.lastPull = time.Now()
+	resume := p.rendering
+	p.rendering = false
+	if resume {
+		p.forceRender = true
+	}
+	f, serial := p.frame, p.serial
+	p.mu.Unlock()
+	if resume {
+		// 从"没人看"回到"有人看"：立刻渲一帧，不然显示的是几百毫秒前的旧画面。
+		select {
+		case p.renderWake <- struct{}{}:
+		default:
+		}
+	}
+	return f, serial
 }
 
 // Close is idempotent and returns without waiting on the UI thread. Cleanup

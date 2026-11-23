@@ -232,7 +232,7 @@ func TestInvariantFocusSwitchKeepsPrevious(t *testing.T) {
 	}
 }
 
-// 不变量 6：墙不可见后，会话在保留窗口内不关闭。
+// 不变量 6：墙不可见后，会话在防抖窗口内不关闭。
 //
 // 对应缺陷 4：去首页看一眼再回来，整面墙重新 buffering。
 func TestInvariantWallHideKeepsSessionsWithinWindow(t *testing.T) {
@@ -255,7 +255,7 @@ func TestInvariantWallHideKeepsSessionsWithinWindow(t *testing.T) {
 		}
 	}
 	if kept != len(rooms) {
-		t.Fatalf("离开墙之后只剩 %d/%d 路会话：保留窗口内不该关闭", kept, len(rooms))
+		t.Fatalf("离开墙之后只剩 %d/%d 路会话：防抖窗口内不该关闭", kept, len(rooms))
 	}
 }
 
@@ -328,7 +328,10 @@ func TestInvariantIslandMatchesFocus(t *testing.T) {
 func TestNoSecondPresentMechanism(t *testing.T) {
 	assertOnlyIn(t, "SetPresentSize", map[string][]string{
 		"player_media.go": {"presentSizeFor", "applyPresent", "applyPresentForce"},
-		"watch_media.go":  {"watchShow", "watchOpenSession"},
+		// 墙上的每一格自己开流、自己设渲染目标，和播放页那条 presentSizeFor
+		// 是两套按设计分开的机制。acceptWallEngine 是 watchOpenSession 里
+		// 那段接纳逻辑的搬移，不是第二个入口。
+		"watch_media.go": {"watchShow", "watchOpenSession", "acceptWallEngine"},
 	})
 }
 
@@ -435,11 +438,46 @@ func TestIslandReturnsToPlayerWhenFocusOutsideBox(t *testing.T) {
 	}
 }
 
-// 保留窗口到期之后才回收。
+// 防抖窗口到期之后才回收。
 //
 // 这条是"资源策略与可见性分离"的另一半：窗口内不关，窗口外必须关，
 // 否则 12 路解码会一直挂着。
-func TestWatchReapsAfterRetention(t *testing.T) {
+func TestWatchReapsAfterRetentionWhenSavingData(t *testing.T) {
+	rooms := watchTestRooms(3)
+	app, tt := newWatchMock(t, rooms)
+	for _, r := range rooms {
+		fakeSession(t, app, r)
+	}
+	tt.Frame()
+
+	app.WatchSaveData = true
+	app.Router.Push(routeHome)
+	app.watchHide()
+
+	// 防抖窗口内：一拍都不该关。一个来回不到两秒，不该把整面墙拆了重建。
+	app.watchReap(time.Now())
+	kept := 0
+	for _, r := range rooms {
+		if app.watchPlayer(watchKey(r)) != nil {
+			kept++
+		}
+	}
+	if kept != len(rooms) {
+		t.Fatalf("防抖窗口内就回收了：只剩 %d/%d", kept, len(rooms))
+	}
+
+	// 窗口外：非焦点全部关掉。
+	app.watchReap(time.Now().Add(watchReapGrace + time.Second))
+	if n := len(app.watch.sessions); n != 0 {
+		t.Fatalf("窗口到期之后还剩 %d 路会话", n)
+	}
+}
+
+// 默认：暂离不拆会话。这是"回来无缝"的全部前提。
+//
+// 看不见只意味着不渲染（见插件的渲染门控），不意味着关掉。拆掉再建就把
+// "暂离"变成了"离开"。
+func TestWatchHiddenKeepsSessionsByDefault(t *testing.T) {
 	rooms := watchTestRooms(3)
 	app, tt := newWatchMock(t, rooms)
 	for _, r := range rooms {
@@ -449,23 +487,27 @@ func TestWatchReapsAfterRetention(t *testing.T) {
 
 	app.Router.Push(routeHome)
 	app.watchHide()
+	app.watchReap(time.Now().Add(time.Hour))
+	if n := len(app.watch.sessions); n != len(rooms) {
+		t.Fatalf("默认策略把墙拆了：只剩 %d/%d", n, len(rooms))
+	}
+}
 
-	// 窗口内：一拍都不该关。
-	app.watchReap(time.Now())
-	kept := 0
+// 用户开了「暂离时省流量」：离开就关，回来重连。省的是带宽，付的是一次加载。
+func TestWatchSaveDataReapsHidden(t *testing.T) {
+	rooms := watchTestRooms(3)
+	app, tt := newWatchMock(t, rooms)
 	for _, r := range rooms {
-		if app.watchPlayer(watchKey(r)) != nil {
-			kept++
-		}
+		fakeSession(t, app, r)
 	}
-	if kept != len(rooms) {
-		t.Fatalf("保留窗口内就回收了：只剩 %d/%d", kept, len(rooms))
-	}
+	tt.Frame()
 
-	// 窗口外：非焦点全部关掉。
-	app.watchReap(time.Now().Add(watchRetention + time.Second))
+	app.WatchSaveData = true
+	app.Router.Push(routeHome)
+	app.watchHide()
+	app.watchReap(time.Now().Add(time.Hour))
 	if n := len(app.watch.sessions); n != 0 {
-		t.Fatalf("窗口到期之后还剩 %d 路会话", n)
+		t.Fatalf("开了省流量还剩 %d 路会话", n)
 	}
 }
 

@@ -67,6 +67,9 @@ func (a *App) togglePip() {
 	if a.Win != nil {
 		a.Win.Hide()
 	}
+	// 主窗口被小窗换下去：墙这一屏整体看不见了。Shell 不再重建，走不到
+	// watchHide，所以这里主动标一次——开了「暂离时省流量」才会真的回收。
+	a.WatchHidden()
 }
 
 // showMain 把主窗口重新显示出来并聚焦。
@@ -77,6 +80,7 @@ func (a *App) showMain() {
 	a.Win.Update(func() {
 		a.Win.Show()
 		a.Win.Focus()
+		a.WatchShown()
 	})
 }
 

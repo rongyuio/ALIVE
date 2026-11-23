@@ -225,6 +225,8 @@ func (a *App) followsSectionRow(c *ui.Context) {
 		switch a.FollowsSection {
 		case followsSectionStreamers:
 			a.followsActions(c)
+		case followsSectionWatch:
+			a.watchSaveDataToggle(c)
 		}
 	})
 }
@@ -321,6 +323,41 @@ func (a *App) followsPlatformRow(c *ui.Context) {
 }
 
 // followsActions 是「关注主播」上的页内搜索与刷新。
+// watchSaveDataToggle 是观测墙自己的一个开关：暂离时还要不要占着下载。
+//
+// 默认关＝无缝：看不见的会话留着，只停渲染，回来直接是活的。打开它＝省流量：
+// 离开就关掉不看的会话，回来重新取流。
+//
+// 这是整个应用里唯一一个把成本决定交给用户的地方——只有他知道自己在不在
+// 用热点。放墙上而不是塞进全局设置：它只影响这一屏，因果是闭合的。
+func (a *App) watchSaveDataToggle(c *ui.Context) {
+	on := a.WatchSaveData
+	label := "暂离时省流量：关"
+	if on {
+		label = "暂离时省流量：开"
+	}
+	btn := ui.Row(c).Height(30).Padding(0, 12, 0, 12).Gap(7).
+		Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).Label(label)
+	if on {
+		btn.Background(theme.AccentSoft)
+	} else if btn.Hovered() {
+		btn.Background(theme.FillQuaternary)
+	}
+	if btn.Clicked() {
+		a.WatchSaveData = !a.WatchSaveData
+		a.markDirty()
+	}
+	down := btn.Pressed()
+	col := theme.TextTertiary
+	if on {
+		col = theme.AccentInk
+	}
+	btn.Children(func() {
+		ui.Text(c, "暂离时省流量").FontSize(theme.TextXS).TextColor(col)
+		pressDim(c, down, theme.RadiusFull)
+	})
+}
+
 func (a *App) followsActions(c *ui.Context) {
 	ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 		// 搜索框：34 高、图标在左，真输入框。动效跟分区搜索同一套：常态 176，聚焦或有输入时 240ms 展开到 220。

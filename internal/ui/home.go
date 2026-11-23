@@ -111,6 +111,12 @@ type App struct {
 	WatchPending string
 	// watch 是墙上非 active 的播放会话。
 	watch wallMedia
+	// WatchSaveData 是"暂离时省流量"：开=离开墙就关掉看不见的会话（回来
+	// 重新取流），关（默认）=会话留着，只停渲染，回来无缝。
+	//
+	// 默认无缝，因为"暂离"的全部意义就是还会回来。这笔账里唯一留给用户的
+	// 是带宽——只有他知道自己在不在用热点。
+	WatchSaveData bool
 	// pushedVolume 是最后一次推给播放器的音量。
 	// ui.VideoPlayer 没有 Volume() getter，只能自己记一份来避免每帧重设。
 	pushedVolume float64
