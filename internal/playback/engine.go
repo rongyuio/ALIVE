@@ -303,17 +303,29 @@ func (e *Engine) Frame(t time.Time) (media.Picture, bool, bool) {
 	// 零拷贝：这一帧在 GPU 上，直接把共享纹理的句柄交给渲染器，它用同一个
 	// device 打开，不经内存。RGBA 仍要留一条转换路径——CPU 渲染器（Tester、
 	// headless、截图）没有 GPU，只能读回像素。
+	//
+	// 回读只在有人真要像素时发生（截图、CPU 光栅化），不在渲染热路径上；
+	// 拿不到就返回空，让截图显示底色，而不是拿错帧。
 	if f.Shared != 0 {
 		surface := &scene.Surface{
 			Format:   scene.SurfaceBGRA,
 			Native:   f.Shared,
 			NativeID: f.SharedID,
 		}
+		readback := f.ReadBack
 		return media.Picture{
 			Surface: surface,
 			W:       w,
 			H:       h,
-			RGBA:    func(dst []byte) []byte { return dst[:0] },
+			RGBA: func(dst []byte) []byte {
+				if readback == nil {
+					return dst[:0]
+				}
+				if pix := readback(dst); pix != nil {
+					return pix
+				}
+				return dst[:0]
+			},
 		}, changed, true
 	}
 	// mpv 的软件渲染只吐 RGB（render.h 里只认 "bgr0"/"rgb0"/"rgb24" 这类

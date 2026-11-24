@@ -11,7 +11,7 @@ import (
 func TestViewPlatformFollowsPlayer(t *testing.T) {
 	app := NewMockApp()
 	app.Platform = "huya"
-	app.Player = Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"}
+	focusForTest(app, Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"})
 
 	if got := app.viewPlatform(); got != "huya" {
 		t.Fatalf("首页应当跟着 tab 走，得到 %q", got)
@@ -27,8 +27,7 @@ func TestViewPlatformFollowsPlayer(t *testing.T) {
 func TestViewPlatformFallsBack(t *testing.T) {
 	app := NewMockApp()
 	app.Platform = "douyin"
-	app.Player = Streamer{}
-	app.PlayerIndex = -1
+	app.setFocus(nil)
 	app.Router.Push(routePlayer)
 
 	if got := app.viewPlatform(); got != "douyin" {
@@ -41,7 +40,7 @@ func TestViewPlatformFallsBack(t *testing.T) {
 func TestSearchFollowsPlayerPlatform(t *testing.T) {
 	app := NewMockApp()
 	app.Platform = "huya"
-	app.Player = Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"}
+	focusForTest(app, Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"})
 	app.Router.Push(routePlayer)
 	app.Streamers = []Streamer{
 		{Platform: "huya", RoomID: "1", Name: "虎牙主播"},
@@ -56,8 +55,8 @@ func TestSearchFollowsPlayerPlatform(t *testing.T) {
 
 	app.SearchOpen = false
 	app.openRoomNumber("999")
-	if app.Player.Platform != "bilibili" {
-		t.Fatalf("房间号直达落到 %q，期望 bilibili", app.Player.Platform)
+	if app.current().Platform != "bilibili" {
+		t.Fatalf("房间号直达落到 %q，期望 bilibili", app.current().Platform)
 	}
 }
 
@@ -65,11 +64,10 @@ func TestSearchFollowsPlayerPlatform(t *testing.T) {
 func TestSearchHintFollowsPlayerPlatform(t *testing.T) {
 	app := NewMockApp()
 	app.Platform = "huya"
-	app.Player = Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"}
+	focusForTest(app, Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"})
 	app.Router.Push(routePlayer)
 	app.SearchOpen = true
 	// 这一帧只看顶栏文案，不要顺手起一轮真实取流。
-	app.media.roomKey = "bilibili|170001"
 
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()

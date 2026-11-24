@@ -152,17 +152,17 @@ func (a *App) prefetchFirstPage(platform string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		page, err := provider.Rooms(ctx, areaID, 1, listPageSize)
+		chunk, err := fetchFeedChunk(ctx, provider, areaID, 0, listPageSize)
 		if err != nil {
 			return
 		}
-		rooms := convertRooms(page.Rooms)
+		rooms := convertRooms(chunk.Rooms)
 		win.Update(func() {
 			if _, ok := a.feedCache[key]; ok {
 				return // 期间用户已经自己拉过了
 			}
 			a.feedCache[key] = feedEntry{
-				rooms: rooms, page: 1, hasMore: page.HasMore, at: time.Now(),
+				rooms: rooms, cursor: chunk.Cursor, hasMore: chunk.HasMore, at: time.Now(),
 			}
 			// 连封面一起预取：切过去时数据在 feedCache、图在纹理缓存，
 			// 用户看到的是一次瞬时切换，而不是骨架闪一下。
@@ -294,6 +294,7 @@ func (a *App) loadRooms() {
 	if hit {
 		a.Rooms = cached.rooms
 		a.ListHasMore = cached.hasMore
+		a.homeCursor = cached.cursor
 		a.ListLoading = false
 		a.ErrText = ""
 		if time.Since(cached.at) < feedTTL {
@@ -304,6 +305,7 @@ func (a *App) loadRooms() {
 		// 那次「保留旧列表避免闪白」的改动是错的：切平台时挂着的是另一个
 		// 平台的房间，切分区时是上一个分区的，用户会以为切失败了。
 		a.Rooms = nil
+		a.homeCursor = 0
 		a.ListLoading = true
 		a.ListHasMore = false
 		a.ErrText = ""
@@ -313,7 +315,7 @@ func (a *App) loadRooms() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		page, err := provider.Rooms(ctx, areaID, 1, listPageSize)
+		chunk, err := fetchFeedChunk(ctx, provider, areaID, 0, listPageSize)
 		if win == nil {
 			return
 		}
@@ -325,17 +327,13 @@ func (a *App) loadRooms() {
 			}
 			a.ListLoading = false
 			if err != nil {
+				a.noteTopUpFailure()
 				if !hit {
 					a.ErrText = "直播间加载失败：" + err.Error()
 				}
 				return
 			}
-			rooms := convertRooms(page.Rooms)
-			a.Rooms = rooms
-			a.ListHasMore = page.HasMore
-			a.feedCache[key] = feedEntry{
-				rooms: rooms, page: 1, hasMore: page.HasMore, at: time.Now(),
-			}
+			a.applyFirstChunk(key, chunk)
 			// 新数据直接换上去，不播任何入场动画：卡片在最终位置、满不
 			// 透明地出现，滚动位置也不跳。这里曾经只在「从骨架换成卡片」
 			// 时播一次整屏淡入（260ms、带 10 DIP 上浮），而封面还在加载，
@@ -344,12 +342,51 @@ func (a *App) loadRooms() {
 	}()
 }
 
-// loadMoreRooms 追加下一页：滚动到距底部 320px 以内时由触底哨兵触发。
+// applyFirstChunk 把首屏的一段写进列表。
+//
+// 部分结果照常换上去：Chunk 契约是「已经取到的部分照常交出来，Cursor 停在
+// 真实消费位置」，下一次从 Cursor 续，不跳也不丢（见 live.Chunk 与
+// doc/architecture/platform.md 第八节）。
+func (a *App) applyFirstChunk(key string, chunk live.Chunk) {
+	rooms := convertRooms(chunk.Rooms)
+	a.Rooms = rooms
+	a.ListHasMore = chunk.HasMore
+	a.homeCursor = chunk.Cursor
+	// 首屏这一段是刷新：缓存直接换成这一份，不跟旧缓存比新旧。过期刷新
+	// 本来就要把列表收回平台当前的第一段。
+	a.feedCache[key] = feedEntry{
+		rooms: rooms, cursor: chunk.Cursor, hasMore: chunk.HasMore, at: time.Now(),
+	}
+	a.noteChunkOutcome(chunk)
+}
+
+// fetchFeedChunk 从 cursor 往后取一段。
+//
+// 能按 cursor 续取的平台（抖音）直接用；按页取数的平台把 cursor 换算成
+// 页码，Cursor 仍然按 page*size 前进。界面只认 Chunk，不认页。
+func fetchFeedChunk(ctx context.Context, provider live.Provider, areaID string, cursor, size int) (live.Chunk, error) {
+	if cp, ok := provider.(live.CursorProvider); ok {
+		return cp.RoomsFrom(ctx, areaID, cursor, size)
+	}
+	page := cursor/size + 1
+	pageData, err := provider.Rooms(ctx, areaID, page, size)
+	if err != nil {
+		return live.Chunk{}, err
+	}
+	return live.Chunk{Rooms: pageData.Rooms, Cursor: page * size, HasMore: pageData.HasMore}, nil
+}
+
+// loadMoreRooms 续取下一段：滚动到距底部 320px 以内时由触底哨兵触发。
 //
 // 三道闸：正在拉首屏、已经在拉下一页、上游说没有更多，都不重复发请求——
 // 触底事件会连着来好几次。
 func (a *App) loadMoreRooms() {
 	if !a.LiveMode || a.ListLoading || a.ListLoadingMore || !a.ListHasMore {
+		return
+	}
+	// 视图测试没有窗口，也不该发真实请求（现在网格会自己触发补页，
+	// 这条路径不再只由用户滚动进入）。
+	if a.Win == nil {
 		return
 	}
 	provider, ok := live.ProviderFor(live.Platform(a.Platform))
@@ -363,57 +400,143 @@ func (a *App) loadMoreRooms() {
 
 	platform := a.Platform
 	key := a.feedKey()
-	entry := a.feedCache[key]
-	next := entry.page + 1
+	entryCursor := a.homeCursor
 	a.ListLoadingMore = true
 	win := a.Win
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		page, err := provider.Rooms(ctx, areaID, next, listPageSize)
+		chunk, err := fetchFeedChunk(ctx, provider, areaID, entryCursor, listPageSize)
 		if win == nil {
 			return
 		}
 		win.Update(func() {
-			// 先复位：即使这一页属于已经切走的分区，也不能让「正在加载更多」
-			// 的标记挂在新分区上，否则新列表再也翻不了页。
+			// 先复位：即使这一段属于已经切走的分区，也不能让「正在加载更多」
+			// 的标记挂在新分区上，否则新列表再也续不了。
 			a.ListLoadingMore = false
-			// 期间切了平台或分区：这一页属于旧列表，直接丢
+			// 期间切了平台或分区：这一段属于旧列表，直接丢
 			if platform != a.Platform || a.feedKey() != key {
 				return
 			}
 			if err != nil {
-				// 保留 hasMore：下次滚动到底还能再试一次，不把列表卡死
+				// 保留 hasMore：下次滚动到底还能再试一次，不把列表卡死。
+				// 自动补页要退避，否则失败回包触发的重建会每帧再发一次。
+				a.noteTopUpFailure()
 				return
 			}
-
-			// 上游翻页偶尔会返回重复房间，按房间号去重
-			seen := make(map[string]bool, len(a.Rooms))
-			for _, s := range a.Rooms {
-				seen[s.RoomID] = true
-			}
-			added := make([]Streamer, 0, len(page.Rooms))
-			for _, s := range convertRooms(page.Rooms) {
-				if seen[s.RoomID] {
-					continue
-				}
-				seen[s.RoomID] = true
-				added = append(added, s)
-			}
-
-			// 不设上限：一直追加到上游没有下一页为止。
-			// 数据本身很小（一条一两百字节），真正贵的是封面图，
-			// 而列表是虚拟化的——不可见的卡片根本不会请求图片。
-			rooms := append(a.Rooms, added...)
-			hasMore := page.HasMore
-			a.Rooms = rooms
-			a.ListHasMore = hasMore
-			a.feedCache[key] = feedEntry{
-				rooms: rooms, page: next, hasMore: hasMore, at: time.Now(),
-			}
+			// 结果由 mergeMoreChunk 记：旧代次（返回 false）的那一段不算数。
+			a.mergeMoreChunk(key, entryCursor, chunk)
 		})
 	}()
+}
+
+// mergeMoreChunk 把新取到的一段合进首页列表。
+//
+// cursor 是发起请求时首页列表自己的位置（homeCursor）。期间首屏刷新（过期
+// 缓存）或别的写者推进了列表，这一段就属于旧代次：直接丢，否则会 append 到
+// 一份已经重置的列表上，把中间的房间永久跳过。
+func (a *App) mergeMoreChunk(key string, cursor int, chunk live.Chunk) bool {
+	if a.homeCursor != cursor {
+		return false
+	}
+	// 上游翻页偶尔会返回重复房间，按房间号去重
+	seen := make(map[string]bool, len(a.Rooms))
+	for _, s := range a.Rooms {
+		seen[s.RoomID] = true
+	}
+	added := make([]Streamer, 0, len(chunk.Rooms))
+	for _, s := range convertRooms(chunk.Rooms) {
+		if seen[s.RoomID] {
+			continue
+		}
+		seen[s.RoomID] = true
+		added = append(added, s)
+	}
+
+	// 一段全是已经有的房间：可能只是上游深页重复了上一段（抖音
+	// 匿名列表实测有），也可能真的续到头了。第一次把 cursor 推进到
+	// 这一段之后的位置再试，连续两次才判死——否则一次抖动就把列表提前关掉。
+	if len(added) == 0 {
+		misses := a.feedCache[key].misses + 1
+		hasMore := chunk.HasMore && misses < 2
+		a.ListHasMore = hasMore
+		a.homeCursor = chunk.Cursor
+		a.writeFeedCache(key, feedEntry{
+			rooms: a.Rooms, cursor: chunk.Cursor, hasMore: hasMore,
+			at: time.Now(), misses: misses,
+		})
+		a.noteChunkOutcome(chunk)
+		return true
+	}
+
+	// 不设上限：一直追加到上游没有更多为止。
+	// 数据本身很小（一条一两百字节），真正贵的是封面图，
+	// 而列表是虚拟化的——不可见的卡片根本不会请求图片。
+	rooms := append(a.Rooms, added...)
+	hasMore := chunk.HasMore
+	a.Rooms = rooms
+	a.ListHasMore = hasMore
+	a.homeCursor = chunk.Cursor
+	a.writeFeedCache(key, feedEntry{
+		rooms: rooms, cursor: chunk.Cursor, hasMore: hasMore, at: time.Now(),
+	})
+	a.noteChunkOutcome(chunk)
+	return true
+}
+
+// writeFeedCache 把一段写进首页/订阅页共用的列表缓存。
+//
+// 只往前推：两个列表各有自己的 cursor，订阅页可能已经把缓存续到更远。
+// 落后的一边续上来时只刷新时间戳，不能把缓存回退成更短的列表——否则另一
+// 边下次进来会看到一份缩短的列表。
+func (a *App) writeFeedCache(key string, entry feedEntry) {
+	if cached, ok := a.feedCache[key]; ok && entry.cursor < cached.cursor {
+		cached.at = time.Now()
+		a.feedCache[key] = cached
+		return
+	}
+	a.feedCache[key] = entry
+}
+
+// 自动补页失败后的退避：3s、6s、12s、24s，封顶 30s。
+const (
+	topUpBackoffMin = 3 * time.Second
+	topUpBackoffMax = 30 * time.Second
+)
+
+// noteTopUpFailure 记一次「加载更多」失败。
+//
+// 补页写在渲染路径里，失败回包会触发重建；没有退避就会每帧再发一次请求。
+// 只影响自动补页，用户滚动触发的 EndReached 不受它约束。
+func (a *App) noteTopUpFailure() {
+	a.topUpFailures++
+	d := topUpBackoffMin << min(a.topUpFailures-1, 4)
+	if d > topUpBackoffMax {
+		d = topUpBackoffMax
+	}
+	a.topUpAfter = time.Now().Add(d)
+}
+
+func (a *App) noteTopUpSuccess() {
+	a.topUpFailures = 0
+	a.topUpAfter = time.Time{}
+}
+
+// noteChunkOutcome 按 Chunk 的契约记一次取数结果。
+//
+// Partial 表示这一段没取满、中途有失败：Rooms 照常使用，下一次从 Cursor 续，
+// 但自动补页要退避一下——失败回包会触发重建，没有退避就是每帧再发一次请求。
+func (a *App) noteChunkOutcome(chunk live.Chunk) {
+	if chunk.Partial {
+		a.noteTopUpFailure()
+		return
+	}
+	a.noteTopUpSuccess()
+}
+
+func (a *App) topUpAllowed() bool {
+	return a.topUpAfter.IsZero() || !time.Now().Before(a.topUpAfter)
 }
 
 // reloadRooms 在切换分区后按需重新拉列表。
@@ -424,6 +547,8 @@ func (a *App) reloadRooms() {
 }
 
 const (
+	// listPageSize 是一次续取的条数，不是界面的「页」。列表是无限流，
+	// 这个值只决定每次向平台要多少条。
 	listPageSize = 40
 	// prefetchCovers 是预取首屏时连带拉多少张封面。
 	//
@@ -438,10 +563,15 @@ const (
 
 // feedEntry 是某个分区已经加载到的位置。
 type feedEntry struct {
-	rooms   []Streamer
-	page    int
+	rooms []Streamer
+	// cursor 是已经消费到的上游位置（平台自己的 offset 单位）。列表是
+	// 无限流，page 只是取数单位；cursor 才是续取的真值。
+	cursor  int
 	hasMore bool
 	at      time.Time
+	// misses 是连续「一段全是已有房间」的次数。上游深页偶尔会重复上一段
+	// （抖音匿名列表实测有），一次就判死会把还能续的列表提前停掉。
+	misses int
 }
 
 // feedKey 唯一标识一个列表：平台 + 二级分区 id + 三级分区。
@@ -608,6 +738,7 @@ func (a *App) ensureSubFeed() {
 	}
 	a.subKey = key
 	a.subSeq++
+	a.subCursor = 0
 	a.SubLoadingMore = false
 
 	if _, ok := live.ProviderFor(live.Platform(sub.PlatformID)); !ok {
@@ -618,72 +749,90 @@ func (a *App) ensureSubFeed() {
 
 	if cached, hit := a.feedCache[key]; hit {
 		a.SubRooms, a.SubHasMore, a.SubLoading, a.SubErr = cached.rooms, cached.hasMore, false, ""
+		a.subCursor = cached.cursor
 		if time.Since(cached.at) < feedTTL {
 			return
 		}
 	} else {
 		a.SubRooms, a.SubHasMore, a.SubLoading, a.SubErr = nil, false, true, ""
+		a.subCursor = 0
 	}
-	a.fetchSubPage(sub.PlatformID, sub.CategoryID, key, a.subSeq, 1)
+	a.fetchSubChunk(sub.PlatformID, sub.CategoryID, key, a.subSeq, 0)
 }
 
-// fetchSubPage 拉订阅页的第 page 页；page > 1 时追加。
-func (a *App) fetchSubPage(platform, areaID, key string, seq, page int) {
+// fetchSubChunk 从 cursor 往后取订阅列表的一段；cursor 0 是首屏重置。
+func (a *App) fetchSubChunk(platform, areaID, key string, seq, cursor int) {
+	win := a.Win
+	if win == nil {
+		return // 视图测试没有窗口，也不该发真实请求
+	}
 	provider, ok := live.ProviderFor(live.Platform(platform))
 	if !ok {
 		return
 	}
-	win := a.Win
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		pageData, err := provider.Rooms(ctx, areaID, page, listPageSize)
-		if win == nil {
-			return
-		}
+		chunk, err := fetchFeedChunk(ctx, provider, areaID, cursor, listPageSize)
 		win.Update(func() {
 			if seq != a.subSeq {
 				return
 			}
 			a.SubLoading, a.SubLoadingMore = false, false
+			// 首屏刷新会把列表重置到 cursor 0；在途的旧 cursor 属于旧代次，
+			// 不能再接到新列表后面（会把中间一段跳过）。
+			if !a.subCursorAppendAllowed(cursor) {
+				return
+			}
 			if err != nil {
-				if page == 1 {
+				a.noteTopUpFailure()
+				if cursor == 0 {
 					a.SubErr = "直播间加载失败：" + err.Error()
 				}
 				return
 			}
-			a.SubErr = ""
-			rooms := convertRooms(pageData.Rooms)
-			if page == 1 {
-				a.SubRooms = rooms
-			} else {
-				// 上游翻页会返回重复房间，按房间号去重
-				seen := make(map[string]bool, len(a.SubRooms))
-				for _, s := range a.SubRooms {
-					seen[s.RoomID] = true
-				}
-				for _, s := range rooms {
-					if seen[s.RoomID] {
-						continue
-					}
-					seen[s.RoomID] = true
-					a.SubRooms = append(a.SubRooms, s)
-				}
-			}
-			hasMore := pageData.HasMore
-			a.SubHasMore = hasMore
-			a.feedCache[key] = feedEntry{
-				rooms: a.SubRooms, page: page, hasMore: hasMore, at: time.Now(),
-			}
+			a.applySubChunk(key, cursor, chunk)
 		})
 	}()
+}
+
+// applySubChunk 把订阅列表的一段合进去。
+//
+// cursor 是发起请求时的位置：0 是首屏重置，其余按房间号去重后接在后面。
+// 部分结果照常使用（Chunk 契约），共享缓存只往前写：订阅列表从 cursor 0
+// 重新拉时，不能把首页已经续到的更长列表覆盖成短的那一份。
+func (a *App) applySubChunk(key string, cursor int, chunk live.Chunk) {
+	a.SubErr = ""
+	rooms := convertRooms(chunk.Rooms)
+	if cursor == 0 {
+		a.SubRooms = rooms
+	} else {
+		// 上游续取会返回重复房间，按房间号去重
+		seen := make(map[string]bool, len(a.SubRooms))
+		for _, s := range a.SubRooms {
+			seen[s.RoomID] = true
+		}
+		for _, s := range rooms {
+			if seen[s.RoomID] {
+				continue
+			}
+			seen[s.RoomID] = true
+			a.SubRooms = append(a.SubRooms, s)
+		}
+	}
+	a.SubHasMore = chunk.HasMore
+	a.subCursor = chunk.Cursor
+	a.writeFeedCache(key, feedEntry{
+		rooms: a.SubRooms, cursor: chunk.Cursor, hasMore: chunk.HasMore, at: time.Now(),
+	})
+	a.noteChunkOutcome(chunk)
 }
 
 // retrySubFeed 重发当前订阅项的第一页。
 //
 // ensureSubFeed 用 subKey 记住「这一项已经发起过」，首屏失败后不会自己
 // 再发第二次；所以重试不能只清 SubErr，必须亲手把第一页再发一遍并推进
-// 代次，让在途的旧响应作废。成功后 fetchSubPage 会清掉 SubErr。
+// 代次，让在途的旧响应作废。成功后 fetchSubChunk 会清掉 SubErr。
 func (a *App) retrySubFeed() {
 	a.SubErr = ""
 	// 视图测试没有窗口：只清错误，不发真实请求，也不留后台 goroutine。
@@ -705,13 +854,19 @@ func (a *App) retrySubFeed() {
 	key := subFeedKey(sub)
 	a.subKey = key
 	a.subSeq++
+	a.subCursor = 0
 	a.SubLoading, a.SubLoadingMore = true, false
-	a.fetchSubPage(sub.PlatformID, sub.CategoryID, key, a.subSeq, 1)
+	a.fetchSubChunk(sub.PlatformID, sub.CategoryID, key, a.subSeq, 0)
 }
 
 // loadMoreSubRooms 是订阅页的触底预取。
 func (a *App) loadMoreSubRooms() {
 	if !a.LiveMode || a.SubLoading || a.SubLoadingMore || !a.SubHasMore {
+		return
+	}
+	// 视图测试没有窗口：不能先置位 SubLoadingMore 再让 fetchSubChunk 直接
+	// 返回，那会把「正在加载更多」永久挂住。
+	if a.Win == nil {
 		return
 	}
 	chips := a.subChips()
@@ -723,9 +878,22 @@ func (a *App) loadMoreSubRooms() {
 		return
 	}
 	key := subFeedKey(sub)
-	next := a.feedCache[key].page + 1
 	a.SubLoadingMore = true
-	a.fetchSubPage(sub.PlatformID, sub.CategoryID, key, a.subSeq, next)
+	a.fetchSubChunk(sub.PlatformID, sub.CategoryID, key, a.subSeq, a.subFetchCursor())
+}
+
+// subFetchCursor 是订阅列表自己的续取位置。
+//
+// 不能读 feedCache 的 cursor：那个 cursor 首页和订阅页共用，首页续过之后
+// 订阅页会从中间某处开始，把它没取到的一段整段跳过。
+func (a *App) subFetchCursor() int { return a.subCursor }
+
+// subCursorAppendAllowed 报告这一段能不能接在当前订阅列表后面。
+//
+// 首屏刷新（cursor 0）随时可以重置；其余只有正好接在 subCursor 后面才算数。
+// 在途的旧代次响应晚到时，列表已经被重置，直接丢。
+func (a *App) subCursorAppendAllowed(cursor int) bool {
+	return cursor == 0 || a.subCursor == cursor
 }
 
 // resolveSubID 给没有分区 id 的旧订阅回填 id：

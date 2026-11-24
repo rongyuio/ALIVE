@@ -200,6 +200,8 @@ func (a *App) subscribeChip(c *ui.Context, idx int, chip subChip) ui.Element {
 			// 整份状态重置（只挪偏移会先用旧位置铺新数据，闪一下）。
 			a.SubList = ui.ListState{}
 			a.navFlip(&a.followsSeq)
+			// 正在飞的画面属于上一枚 chip 的卡片，换 chip 即作废。
+			a.surfaceFlight = nil
 		}
 		a.SubIndex = idx
 	}
@@ -306,6 +308,7 @@ func (a *App) activateSubChipPlatform(idx int, chip subChip, platformID string) 
 	a.SubIndex = idx
 	a.SubList = ui.ListState{}
 	a.followsSeq++
+	a.surfaceFlight = nil
 }
 
 // removeSubPlatform 取消一枚 chip 上某个平台的订阅。

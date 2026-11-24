@@ -13,7 +13,7 @@ import (
 func TestDanmuPanelWidth(t *testing.T) {
 	app := NewMockApp()
 	app.DanmuPanelOn = true
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 
@@ -34,7 +34,7 @@ func TestDanmuPanelWidth(t *testing.T) {
 func TestDanmuPanelShowsMedalAndLevel(t *testing.T) {
 	app := NewMockApp()
 	app.DanmuPanelOn = true
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuLog = []danmuLine{{
 		Text:     "测试弹幕",
@@ -59,7 +59,7 @@ func TestDanmuPanelShowsMedalAndLevel(t *testing.T) {
 func TestDanmuPanelReplacesEmotePlaceholder(t *testing.T) {
 	app := NewMockApp()
 	app.DanmuPanelOn = true
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuLog = []danmuLine{
 		{Text: "哈哈[财神]", Nick: "甲", Platform: live.Douyu, Born: time.Now(), Dur: time.Second},
@@ -81,7 +81,7 @@ func TestDanmuPanelReplacesEmotePlaceholder(t *testing.T) {
 func TestDanmuPanelFollowsAfterFullscreenToggle(t *testing.T) {
 	app := NewMockApp()
 	app.DanmuPanelOn = true
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuPanelOn = true
 	for i := 0; i < 80; i++ {

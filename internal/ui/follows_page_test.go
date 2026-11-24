@@ -169,7 +169,7 @@ func TestSearchAvailableOnlyOnPlatformPages(t *testing.T) {
 
 	// 播放页有主播，就有平台上下文：搜索入口要留着。
 	app.Router = ui.NewRouter(routePlayer)
-	app.Player = Streamer{Platform: "bilibili", RoomID: "1", Name: "某主播"}
+	focusForTest(app, Streamer{Platform: "bilibili", RoomID: "1", Name: "某主播"})
 	if !app.searchAvailable() {
 		t.Error("播放页应该有搜索入口")
 	}

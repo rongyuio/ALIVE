@@ -16,7 +16,7 @@ import (
 // 推不动它——这本身就是它和播放时钟脱钩的证据。
 func TestDanmuClockFollowsPicture(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
 	app.DanmuFilters = nil
@@ -47,7 +47,7 @@ func TestDanmuClockFollowsPicture(t *testing.T) {
 	}
 
 	// 用户暂停：画面不动，弹幕也不该动。
-	app.Playing = false
+	app.setFocusPlaying(false)
 	cur = cur.Add(2 * time.Second)
 	app.tickDanmu()
 	tt.Frame()
@@ -57,7 +57,7 @@ func TestDanmuClockFollowsPicture(t *testing.T) {
 	}
 
 	// 恢复：从停下的位置继续，不能把暂停的 2 秒补成一次瞬移。
-	app.Playing = true
+	app.setFocusPlaying(true)
 	cur = cur.Add(500 * time.Millisecond)
 	app.tickDanmu()
 	tt.Frame()
@@ -76,11 +76,11 @@ func TestDanmuClockFollowsPicture(t *testing.T) {
 // Track=8，渲染时再 %8 撞回第 0 条，两条弹幕直接叠在一起。
 func TestDanmuTracksFitActualLaneCount(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
 	app.DanmuFilters = nil
-	app.Playing = true
+	app.setFocusPlaying(true)
 	app.danmuTracks = 8
 	app.danmuNow = time.Now()
 	app.media.danmuSeq = 7
@@ -160,7 +160,7 @@ func TestDanmuClockStepsEvenlyAcrossSampleGaps(t *testing.T) {
 // 画面 60fps，看起来像掉帧。这里不调用 tickDanmu，只推进帧。
 func TestDanmuMovesEveryFrame(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
 	app.DanmuFilters = nil
@@ -190,11 +190,11 @@ func TestDanmuMovesEveryFrame(t *testing.T) {
 // 不是「必须换轨」——轨道够用时优先不同轨，但不该为了换轨浪费容量。
 func TestDanmuSharesLaneWhenSafe(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
 	app.DanmuFilters = nil
-	app.Playing = true
+	app.setFocusPlaying(true)
 	app.danmuTracks = 1
 	app.danmuStageW = 1200
 	app.DanmuDur = 10 * time.Second

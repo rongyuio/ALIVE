@@ -35,29 +35,11 @@ var (
 // 压暗、chrome 对比度都能照常验证。
 func (a *App) PlayerPage(c *ui.Context) {
 	a.ensureDanmuLoop()
-	// 从观测墙进来：如果这一间已经在墙上活着，把同一个引擎接过来，不重取流。
-	// 目标不是墙上的 active 时，先把墙上的 active 停掉，避免两路声音。
-	target := watchKey(a.current())
-	if a.WatchActive != "" && a.WatchActive != target {
-		a.watchDropActive()
-	}
-	if !a.watchAdoptActive(false) && a.WatchActive == target && a.media.roomKey != target {
-		// 墙上的这一间还没出首帧：收掉它，让正常的起播路径接手。
-		if s := a.watch.sessions[target]; s != nil {
-			a.watchCloseSession(s)
-		}
-		a.WatchActive, a.WatchPending = "", ""
-	}
-	// 接真实流：房间变了才重新取流 + 连弹幕
-	a.ensureMedia(c)
+	// 焦点就是播放页要画的那一间。setFocus 已经在换焦点时收好旧的一路：
+	// 在盒里静音留着，不在盒里连引擎一起关；墙上已经活着的引擎不会重取。
+	a.ensureFocusMedia()
 	// 弹幕只属于播放页：不管画面是刚起的还是从墙上接过来的，进页面就连一条新的。
 	a.ensureDanmaku()
-	// 从后台收听回来：把全尺寸呈现重新打开。
-	//
-	// 必须排在 ensureMedia 之后：换台时 ensureMedia 已经 reset 并重开一路，
-	// background 在那条路上被清掉了，这里就是空操作；只有「还是同一个房间」
-	// 时才轮到它把旧引擎的全尺寸呈现打开。
-	a.attachMedia()
 	a.syncPlayer()
 	// 首帧可用时刻是起播耗时的最后一段。
 	a.trackFirstFrame()
@@ -66,7 +48,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 	//
 	// 首帧后按 250ms 看一眼：播放器停帧不会主动报错，只靠用户操作触发帧会
 	// 漏掉故障。
-	if a.Playing && a.media.eng() != nil && a.media.eng().Err() == nil {
+	if a.focusPlaying() && a.media.eng() != nil && a.media.eng().Err() == nil {
 		if !a.media.firstFrame() {
 			c.After(firstFramePollInterval)
 		} else {
@@ -98,9 +80,14 @@ func (a *App) PlayerPage(c *ui.Context) {
 		// 模拟外壳的圆角——而那两角在面板打开时根本不是圆角（右侧是内部
 		// 边）。挂在外壳上，形状只有一处来源：它自己的 Radius。
 		//
-		// 过渡窗口里挂，另外「离开播放页」的第一拍也要挂：退出的飞行要从
-		// 上一帧的舞台起飞，按 Esc 那一帧舞台身上还没有身份（见 exitArm）。
-		if key := a.stageMatchKey(); key != "" && (a.exitArm || (a.matchable() && !a.routeTransitionUntil.IsZero())) {
+		// 身份**常挂**：进 / 出播放页的 Match 起飞点取自上一帧，点击发生在
+		// 这一页构建之后——只在过渡窗口里挂的话，按 Esc 那一帧舞台身上还
+		// 没有身份，飞不起来。墙格那边同理（见 watch.go）。
+		//
+		// 唯一的例外是刚改过窗口尺寸的几百毫秒（matchable）：带 Match 的
+		// 元素在 resize 时会做尺寸动画。正在走表面过渡时例外：exitArm
+		// 补的那一拍就是要让 resize 窗口里的舞台也带上身份。
+		if key := a.stageMatchKey(); key != "" && (a.exitArm || a.matchable() || !a.routeTransitionUntil.IsZero()) {
 			shell.Transition(ui.ElementTransition{
 				Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
 			})
@@ -109,6 +96,11 @@ func (a *App) PlayerPage(c *ui.Context) {
 		shell.Children(func() {
 			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
+				// 舞台上一帧的矩形：收起时画面从这里起飞（见 surface_flight.go）。
+				// 舞台可能被右侧弹幕面板挤窄，不能按正文区估。
+				if r := stage.Bounds(); r.W > 0 && r.H > 0 {
+					a.playerStageBounds = r
+				}
 				// 悬浮 chrome 的自动隐藏：先按指针位置和空闲时长算出这一帧
 				// 的显隐，拖窗条和 chrome 都跟着它走。
 				a.syncChromeIdle(c, stage)
@@ -207,7 +199,7 @@ func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
 
 	// 岛自动展开的那几秒不算「人在操作」；指针停在岛上时本来就落在
 	// 顶部那条带里，下面的坐标判断已经把它兜住了。
-	if !a.Playing || a.QualityOpen || a.LineOpen ||
+	if !a.focusPlaying() || a.QualityOpen || a.LineOpen ||
 		a.DanmuSettingsOpen || a.DanmuFilterOpen || a.ShortcutsOpen {
 		stay()
 		return
@@ -271,7 +263,7 @@ func (a *App) playerFullscreen() bool {
 	if a.Router == nil || a.Router.Path() != routePlayer {
 		return false
 	}
-	return a.WinFull || a.sysFullscreen()
+	return a.WinFull || a.winFullscreen
 }
 
 // sysFullscreen 报告窗口是否处于系统原生全屏。
@@ -475,7 +467,7 @@ func backdropNeeded(stageW, stageH, videoW, videoH float32) bool {
 // ffmpeg 退出的信号），其余三种的状态都已经在 media 上。
 func (a *App) stageOverlay(c *ui.Context) {
 	m := &a.media
-	if m.roomKey == "" {
+	if m.roomKey() == "" {
 		return
 	}
 
@@ -609,13 +601,11 @@ func (a *App) noticePill(c *ui.Context) {
 // currentCover 返回当前播放项对应卡片的封面。
 func (a *App) currentCover() string { return a.current().CoverURL }
 
-// current 返回当前播放的主播。
+// current 返回焦点那一间。没有焦点时给一个空的占位，播放页各层按"没有房间"
+// 处理（取流、弹幕、状态层都会早退）。
 func (a *App) current() Streamer {
-	if a.Player.Name != "" {
-		return a.Player
-	}
-	if a.PlayerIndex >= 0 && a.PlayerIndex < len(a.Streamers) {
-		return a.Streamers[a.PlayerIndex]
+	if a.focus != nil {
+		return a.focus.room
 	}
 	return Streamer{Name: "未选择直播间", Title: "", Category: ""}
 }
@@ -649,9 +639,9 @@ func (a *App) playerTopbar(c *ui.Context) {
 				BorderColor(theme.MediaHairStrong)
 		}
 		if back.Clicked() {
-			// 叉是明确退出：关引擎、断弹幕，不留后台声音。别的离开方式
+			// 叉是明确退出：结束焦点、断弹幕，不留后台声音。别的离开方式
 			// （顶栏 tab、灵动岛、搜索跳转）只进后台收听。
-			a.exitPlayer()
+			a.closeFocus()
 		}
 		back.Children(func() {
 			// 关闭用 X，不是返回箭头
@@ -694,11 +684,11 @@ func (a *App) playerControls(c *ui.Context) {
 				// 这三颗是同一档：30×30 热区 + playerIconSize。原来播放/暂停是 22、
 				// 刷新 19、音量又套了个 24 的框，三个排在一起大小不齐。
 				playIcon := iconPlay
-				if a.Playing {
+				if a.focusPlaying() {
 					playIcon = iconPause
 				}
 				playLabel := "播放"
-				if a.Playing {
+				if a.focusPlaying() {
 					playLabel = "暂停"
 				}
 				// 播放键在错误态交给 togglePlayback 走显式重试，避免出现
@@ -842,13 +832,13 @@ func (a *App) volumeControlFor(c *ui.Context, m controlMetrics, name string) {
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(0, 0, 0, 6).Children(func() {
 		muteIcon := iconVolumeLow
 		switch {
-		case a.Volume <= 0:
+		case a.focusVolume() <= 0:
 			muteIcon = iconVolumeMute
-		case a.Volume > 0.5:
+		case a.focusVolume() > 0.5:
 			muteIcon = iconVolumeHigh
 		}
 		muteLabel := "静音" + suffix
-		if a.Volume <= 0 {
+		if a.focusVolume() <= 0 {
 			muteLabel = "取消静音" + suffix
 		}
 		a.iconBtnSized(c, muteIcon, m.iconSize, m.iconHit, false, muteLabel, a.toggleMute)
@@ -883,7 +873,7 @@ func (a *App) volumeControlFor(c *ui.Context, m controlMetrics, name string) {
 				// 音量取整到 1%：既不抖，百分比数字也稳
 				v := min(1, max(0, x/m.volumeW))
 				v = float32(math.Round(float64(v)*100)) / 100
-				if v != a.Volume {
+				if v != a.focusVolume() {
 					a.setVolume(v)
 				}
 			}
@@ -899,12 +889,12 @@ func (a *App) volumeControlFor(c *ui.Context, m controlMetrics, name string) {
 			}
 			track.Children(func() {
 				ui.Box(c).Absolute().Left(0).Top(0).Bottom(0).
-					Width(m.volumeW * a.Volume).Radius(999).Background(theme.Accent)
+					Width(m.volumeW * a.focusVolume()).Radius(999).Background(theme.Accent)
 			})
 		})
 
 		if m.showPercent {
-			ui.Text(c, fmt.Sprintf("%d%%", int(a.Volume*100+0.5))).
+			ui.Text(c, fmt.Sprintf("%d%%", int(a.focusVolume()*100+0.5))).
 				FontSize(theme.TextXS).TextColor(theme.Accent).
 				FontFeatures("tnum").Width(36).TextAlign(ui.End)
 		}
@@ -1111,10 +1101,10 @@ const volumeWheelPerDIP = 0.0005
 // 而触控板一次只推几 DIP，直接丢就永远不动——所以余量记在
 // volumeWheelAccum 上，攒够一档才落到 Volume。
 func (a *App) wheelVolume(dy float32) {
-	target := min(1, max(0, a.Volume+a.volumeWheelAccum-dy*volumeWheelPerDIP))
+	target := min(1, max(0, a.focusVolume()+a.volumeWheelAccum-dy*volumeWheelPerDIP))
 	next := float32(math.Round(float64(target)*100)) / 100
 	a.volumeWheelAccum = target - next
-	if next == a.Volume {
+	if next == a.focusVolume() {
 		return
 	}
 	a.setVolume(next)

@@ -31,6 +31,12 @@ type Frame struct {
 	Shared uintptr
 	// SharedID 标识这块纹理，跨帧不变时渲染器可以复用打开的资源。
 	SharedID uint64
+	// ReadBack 把这一帧读成 premultiplied RGBA，给没有 GPU 的消费者
+	// （截图、CPU 光栅器）用；Shared 为 0 的帧为 nil。
+	//
+	// ALIVE 本地补丁。没有它，截图路径拿不到零拷贝帧的像素：真实窗口
+	// 走 GPU 采样看着正常，截图里这一块却是空的。
+	ReadBack func(dst []byte) []byte
 }
 
 type backend interface {
@@ -423,7 +429,9 @@ func (n *native) render(w, h int, force bool) (*Frame, bool, error) {
 			}
 			return nil, false, nil
 		}
-		n.last = &Frame{W: w, H: h, Shared: handle, SharedID: id}
+		g := n.gpu
+		n.last = &Frame{W: w, H: h, Shared: handle, SharedID: id,
+			ReadBack: func(dst []byte) []byte { return g.readPixels(id, w, h, dst) }}
 		return n.last, true, nil
 	}
 

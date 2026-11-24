@@ -12,9 +12,9 @@ import (
 // shellKeys，对背后正在播的那一路生效。
 func TestShortcutsOverlayBlocksPlayerShortcuts(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
-	app.Playing = false
+	app.setFocusPlaying(false)
 	app.ShortcutsOpen = true
 
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -22,7 +22,7 @@ func TestShortcutsOverlayBlocksPlayerShortcuts(t *testing.T) {
 
 	tt.Key(0, ui.KeySpace)
 	tt.Frame()
-	if app.Playing {
+	if app.focusPlaying() {
 		t.Fatal("快捷键说明打开时，空格仍然穿透去切换了播放状态")
 	}
 

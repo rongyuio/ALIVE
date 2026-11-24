@@ -44,8 +44,8 @@ func miniGIF(t *testing.T) []byte {
 // syncPlayer 不再执行，所以这两件事都得由小窗自己接管。
 func TestMiniPlayerShowsVideo(t *testing.T) {
 	app := newApp()
-	app.Player = Streamer{Name: "小窗测试", Platform: "douyu", RoomID: "1"}
-	app.Playing = true
+	focusForTest(app, Streamer{Name: "小窗测试", Platform: "douyu", RoomID: "1"})
+	app.setFocusPlaying(true)
 
 	d, err := ui.NewGIFDecoder(miniGIF(t))
 	if err != nil {
@@ -56,7 +56,7 @@ func TestMiniPlayerShowsVideo(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(p.Close)
-	app.media.session = &roomSession{player: p}
+	focusSessionForTest(app, &roomSession{player: p})
 
 	tt := ui.NewTester(app.MiniPlayer, miniW, miniH)
 	tt.Advance(600 * time.Millisecond)

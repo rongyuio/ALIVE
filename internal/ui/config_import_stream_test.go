@@ -9,10 +9,9 @@ func TestImportQualityRestreamsCurrentRoom(t *testing.T) {
 	app := NewMockApp()
 	st := app.Streamers[0]
 	st.RoomID = "1000"
-	app.Player = st
+	focusForTest(app, st)
 	app.Router.Push(routePlayer)
 	key := watchKey(st)
-	app.media.roomKey = key
 	before := app.media.seq
 
 	app.applyConfig(configFile{Rooms: map[string]roomChoice{

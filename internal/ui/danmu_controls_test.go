@@ -41,7 +41,7 @@ func TestDanmuToggleOnlyCheckIsAccent(t *testing.T) {
 	// 钉住一套强调色明确的深色配色，别让本机 state.json 决定。
 	app.PaletteID = "curtain-night"
 	app.ThemeMode = themeModeDark
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -172,7 +172,7 @@ func TestDanmuTVIconAligned(t *testing.T) {
 		// 图标墨迹的判据按当前强调色扫；钉住配色，别让本机 state.json 决定。
 		app.PaletteID = "curtain-night"
 		app.ThemeMode = themeModeDark
-		app.Player = app.Streamers[0]
+		focusForTest(app, app.Streamers[0])
 		app.Router.Push(routePlayer)
 		app.DanmuOn = tc.on
 		tt := ui.NewTester(app.Shell, 1440, 900)
@@ -189,7 +189,7 @@ func TestDanmuTVIconAligned(t *testing.T) {
 	// 钉住一套强调色明确的深色配色，别让本机 state.json 决定。
 	app.PaletteID = "curtain-night"
 	app.ThemeMode = themeModeDark
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.SetScale(scale)

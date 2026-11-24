@@ -180,7 +180,7 @@ func TestChromeAutoHidesWhenIdle(t *testing.T) {
 	}
 
 	// 暂停时不隐藏：那会儿人往往离开鼠标去干别的
-	app.Playing = false
+	app.setFocusPlaying(false)
 	tt.Advance(3 * time.Second)
 	if app.ChromeHidden {
 		t.Fatal("暂停时 chrome 不该淡出")
@@ -209,7 +209,7 @@ func TestPickVariantDefaultsToTop(t *testing.T) {
 func TestPlayerTabFollowsStreamerPlatform(t *testing.T) {
 	app := NewMockApp()
 	app.Platform = "douyin"
-	app.Player = Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"}
+	focusForTest(app, Streamer{Platform: "bilibili", RoomID: "170001", Name: "某主播"})
 	app.Router.Push(routePlayer)
 
 	if got := app.activeTab(); got != "bilibili" {
@@ -221,8 +221,7 @@ func TestPlayerTabFollowsStreamerPlatform(t *testing.T) {
 func TestPlayerTabFallsBackToPlatform(t *testing.T) {
 	app := NewMockApp()
 	app.Platform = "huya"
-	app.Player = Streamer{}
-	app.PlayerIndex = -1
+	app.setFocus(nil)
 	app.Router.Push(routePlayer)
 
 	if got := app.activeTab(); got != "huya" {
@@ -243,7 +242,7 @@ func TestWheelOverVolumeChangesVolume(t *testing.T) {
 	}
 	tt.Advance(1500 * time.Millisecond)
 
-	app.Volume = 0.5
+	app.setVolume(0.5)
 	tt.Frame()
 	r, ok := tt.Find("音量")
 	if !ok {
@@ -255,20 +254,20 @@ func TestWheelOverVolumeChangesVolume(t *testing.T) {
 	tt.Move(700, 450)
 	tt.Wheel(700, 450, 0, -99)
 	tt.Frame()
-	if app.Volume != 0.5 {
-		t.Fatalf("画面上的滚轮改了音量：%v", app.Volume)
+	if app.focusVolume() != 0.5 {
+		t.Fatalf("画面上的滚轮改了音量：%v", app.focusVolume())
 	}
 
 	tt.Move(x, y)
 	tt.Wheel(x, y, 0, -99) // 一格上滚
 	tt.Frame()
-	if got := app.Volume; got != 0.55 {
+	if got := app.focusVolume(); got != 0.55 {
 		t.Fatalf("上滚一格后音量为 %v，期望 0.55", got)
 	}
 
 	tt.Wheel(x, y, 0, 99) // 一格下滚
 	tt.Frame()
-	if got := app.Volume; got != 0.5 {
+	if got := app.focusVolume(); got != 0.5 {
 		t.Fatalf("下滚一格后音量为 %v，期望 0.5", got)
 	}
 
@@ -277,7 +276,7 @@ func TestWheelOverVolumeChangesVolume(t *testing.T) {
 		tt.Wheel(x, y, 0, -99)
 	}
 	tt.Frame()
-	if got := app.Volume; got != 1 {
+	if got := app.focusVolume(); got != 1 {
 		t.Fatalf("连续上滚后音量为 %v，期望夹到 1", got)
 	}
 
@@ -286,7 +285,7 @@ func TestWheelOverVolumeChangesVolume(t *testing.T) {
 		tt.Wheel(x, y, 0, 99)
 	}
 	tt.Frame()
-	if got := app.Volume; got != 0 {
+	if got := app.focusVolume(); got != 0 {
 		t.Fatalf("连续下滚后音量为 %v，期望夹到 0", got)
 	}
 }
@@ -296,7 +295,7 @@ func TestWheelOverVolumeChangesVolume(t *testing.T) {
 func TestWheelVolumeAccumulatesPreciseScroll(t *testing.T) {
 	app := NewMockApp()
 	app.Router.Push(routePlayer)
-	app.Volume = 0.5
+	app.setVolume(0.5)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Advance(1500 * time.Millisecond)
 
@@ -311,7 +310,7 @@ func TestWheelVolumeAccumulatesPreciseScroll(t *testing.T) {
 		tt.Scroll(x, y, 0, -5)
 	}
 	tt.Frame()
-	if got := app.Volume; got != 0.51 {
+	if got := app.focusVolume(); got != 0.51 {
 		t.Fatalf("四次 5 DIP 上滚后音量为 %v，期望 0.51", got)
 	}
 }
@@ -463,12 +462,12 @@ func iconInk(t *testing.T, tt *ui.Tester, img *image.RGBA, name string) (top, bo
 // 墨迹反推（见 playerIconSize / playerIconSizeTall），这条把结果钉住。
 func TestPlayerIconsShareInkBand(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
 	// 音量决定静音键的 Label（0 时是「取消静音」），而这条量的是图标墨迹：
 	// 钉住音量，测试才不会跟着本机 state.json 变。
-	app.Volume = 0.6
+	app.setVolume(0.6)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	// 控制条现在是玻璃：下面有画面时，亮像素会从背景透进来，量到的墨迹
 	// 就不再只是图标。这条量的是图标几何，不是材质——把透明关掉再量。

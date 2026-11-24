@@ -344,3 +344,17 @@ Cookie。两家浏览器登录的整套实现（`WebLogin`、登录页 webview�
 
 `apiClient` 的 `cookieHosts` 留着当护栏：万一以后又接回登录，别再把抖音域
 的会话发到 `webcast.amemv.com`。
+
+## 八、列表分页
+
+抖音的 `partition/detail/room/v2`（匿名）单次最多回 20 条：`count` 传
+30 / 40 / 100 都只回 20（2026-11-24，`partition_type=1`）。`has_more` 恒为
+false，不能当翻页判据；我们按「本块取满了」推断后面还有。
+
+界面看到的是无限瀑布流，**页只是取数单位**：feed 持一个 cursor（抖音就是
+upstream offset），每次从 cursor 续取一段 40 条（两次 offset 0/20）。中途
+某一块失败时，已经取到的部分照常 append，cursor 停在真实消费位置，下一次
+从那里续——既不跳也不丢，也不会把「半页」暴露给界面。按页取数的平台在
+`fetchFeedChunk` 里把 cursor 换算成页码，界面同样只认 cursor。
+
+原始响应样本未入库，复测时把 `count` / `offset` / `has_more` 三项一起记下来。

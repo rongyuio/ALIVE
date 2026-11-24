@@ -13,7 +13,7 @@ import (
 // （曾经因为 Fill() 在 Box 里不撑开高度，整层塌到画面中部。）
 func TestDanmuPosition(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuOn = true
 	app.Danmu = []danmuLine{

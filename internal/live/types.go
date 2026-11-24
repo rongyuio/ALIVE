@@ -53,10 +53,31 @@ type Room struct {
 // Page 是一页直播间。
 //
 // 各平台都没有统一的总数或下一页指针：HasMore 由「本页是否满页」推断，
-// 这是唯一可靠的跨平台信号。
+// 这是唯一可靠的跨平台信号。Page 是**按页取数**的平台用的取数单位；
+// 用户看到的是无限瀑布流，页不该出现在界面的状态里（见 Chunk）。
 type Page struct {
 	Rooms   []Room
 	HasMore bool
+}
+
+// Chunk 是从 cursor 往后续取到的一段直播列表。
+//
+// 列表是无限流，Chunk 不是「页」：Cursor 是平台自己的续取位置（抖音是
+// upstream offset；按页取数的平台用 page*size 换算）。中途某一块失败时，
+// 已经取到的部分照常交出来，Cursor 停在真实消费位置；上层把 Rooms append
+// 上去，下一次从 Cursor 继续，不跳也不丢。
+type Chunk struct {
+	Rooms   []Room
+	Cursor  int
+	HasMore bool
+	// Partial 表示这一段没取满、中途有失败：Rooms 可以先用，下一次从
+	// Cursor 续；上层据此退避，别每帧重试。
+	Partial bool
+}
+
+// CursorProvider 是能按「已经取到第几条」续取的平台。
+type CursorProvider interface {
+	RoomsFrom(ctx context.Context, areaID string, cursor, size int) (Chunk, error)
 }
 
 // Provider 是一个平台的数据入口。

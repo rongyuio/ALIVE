@@ -1,6 +1,6 @@
 # 0012 四个表面的统一模型
 
-- **状态**：已决定，落地中（2026-11-22）
+- **状态**：已落地（2026-11-24 收口）
 - **日期**：2026-11-22
 - **影响**：`internal/ui/watch*.go`、`internal/ui/player_media.go`、`internal/ui/island.go`、
   `internal/ui/player.go`、`internal/ui/pages.go`、`internal/ui/surface.go`（新增）
@@ -119,6 +119,35 @@
 延迟被绑到关键帧间隔上：`all` 断参考帧链，实测 8–22 秒；`nonref` 保住链
 也要 2.2 秒。只跳渲染、解码继续，12 路恢复 125–141ms，隐藏期间多花
 0.30 核（12 路，零拷贝）——这笔账换"回到墙立刻出画"，值。
+
+## 2026-11-24 收口：最终形状
+
+阶段 2/4 落地之后又收了一轮，最终只有一个焦点和一个会话表：
+
+- `a.focus *roomSession` 是唯一的焦点，唯一写者是 `setFocus`。`a.Player`、
+  `WatchActive`、`WatchPending`、`media.roomKey`、`media.session`、
+  `roomSession.active` 全部删除。
+- 会话只住 `a.watch.sessions`；播放页、墙格、后台收听画的是同一个对象。
+- 音量与播放态住进 `roomSession.volume / playing`；App 上只留
+  `DefaultVolume`（新房间的初始值）。`watch.volumes` 降级为"会话不在时的冷存"，
+  建会话时移交、关会话时写回。
+- `background` 字段删除，改成 `fullSize()` 的推论；`inBackground()` 只回答
+  "焦点在、但没有全尺寸视图"。
+- 离开播放页的落点由**目标页上的画面归属**决定（`pictureOn`：墙格 > 卡片 >
+  岛 > 硬切），不用"从哪一页进来"（`playerOriginWall` 已删）、也不用"房间在
+  不在盒"或"关注页上次停在观测墙"做代理。2026-11-24 把整页交叉淡化换成
+  `surface_flight.go` 的一块飞行：交叉淡化会把不透明的画面和浅色列表混成
+  一层灰雾。
+
+这一轮修掉的两个真实缺陷：
+
+| 现象 | 根因 |
+|---|---|
+| 收起的直播间（从列表打开）点岛上的 X 没反应 | 非播放页的 X 走 `watchDeactivate`，它第一行 `if WatchActive == "" { return }` |
+| 从首页打开盒内房间，收起时按"回墙"处理 | 判据是 `FollowsSection` / `watchHas`，不是打开播放页的那一页 |
+
+反向回归：把这两处改回去，`TestIslandXClosesCollapsedRoomOutsideBox` 与
+`TestReturnAnimationFollowsDestination` 分别变红。
 
 ## 复查条件
 

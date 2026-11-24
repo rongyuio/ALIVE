@@ -6,6 +6,8 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +46,7 @@ func fakeSession(t *testing.T, a *App, room Streamer) *roomSession {
 
 // audibleCount 数此刻真正在出声的播放器：音量 > 0。
 //
-// 这是"至多一路出声"唯一的判据来源：不看 a.Volume、不看 WatchActive，
+// 这是"至多一路出声"唯一的判据来源：不看 a.focusVolume()、不看 WatchActive，
 // 直接问播放器。状态字段可以撒谎，音量不会。
 func audibleCount(a *App) int {
 	n := 0
@@ -140,13 +142,10 @@ func TestInvariantOneEnginePerRoom(t *testing.T) {
 	key := watchKey(rooms[0])
 	app.WatchRooms = rooms
 
-	// 模拟"从列表进过播放页再离开"：媒体层持有这一间，在后台出声。
-	app.media.roomKey = key
-	app.media.session = &roomSession{player: gifPlayer(t)}
-	app.media.background = true
-	app.Player = rooms[0]
-	app.Playing = true
-	app.Volume = 0.6
+	// 模拟"从列表进过播放页再离开"：这一间在后台出声。
+	sess := focusWithPlayer(t, app, rooms[0])
+	app.setFocusPlaying(true)
+	app.setVolume(0.6)
 
 	// 进墙。直接调 watchShow：这条验的是"墙要不要为这一间建会话"，
 	// 不需要跑整棵视图树（真实窗口 + 定时器会让 Tester 的 settle 转不停）。
@@ -163,8 +162,8 @@ func TestInvariantOneEnginePerRoom(t *testing.T) {
 	app.FollowsSection = followsSectionWatch
 	app.watchShow(map[string]watch.Rect{key: {W: 640, H: 360}})
 
-	if s := roomSessionOf(app, key); s != nil {
-		t.Fatal("墙上为媒体层已经持有的房间又建了一个会话：同一间房两个所有者")
+	if s := roomSessionOf(app, key); s != sess {
+		t.Fatal("墙上为焦点那一间换了一个会话：同一间房两个所有者")
 	}
 }
 
@@ -179,11 +178,9 @@ func TestInvariantCloseKeepsSessionInBox(t *testing.T) {
 	sess := fakeSession(t, app, rooms[0])
 	tt.Frame()
 
-	// 双击进播放页（两次 Click 就是一次双击）。
+	// 双击进播放页。
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
+	doubleClick(t, tt, label)
 	tt.Frame()
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("双击没有进播放页，route=%q", app.Router.Path())
@@ -193,7 +190,7 @@ func TestInvariantCloseKeepsSessionInBox(t *testing.T) {
 	}
 
 	// 按 X：结束焦点。
-	app.closeMedia()
+	app.closeFocus()
 
 	if !app.watchHas(key) {
 		t.Fatal("房间还在盒里，watchHas 却是假")
@@ -269,9 +266,7 @@ func TestInvariantDanmakuOnlyOnFullSurface(t *testing.T) {
 	tt.Frame()
 
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
+	doubleClick(t, tt, label)
 	tt.Frame()
 
 	if got := app.surfaceFor(key); got != surfaceFull {
@@ -283,7 +278,7 @@ func TestInvariantDanmakuOnlyOnFullSurface(t *testing.T) {
 
 	// 离开：弹幕必须断。
 	app.Router.Push(routeHome)
-	app.detachMedia()
+	app.backgroundEnter()
 	tt.Frame()
 	if app.media.danmaku != nil {
 		t.Fatal("离开播放页之后弹幕连接还在")
@@ -297,14 +292,10 @@ func TestInvariantIslandMatchesFocus(t *testing.T) {
 	fakeSession(t, app, rooms[0])
 	tt.Frame()
 
-	// 媒体层持有另一间（不在盒里），在后台出声。
-	app.media.roomKey = "bilibili|9999"
-	app.media.session = &roomSession{player: gifPlayer(t)}
-	app.media.eng().SetVolume(0.6)
-	app.media.background = true
-	app.Player = Streamer{Platform: "bilibili", RoomID: "9999", Name: "盒子外的主播"}
-	app.Playing = true
-	app.Volume = 0.6
+	// 焦点是另一间（不在盒里），在后台出声。
+	focusWithPlayer(t, app, Streamer{Platform: "bilibili", RoomID: "9999", Name: "盒子外的主播"})
+	app.setFocusPlaying(true)
+	app.setVolume(0.6)
 
 	if got := app.focusKey(); got != "bilibili|9999" {
 		t.Fatalf("焦点是 %q，期望 bilibili|9999", got)
@@ -377,6 +368,196 @@ func assertOnlyIn(t *testing.T, method string, allowed map[string][]string) {
 	}
 }
 
+// forEachProductionFunc 遍历包内所有非测试文件的函数体。
+//
+// 静态规则只读生产代码：测试里为了造场景可以随便写，规则管的是产品代码
+// 会不会长出第二套机制。
+func forEachProductionFunc(t *testing.T, check func(fn *ast.FuncDecl, file string, fset *token.FileSet)) {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			fn, isFn := n.(*ast.FuncDecl)
+			if !isFn {
+				return true
+			}
+			check(fn, name, fset)
+			return false
+		})
+	}
+}
+
+// 静态检查：焦点只有一个写者。
+//
+// a.focus 是「哪一间在播」的唯一真相。允许写它的只有 setFocus（换焦点）和
+// closeSession（销毁会话时保证焦点不悬空）。别处直接赋值就是在造第二份真相
+// ——以前 a.Player / WatchActive / media.roomKey 三份就是这么烂掉的。
+func TestNoSecondFocusWriter(t *testing.T) {
+	forEachProductionFunc(t, func(fn *ast.FuncDecl, file string, fset *token.FileSet) {
+		if fn.Name.Name == "setFocus" || fn.Name.Name == "closeSession" {
+			return
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			as, isAs := n.(*ast.AssignStmt)
+			if !isAs {
+				return true
+			}
+			for _, lhs := range as.Lhs {
+				sel, isSel := lhs.(*ast.SelectorExpr)
+				if isSel && sel.Sel.Name == "focus" {
+					t.Errorf("%s:%d %s 里直接写了 a.focus：焦点只能经 setFocus 改",
+						file, fset.Position(as.Pos()).Line, fn.Name.Name)
+				}
+			}
+			return true
+		})
+	})
+}
+
+// 静态检查：引擎音量只有一个写者。
+//
+// 目标值永远由「是不是焦点」决定（焦点 = 自己的音量，其余 = 0）。散着写
+// 就会出现墙格预览在响、后台让位的一路没静音这类组合——那正是旧模型里
+// a.Volume / wall.volumes / player.Playing() 三份真相互相追的来源。
+func TestNoSecondVolumeWriter(t *testing.T) {
+	forEachProductionFunc(t, func(fn *ast.FuncDecl, file string, fset *token.FileSet) {
+		if fn.Name.Name == "applySessionVolume" {
+			return
+		}
+		// attachPlayer 是唯一允许的第二处：它只把新播放器的记录值对齐到
+		// 引擎的起播静音（StartSilent = volume 0），不决定任何目标音量。
+		// 只许字面量 0；别的值仍然只能经 applySessionVolume。
+		if fn.Name.Name == "attachPlayer" {
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, isCall := n.(*ast.CallExpr)
+				if !isCall {
+					return true
+				}
+				sel, isSel := call.Fun.(*ast.SelectorExpr)
+				if !isSel || sel.Sel.Name != "SetVolume" {
+					return true
+				}
+				lit, isLit := call.Args[0].(*ast.BasicLit)
+				if !isLit || lit.Value != "0" {
+					t.Errorf("%s:%d attachPlayer 只能把音量对齐到字面量 0",
+						file, fset.Position(call.Pos()).Line)
+				}
+				return true
+			})
+			return
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, isCall := n.(*ast.CallExpr)
+			if !isCall {
+				return true
+			}
+			sel, isSel := call.Fun.(*ast.SelectorExpr)
+			if isSel && sel.Sel.Name == "SetVolume" {
+				t.Errorf("%s:%d %s 里直接调了 SetVolume：音量只能经 applySessionVolume 推",
+					file, fset.Position(call.Pos()).Line, fn.Name.Name)
+			}
+			return true
+		})
+	})
+}
+
+// 静态检查：会话的播放器只能经 attachPlayer 挂上。
+//
+// 挂播放器必须同时把记录音量对齐到引擎的起播静音（0），否则目标音量为 1
+// 时单一写者会跳过第一次推送，引擎永远停在 0（见 attachPlayer 注释）。
+// dropEngine 摘播放器是另一条合法路径。
+func TestNoDirectPlayerAttach(t *testing.T) {
+	forEachProductionFunc(t, func(fn *ast.FuncDecl, file string, fset *token.FileSet) {
+		switch fn.Name.Name {
+		case "attachPlayer", "dropEngine":
+			return
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			as, isAssign := n.(*ast.AssignStmt)
+			if !isAssign {
+				return true
+			}
+			for _, lhs := range as.Lhs {
+				sel, isSel := lhs.(*ast.SelectorExpr)
+				if isSel && sel.Sel.Name == "player" {
+					t.Errorf("%s:%d %s 里直接给 player 赋值：只能经 attachPlayer / dropEngine",
+						file, fset.Position(as.Pos()).Line, fn.Name.Name)
+				}
+			}
+			return true
+		})
+	})
+}
+
+// 静态检查：会话的引擎只有一个关闭入口。
+//
+// s.player.Close() 和 m.eng().Close() 都只许出现在 dropEngine 里。后台
+// 还没交付的引擎（adoptPlayback 拒收、runHotSwap 失败）是另一种对象，
+// 它们从来没挂到会话上，由创建者自己关。
+func TestNoSecondEngineCloser(t *testing.T) {
+	forEachProductionFunc(t, func(fn *ast.FuncDecl, file string, fset *token.FileSet) {
+		if fn.Name.Name == "dropEngine" {
+			return
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, isCall := n.(*ast.CallExpr)
+			if !isCall {
+				return true
+			}
+			sel, isSel := call.Fun.(*ast.SelectorExpr)
+			if !isSel || sel.Sel.Name != "Close" {
+				return true
+			}
+			owned := false
+			if inner, ok := sel.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "player" {
+				owned = true
+			}
+			if inner, ok := sel.X.(*ast.CallExpr); ok {
+				if f, ok := inner.Fun.(*ast.SelectorExpr); ok && f.Sel.Name == "eng" {
+					owned = true
+				}
+			}
+			if owned {
+				t.Errorf("%s:%d %s 里直接关了会话的引擎：只能经 dropEngine",
+					file, fset.Position(call.Pos()).Line, fn.Name.Name)
+			}
+			return true
+		})
+	})
+}
+
+// 静态检查：平行的焦点 / 音量 / 播放态字段不许回潮。
+//
+// 这几条字段各自都曾是「第二份真相」。删掉之后如果有人顺手加回来，岛、墙、
+// 播放页就会重新各读各的。用反射查结构，比 grep 名字可靠。
+func TestNoParallelPlayerFields(t *testing.T) {
+	app := reflect.TypeOf(App{})
+	for _, name := range []string{
+		"Player", "PlayerIndex", "PlayerRemote",
+		"Volume", "Playing", "WatchActive", "WatchPending",
+	} {
+		if _, ok := app.FieldByName(name); ok {
+			t.Errorf("App 上又出现了 %s：它该由 a.focus / roomSession 推导", name)
+		}
+	}
+	session := reflect.TypeOf(roomSession{})
+	if _, ok := session.FieldByName("active"); ok {
+		t.Error("roomSession.active 回来了：焦点就是 active，不需要另存一份")
+	}
+}
+
 // 从墙离开后点岛：回到墙，不是跳进播放页。
 //
 // 用户离开的正是那面墙，那里还有它的格子。直接跳进播放页等于替他做了一个
@@ -407,8 +588,8 @@ func TestIslandReturnsToTheRoomEvenWhenItIsInBox(t *testing.T) {
 	if got := app.Router.Path(); got != routePlayer {
 		t.Fatalf("点岛回到了 %q，期望播放页", got)
 	}
-	if watchKey(app.Player) != key {
-		t.Fatalf("点岛打开的是 %q，期望 %q", watchKey(app.Player), key)
+	if app.focusKey() != key {
+		t.Fatalf("点岛打开的是 %q，期望 %q", app.focusKey(), key)
 	}
 	if app.focusKey() != key {
 		t.Fatalf("回墙之后焦点变成了 %q", app.focusKey())
@@ -418,11 +599,9 @@ func TestIslandReturnsToTheRoomEvenWhenItIsInBox(t *testing.T) {
 // 焦点不在盒里时点岛仍然回播放页：它没有别的容身处。
 func TestIslandReturnsToPlayerWhenFocusOutsideBox(t *testing.T) {
 	app := NewMockApp()
-	app.Player = Streamer{Platform: "douyu", RoomID: "777", Name: "盒子外"}
-	app.media.roomKey = "douyu|777"
-	app.media.background = true
-	app.Playing = true
-	app.Volume = 0.6
+	focusWithPlayer(t, app, Streamer{Platform: "douyu", RoomID: "777", Name: "盒子外"})
+	app.setFocusPlaying(true)
+	app.setVolume(0.6)
 	app.Router.Push(routeHome)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
@@ -513,10 +692,9 @@ func TestWatchSaveDataReapsHidden(t *testing.T) {
 
 // 取消观测发声之后，声音必须真的停，而且不能被下一帧装回来。
 //
-// 这条覆盖的是"取流还没回来"那一刻：墙上的会话在，引擎还没有。此时
-// watchReleaseActive 没有东西可交接，只能把这一轮取流收掉；如果只清了
-// WatchActive、没清 media.roomKey，下一帧 watchShow 会看到"媒体层有房间、
-// 焦点空着"，把焦点重新认领回来——声音永远停不掉。
+// 这条覆盖的是"取流还没回来"那一刻：墙上的会话在，引擎还没有。结束焦点
+// 必须把这一轮取流一起作废；只清焦点、留着会话，下一帧墙的同步仍会把它
+// 当成"在盒里的预览"，焦点也可能被重新装回来——声音永远停不掉。
 func TestDeactivateStopsSoundWhileLoading(t *testing.T) {
 	rooms := watchTestRooms(1)
 	app, tt := newWatchMock(t, rooms)
@@ -526,22 +704,20 @@ func TestDeactivateStopsSoundWhileLoading(t *testing.T) {
 	// 这一格正在取流：会话在，播放器还没有。
 	app.watch.init()
 	app.watch.sessions[key] = &roomSession{key: key, room: rooms[0], loading: true}
-	app.media.roomKey = key
 	app.media.setLoading(true)
-	app.WatchActive = key
-	app.Player = rooms[0]
-	app.Playing = true
-	app.Volume = 0.6
+	focusForTest(app, rooms[0])
+	app.setFocusPlaying(true)
+	app.setVolume(0.6)
 	tt.Frame()
 
-	app.watchDeactivate()
+	app.closeFocus()
 	tt.Frame()
 
-	if app.WatchActive != "" {
-		t.Fatalf("取消发声之后焦点还是 %q", app.WatchActive)
+	if app.wallActiveKey() != "" {
+		t.Fatalf("取消发声之后焦点还是 %q", app.wallActiveKey())
 	}
-	if app.media.roomKey != "" {
-		t.Fatalf("取消发声之后媒体层还握着 %q：下一帧会被认领回来", app.media.roomKey)
+	if app.media.roomKey() != "" {
+		t.Fatalf("取消发声之后媒体层还握着 %q：下一帧会被认领回来", app.media.roomKey())
 	}
 	if app.islandFormOf() != islandIdle {
 		t.Fatalf("取消发声之后岛是 %v，期望时钟", app.islandFormOf())
@@ -576,7 +752,7 @@ func TestDeactivateStopsSoundWithEngine(t *testing.T) {
 		t.Fatalf("激活之后有 %d 路在出声", audibleCount(app))
 	}
 
-	app.watchDeactivate()
+	app.closeFocus()
 	for range 10 {
 		tt.Advance(16 * time.Millisecond)
 		tt.Frame()
@@ -603,9 +779,7 @@ func TestLeavingPlayerFromWallClearsIsland(t *testing.T) {
 	tt.Frame()
 
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
+	doubleClick(t, tt, label)
 	tt.Frame()
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("没有进播放页：route=%q", app.Router.Path())
@@ -615,8 +789,7 @@ func TestLeavingPlayerFromWallClearsIsland(t *testing.T) {
 	}
 
 	// 按 X：和 playerTopbar 的返回钮同一条路径。
-	app.closeMedia()
-	app.Router.Back()
+	app.closeFocus()
 	for range 10 {
 		tt.Advance(16 * time.Millisecond)
 		tt.Frame()

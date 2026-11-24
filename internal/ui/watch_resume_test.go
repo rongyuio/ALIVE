@@ -73,7 +73,7 @@ func TestWatchCloseKeepsSignedURLForReconnect(t *testing.T) {
 	}
 	app.watch.sessions[key] = s
 
-	app.watchCloseSession(s)
+	app.closeSession(s)
 
 	r, ok := app.takeResume(key)
 	if !ok {
@@ -100,7 +100,7 @@ func TestWatchCloseDropsExpiredURL(t *testing.T) {
 	}
 	app.watch.sessions[key] = s
 
-	app.watchCloseSession(s)
+	app.closeSession(s)
 
 	if _, ok := app.takeResume(key); ok {
 		t.Fatal("过期的地址还被留下了")
@@ -115,7 +115,7 @@ func TestWatchCloseGuessesLifetimeWhenPlatformDoesNot(t *testing.T) {
 	s := &roomSession{key: key, up: live.Variant{URL: "https://example.invalid/live.flv"}}
 	app.watch.sessions[key] = s
 
-	app.watchCloseSession(s)
+	app.closeSession(s)
 
 	r, ok := app.takeResume(key)
 	if !ok {

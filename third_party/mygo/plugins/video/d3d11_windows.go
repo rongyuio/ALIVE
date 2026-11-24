@@ -82,7 +82,35 @@ const (
 	acquireSync          = 8
 	releaseSync          = 9
 	keyedAcquireWaitMS   = 20
+	// CPU 回读是给截图用的同步路径，让一步比渲染多：拿不到就少一格画面，
+	// 和渲染循环里「这一拍让过去」的代价不是一回事。
+	keyedReadWaitMS = 100
+
+	// CPU 回读（readPixels）用的几个。
+	ctxCopyResource = 47
+	ctxMap          = 14
+	ctxUnmap        = 15
+	usageStaging    = 3
+	cpuAccessRead   = 0x20000
+	mapRead         = 1
 )
+
+// textureDesc 是 D3D11_TEXTURE2D_DESC。
+type textureDesc struct {
+	Width, Height              uint32
+	MipLevels, ArraySize       uint32
+	Format                     uint32
+	SampleCount, SampleQuality uint32
+	Usage                      uint32
+	BindFlags                  uint32
+	CPUAccess, MiscFlags       uint32
+}
+
+// mapped 是 D3D11_MAPPED_SUBRESOURCE。
+type mapped struct {
+	Data                 uintptr
+	RowPitch, DepthPitch uint32
+}
 
 var (
 	iidIDXGIResource1 = [16]byte{

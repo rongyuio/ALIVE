@@ -16,16 +16,16 @@ func TestWatchActivateDeadTileDoesNotStealFocus(t *testing.T) {
 	app.WatchRooms = []Streamer{live, dead}
 
 	liveKey, deadKey := watchKey(live), watchKey(dead)
-	app.WatchActive = liveKey
 	app.watch.sessions[liveKey] = &roomSession{key: liveKey, room: live}
 	app.watch.sessions[deadKey] = &roomSession{
 		key: deadKey, room: dead, offline: true, err: "主播暂时没有开播",
 	}
+	focusForTest(app, live)
 
 	app.watchActivate(dead)
 
-	if app.WatchActive != liveKey {
-		t.Fatalf("点离线格抢走了焦点：WatchActive=%q，期望仍是 %q", app.WatchActive, liveKey)
+	if app.focusKey() != liveKey {
+		t.Fatalf("点离线格抢走了焦点：focus=%q，期望仍是 %q", app.focusKey(), liveKey)
 	}
 	if s := app.watch.sessions[deadKey]; s.offline || s.err != "" {
 		t.Fatalf("离线格没有走重试：offline=%v err=%q", s.offline, s.err)
@@ -48,21 +48,17 @@ func TestWatchFailReleasesFocus(t *testing.T) {
 			app := NewMockApp()
 			app.watch.init()
 			room := Streamer{Platform: "bilibili", RoomID: "1", Name: "在播"}
-			key := watchKey(room)
 			app.WatchRooms = []Streamer{room}
-			app.WatchActive = key
-			app.Player = room
-			app.Playing = true
-			s := &roomSession{key: key, room: room}
-			app.watch.sessions[key] = s
+			s := focusForTest(app, room)
+			app.setFocusPlaying(true)
 
 			tc.kill(app, s)
 
-			if app.WatchActive != "" || app.WatchPending != "" {
-				t.Fatalf("失败后焦点没收：active=%q pending=%q", app.WatchActive, app.WatchPending)
+			if app.focusKey() != "" {
+				t.Fatalf("失败后焦点没收：focus=%q", app.focusKey())
 			}
-			if app.Playing {
-				t.Fatal("失败后 a.Playing 还是 true")
+			if app.focusPlaying() {
+				t.Fatal("失败后 a.focusPlaying() 还是 true")
 			}
 			if got := app.focusKey(); got != "" {
 				t.Fatalf("失败后仍有声音焦点：%q", got)

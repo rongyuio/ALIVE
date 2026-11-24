@@ -98,7 +98,7 @@ func (a *App) buildConfigFile() configFile {
 	rooms := make(map[string]roomChoice, len(a.roomChoices))
 	maps.Copy(rooms, a.roomChoices)
 
-	volume := a.Volume
+	volume := a.DefaultVolume
 	return configFile{
 		App:        configApp,
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
@@ -236,8 +236,18 @@ func (a *App) applyConfig(f configFile) importSummary {
 			a.WatchRooms = append(a.WatchRooms, r.streamer())
 		}
 		if r.Volume != nil {
-			a.watch.init()
-			a.watch.volumes[key] = min(1, max(0, *r.Volume))
+			v := min(1, max(0, *r.Volume))
+			// 会话在时音量住在会话里；冷存只给还没有会话的房间。
+			if s := a.watch.sessions[key]; s != nil {
+				s.volume = v
+				if key == a.focusKey() {
+					a.DefaultVolume = v
+					a.applyFocusAudio()
+				}
+			} else {
+				a.watch.init()
+				a.watch.volumes[key] = v
+			}
 		}
 	}
 	// normalize 顺带兜住文件里重复的房间和超过上限的部分。
@@ -256,7 +266,7 @@ func (a *App) applyConfig(f configFile) importSummary {
 		if a.roomChoices == nil {
 			a.roomChoices = make(map[string]roomChoice, len(rooms))
 		}
-		cur := a.media.roomKey
+		cur := a.media.roomKey()
 		beforeCur := a.roomChoiceOf(cur)
 		maps.Copy(a.roomChoices, rooms)
 		sum.Prefs = true

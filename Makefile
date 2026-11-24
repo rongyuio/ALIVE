@@ -50,7 +50,7 @@ TEST_HOME := $(CURDIR)/.mygo/test-home
 TESTENV   = APPDATA="$(TEST_HOME)/Roaming" LOCALAPPDATA="$(TEST_HOME)/Local" GOCACHE="$(shell $(GO) env GOCACHE)" $(RUNENV)
 
 .DEFAULT_GOAL := build
-.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline e2e tidy tools clean check-mpv
+.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline mock-partial e2e tidy tools clean check-mpv
 
 help:
 	@echo "build         package into $(BUILD_DIR)/<os>-<arch>/ (portable + installer)"
@@ -64,6 +64,7 @@ help:
 	@echo "lint          golangci-lint run"
 	@echo "mock          run with mock data layer (online + danmaku)"
 	@echo "mock-offline  run with mock data layer (offline state)"
+	@echo "mock-partial  run with mock feed: 400 rooms, a half chunk at cursor 40"
 	@echo "e2e           build with the automation plugin"
 	@echo "tools         install mygo-automation CLI"
 	@echo "tidy          go mod tidy"
@@ -120,6 +121,11 @@ mock: check-mpv
 
 mock-offline: check-mpv
 	$(RUNENV) ALIVE_MOCK=offline $(GO) run -tags mock .
+
+# partial 是「一段没取满」的真实形态：mock 在 cursor=40 处只回 20 条并标
+# Partial，用来看列表是接着长（60）还是跳段（120）。见 internal/live/mock.go。
+mock-partial: check-mpv
+	$(RUNENV) ALIVE_MOCK=danmu ALIVE_MOCK_FEED=partial $(GO) run -tags mock .
 
 # automation 插件只在 e2e 构建里存在（见 automation_e2e.go）。产物要能直接跑，
 # 所以运行库跟着一起放过去。

@@ -51,7 +51,7 @@ func (r *optsRecorder) first() playback.Options {
 //
 // mpv 的默认音量是 100%：openNative 不带 StartSilent 时，新一路从 loadfile
 // 那一刻就在出声，而 adoptSwap 要等「新路出图 / 出声音」之后才第一次
-// SetVolume(a.Volume)。于是每次地址续期都有两路叠音，新路还是满音量；
+// SetVolume(a.focusVolume())。于是每次地址续期都有两路叠音，新路还是满音量；
 // 用户静音时也会漏一声。
 func TestHotSwapStartsSilent(t *testing.T) {
 	rec := &optsRecorder{}
@@ -85,7 +85,7 @@ func TestHotSwapStartsSilent(t *testing.T) {
 	}
 }
 
-// 首路同样要静音起播：adoptPlayback 一定会按 a.Volume 推一次音量
+// 首路同样要静音起播：adoptPlayback 一定会按 a.focusVolume() 推一次音量
 // （player_media.go adoptPlayback），所以从 0 抬起来是安全的。
 // 不这么做，主线程繁忙、adopt 晚到时用户会先听到一声满音量。
 func TestFirstOpenStartsSilent(t *testing.T) {
@@ -110,6 +110,37 @@ func TestFirstOpenStartsSilent(t *testing.T) {
 	}
 }
 
+// 用户把音量拉到 100% 时，新引擎也必须真的收到那一次 SetVolume。
+//
+// 引擎按 StartSilent 起播，mpv 的真实音量是 0；ui.NewEngineVideoPlayer 却
+// 把播放器记录的音量初始化成 1。单一写者 applySessionVolume 用记录值判断
+// 要不要推：目标 1 == 记录 1，第一次推送被跳过，引擎永远停在 0。从分区
+// 卡片进播放页（引擎在焦点建立之后才接管）正好是这个组合——画面在走，
+// 没有声音。
+//
+// 期望值来自代码之外：所有引擎创建点都传 StartSilent（player_media.go 的
+// 首路 / 热切换、watch_media.go 的墙格），而 StartSilent 在
+// playback/engine.go 里就是 SetVolume(0)。
+func TestFreshEngineGetsVolumeAtFullScale(t *testing.T) {
+	a := seededApp(t)
+	room := Streamer{Platform: "douyu", RoomID: "9", Name: "满音量"}
+	s := a.sessionFor(watchKey(room), room)
+	s.volume = 1
+	a.setFocus(s)
+
+	// 生产里这一步是 ui.NewEngineVideoPlayer：记录音量初始化为 1。
+	p := gifPlayer(t)
+	p.SetVolume(1)
+	s.attachPlayer(p)
+	if got := p.Volume(); got != 0 {
+		t.Fatalf("挂上新播放器后记录音量是 %v，期望 0（引擎按 StartSilent 起播）", got)
+	}
+	a.applySessionVolume(s)
+	if got := p.Volume(); !almostEqual(got, 1) {
+		t.Fatalf("目标音量 1 没有推给引擎，播放器记录还是 %v", got)
+	}
+}
+
 // 进播放页时必须收掉墙上为同一间房开的静音预览。
 //
 // 墙上的每一格都有一个引擎。从首页卡片或关注列表进入其中某一间的播放页时，
@@ -130,7 +161,7 @@ func TestEnteringPlayerClosesWallPreviewOfSameRoom(t *testing.T) {
 		full:     live.Stream{Live: true},
 		selected: live.Variant{Label: "原画", URL: "http://example.invalid/live.flv"},
 	})
-	app.Player = rooms[0]
+	focusForTest(app, rooms[0])
 	app.Router.Push(routePlayer)
 	tt.Frame()
 
@@ -144,7 +175,7 @@ func TestEnteringPlayerClosesWallPreviewOfSameRoom(t *testing.T) {
 	if s.player == nil {
 		t.Fatal("这一间没有引擎：进播放页不该把墙上的引擎关掉重开")
 	}
-	if app.media.session != nil && app.media.session != s {
+	if app.media.session() != nil && app.media.session() != s {
 		t.Fatal("媒体层和墙各拿着一份会话：同一间房被拆成了两个")
 	}
 	if n := countRoomEngines(app, key); n > 1 {
@@ -158,7 +189,7 @@ func countRoomEngines(a *App, key string) int {
 	if s := a.watch.sessions[key]; s != nil && s.player != nil {
 		seen[s.player] = true
 	}
-	if a.media.roomKey == key && a.media.eng() != nil {
+	if a.media.roomKey() == key && a.media.eng() != nil {
 		seen[a.media.eng()] = true
 	}
 	return len(seen)
@@ -179,16 +210,16 @@ func TestLeavingAfterStreamFailureClearsIslandFocus(t *testing.T) {
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
 
-	app.Player = Streamer{Platform: "douyu", RoomID: "777", Name: "未开播"}
+	focusForTest(app, Streamer{Platform: "douyu", RoomID: "777", Name: "未开播"})
 	app.Router.Push(routePlayer)
 	tt.Frame()
 
 	// 取流回来：平台说没开播，loading 落回 false，引擎始终没有建出来。
 	stubs.pump(t)
 	stubs.pump(t)
-	if app.media.roomKey == "" || app.media.eng() != nil || app.media.isLoading() {
+	if app.media.roomKey() == "" || app.media.eng() != nil || app.media.isLoading() {
 		t.Fatalf("夹具状态不对：roomKey=%q player=%v loading=%v",
-			app.media.roomKey, app.media.eng() != nil, app.media.isLoading())
+			app.media.roomKey(), app.media.eng() != nil, app.media.isLoading())
 	}
 
 	// 顶栏 tab 离开播放页：Shell 走 detachMedia（和用户点 tab 同一条路）。

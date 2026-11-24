@@ -66,7 +66,7 @@ func TestStateRoundTrip(t *testing.T) {
 		{PlatformID: "huya", Platform: "虎牙", Group: "手游", Name: "原神"},
 	}
 	app.setRoomChoice("bilibili|1001", roomChoice{Quality: "蓝光", Line: "线路3", LineID: "l3"})
-	app.Volume = 0.25
+	app.setVolume(0.25)
 	app.PlatformOrder = normalizePlatformOrder([]string{"bilibili", "douyu"})
 	app.FollowsSectionOrder = []string{sectionIDSubs, sectionIDStreamers}
 	app.stateDirty = true
@@ -104,8 +104,8 @@ func TestStateRoundTrip(t *testing.T) {
 	if len(restored.roomChoices) != 1 {
 		t.Errorf("房间选择多出了别的项：%+v", restored.roomChoices)
 	}
-	if restored.Volume != 0.25 {
-		t.Errorf("音量 %v，期望 0.25", restored.Volume)
+	if restored.DefaultVolume != 0.25 {
+		t.Errorf("音量 %v，期望 0.25", restored.DefaultVolume)
 	}
 	if len(restored.PlatformOrder) != 4 || restored.PlatformOrder[0] != "bilibili" {
 		t.Errorf("平台顺序 %v", restored.PlatformOrder)

@@ -110,9 +110,8 @@ func TestWatchReloadActiveWallSession(t *testing.T) {
 	}
 	app.watch.init()
 	app.watch.sessions[key] = s
-	app.WatchActive = key
-	app.Player = rooms[0]
-	app.Playing = true
+	focusForTest(app, rooms[0])
+	app.setFocusPlaying(true)
 	tt.Frame()
 
 	r, ok := tt.Find(watchTileLabel(rooms[0]))
@@ -173,9 +172,11 @@ func TestWatchFirstFrameBudgetOnOpenEngine(t *testing.T) {
 
 // 缺陷 #39 的交接方向：从播放页退回墙上时，媒体层已经等过的首帧时长要带过去。
 //
-// watchReleaseActive 以前不记起播时刻，新会话的预算从零开始，于是一条在
-// 播放页里已经卡了 20 秒的死地址回到墙上又能再卡 20 秒——重复计时，实际
-// 永远等不到。
+// 一首帧预算跟着会话走，不跟表面走。
+//
+// 以前退回墙上会新建一个会话，起播时刻从零开始，于是一条在播放页里已经
+// 卡了 20 秒的死地址回到墙上又能再卡 20 秒——重复计时，实际永远等不到。
+// 现在一间房只有一个 roomSession，openedAt 本来就在里面。
 func TestWatchReleaseCarriesFirstFrameClock(t *testing.T) {
 	rooms := watchTestRooms(1)
 	app := NewMockApp()
@@ -185,15 +186,16 @@ func TestWatchReleaseCarriesFirstFrameClock(t *testing.T) {
 
 	app.watch.init()
 	app.watch.rects[key] = watch.Rect{W: 640, H: 360}
-	app.media.session = &roomSession{player: stalledPlayer(t)}
-	app.media.roomKey = key
-	app.media.setOpened(now.Add(-firstFrameBudget - time.Second))
+	s := &roomSession{key: key, room: rooms[0], player: stalledPlayer(t)}
+	s.openedAt = now.Add(-firstFrameBudget - time.Second)
+	focusSessionForTest(app, s)
+	app.setFocus(nil)
 
-	app.watchReleaseActive()
-
-	s := app.watch.sessions[key]
-	if s == nil {
-		t.Fatal("交还没有落到墙上")
+	if got := app.watch.sessions[key]; got != s {
+		t.Fatal("结束焦点之后会话不在墙上")
+	}
+	if !s.openedAt.Equal(now.Add(-firstFrameBudget - time.Second)) {
+		t.Fatal("换表面把起播时刻重置了")
 	}
 
 	app.watchTick(now)
@@ -206,9 +208,11 @@ func TestWatchReleaseCarriesFirstFrameClock(t *testing.T) {
 	}
 }
 
-// 缺陷 #11 的接管方向：墙上还没出图的一路接管进媒体层时，不能直接记成
-// 「已出图」。watchAdoptActive 以前写死 m.firstFrame=true，媒体层的
-// needFirstFrameTimeout 从此不再看这一路，死地址接管进播放页永远转圈。
+// 接管方向：墙上还没出图的一路成为焦点时，不能直接记成「已出图」。
+//
+// 以前 watchAdoptActive 写死 m.firstFrame=true，媒体层的 needFirstFrameTimeout
+// 从此不再看这一路，死地址接管进播放页永远转圈。现在接管只是 setFocus，
+// 会话本身没有任何字段被改写。
 func TestWatchAdoptKeepsFirstFramePending(t *testing.T) {
 	rooms := watchTestRooms(1)
 	app := NewMockApp()
@@ -219,17 +223,13 @@ func TestWatchAdoptKeepsFirstFramePending(t *testing.T) {
 	s := &roomSession{key: key, room: rooms[0], player: stalledPlayer(t)}
 	s.openedAt = opened
 	app.watch.sessions[key] = s
-	app.WatchActive = key
-	app.Player = rooms[0]
+	focusSessionForTest(app, s)
 	t.Cleanup(func() {
 		if app.media.cancel != nil {
 			app.media.cancel()
 		}
 	})
 
-	if !app.watchAdoptActive(false) {
-		t.Fatal("接管失败")
-	}
 	if app.media.firstFrame() {
 		t.Fatal("引擎还没出图，媒体层却记成已出图：首帧预算从此不再管这一路")
 	}

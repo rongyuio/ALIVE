@@ -108,6 +108,9 @@ var (
 	MediaTrackFill  = ui.RGBA(255, 255, 255, 0.26)
 	MediaHairStrong = ui.RGBA(255, 255, 255, 0.24)
 	MediaScrimSoft  = ui.RGBA(0, 0, 0, 0.22)
+	// MediaFlightScrim 是表面过渡时压在目标舞台上的暗罩起点：飞行开始
+	// 0.55，落地随进度退到 0。颜色住在这里，飞行代码只调 Alpha。
+	MediaFlightScrim = ui.RGBA(0, 0, 0, 0.55)
 
 	// 黑边区的模糊底。数值不是估的，是 2026-11-23 从 B 站播放器 bundle 里
 	// 读出来的（room-player.prod.min.js 的 capture-video-bg、H5 的

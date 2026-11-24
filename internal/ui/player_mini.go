@@ -91,7 +91,7 @@ func (a *App) showMain() {
 func (a *App) MiniPlayer(c *ui.Context) {
 	// 小窗存在的时候主窗口是收起来的，播放页不再构建——那边每帧做的
 	// syncPlayer / trackFirstFrame 全部停摆，得在这里接上：
-	//   syncPlayer    暂停键翻了 a.Playing 之后真的要推给播放器
+	//   syncPlayer    暂停键翻了焦点会话的播放意图之后真的要推给播放器
 	//   trackFirstFrame  首帧预算、地址到期、断流看门狗
 	a.syncPlayer()
 	a.trackFirstFrame()
@@ -141,17 +141,15 @@ func (a *App) MiniPlayer(c *ui.Context) {
 
 		bar.Children(func() {
 			playIcon := iconPlay
-			if a.Playing {
+			if a.focusPlaying() {
 				playIcon = iconPause
 			}
 			playLabel := "播放"
-			if a.Playing {
+			if a.focusPlaying() {
 				playLabel = "暂停"
 			}
 			a.miniBtn(c, playIcon, playLabel, 20, func() {
-				a.Playing = !a.Playing
-				a.markDirty()
-				a.invalidateWindows()
+				a.setFocusPlaying(!a.focusPlaying())
 			})
 
 			ui.Box(c).Grow(1)
@@ -166,7 +164,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 
 	// 续帧：播放器停帧不会主动报错，只靠用户操作触发帧会漏掉故障。
 	// 节拍和播放页一致——等首帧时催得紧，出图之后降成健康检查。
-	if p := a.media.eng(); a.Playing && p != nil && p.Err() == nil {
+	if p := a.media.eng(); a.focusPlaying() && p != nil && p.Err() == nil {
 		if !a.media.firstFrame() {
 			c.After(firstFramePollInterval)
 		} else {

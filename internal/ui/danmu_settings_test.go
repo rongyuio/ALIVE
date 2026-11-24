@@ -14,7 +14,7 @@ import (
 // 被顶得偏出容器，颜色也填不满。
 func TestDanmuColorWellFillsCapsule(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuSettingsOpen = true
 	app.DanmuColor = ui.RGB(255, 0, 0)
@@ -53,7 +53,7 @@ func TestDanmuColorWellFillsCapsule(t *testing.T) {
 // 自己关掉——那会把取色器一起带走，等于点开就消失。
 func TestDanmuColorWellKeepsSettingsOpen(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuSettingsOpen = true
 	tt := ui.NewTester(app.Shell, 1440, 900)
@@ -96,7 +96,7 @@ func TestDanmuColorWellKeepsSettingsOpen(t *testing.T) {
 // 「有人又把它接回 hoverClose」这种回退。
 func TestDanmuSettingsOpensOnClickOnly(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 

@@ -282,6 +282,8 @@ func (a *App) selectFollowsSection(i int) {
 	}
 	a.navFlip(&a.followsSeq)
 	a.FollowsSection = i
+	// 正在飞的画面属于上一区的卡片，换区即作废。
+	a.surfaceFlight = nil
 	// 下次打开还停在这一区。只记身份，不记 tab 顺序。
 	a.markDirty()
 }
@@ -500,8 +502,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 	row.Background(row.AnimateColor("follows-row-bg-"+key, rowBg,
 		theme.EaseOut(followsDur2)))
 	if row.Clicked() {
-		a.Player = s
-		a.Router.Push(routePlayer)
+		a.openRoom(s)
 	}
 	// 右键菜单只在“全部关注”里提供取消关注：这里列出的都是已关注的主播，
 	// 菜单只做减法，不能反过来把记录加回去。

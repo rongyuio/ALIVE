@@ -20,10 +20,10 @@ func TestConfigRoundTrip(t *testing.T) {
 	src.WatchRooms = []Streamer{{Platform: "douyu", RoomID: "77", Name: "老李"}}
 	src.watch.init()
 	src.watch.volumes["douyu|77"] = 0.25
-	src.Player = Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"}
+	focusForTest(src, Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"})
 	src.setRoomQuality("bilibili|1001", "原画")
 	src.setRoomLine("douyu|77", "线路二", "line-2")
-	src.Volume = 0.42
+	src.setVolume(0.42)
 	src.ThemeMode = themeModeDark
 	src.DanmuFilters = []string{"加微信"}
 	src.FollowsSectionOrder = []string{sectionIDSubs, sectionIDStreamers}
@@ -44,7 +44,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	dst.WatchRooms = nil
 	dst.DanmuFilters = nil
 	dst.ThemeMode = themeModeSystem
-	dst.Player = Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"}
+	focusForTest(dst, Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"})
 	sum := dst.applyConfig(parsed)
 	if sum.Follows != 2 || sum.Subs != 1 || sum.Watch != 1 || sum.Filters != 1 {
 		t.Fatalf("导入 %+v，期望 2 位关注、1 个订阅、1 个观测盒、1 个屏蔽词", sum)
@@ -64,8 +64,8 @@ func TestConfigRoundTrip(t *testing.T) {
 	if v := dst.watchVolume("douyu|77"); v != 0.25 {
 		t.Errorf("观测盒音量 %v，期望 0.25", v)
 	}
-	if dst.Volume != 0.42 {
-		t.Errorf("全局音量 %v，期望 0.42", dst.Volume)
+	if dst.focusVolume() != 0.42 {
+		t.Errorf("全局音量 %v，期望 0.42", dst.focusVolume())
 	}
 	if dst.ThemeMode != themeModeDark {
 		t.Errorf("日夜模式 %q，期望 %q", dst.ThemeMode, themeModeDark)

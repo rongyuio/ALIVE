@@ -17,7 +17,7 @@ import (
 // 是轨道内的局部坐标。
 func TestDanmuSliderKeepsDraggingOutsideTrack(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuSettingsOpen = true
 	app.DanmuFont = 20
@@ -68,7 +68,9 @@ func TestDanmuSliderKeepsDraggingOutsideTrack(t *testing.T) {
 // 后长度恒定；差值永远是 0，于是既不把列表钉回底部，也不出现「N 条新弹幕」。
 func TestDanmuPanelCountsNewAfterLogFull(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	// 这一间必须已经出画：否则首帧会走取流，startStream(false) 会按
+	// 「换房间」清空弹幕历史，这条用例准备的那 300 条就没了。
+	focusWithPlayer(t, app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuPanelOn = true
 
@@ -116,7 +118,7 @@ func TestDanmuPanelCountsNewAfterLogFull(t *testing.T) {
 // 平台字段是外部输入，不合法时退回强调色，不能让一条 '#ZZZZZZ' 打崩进程。
 func TestSuperChatInvalidBackgroundFallsBack(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuPanelOn = true
 	app.DanmuLog = []danmuLine{{

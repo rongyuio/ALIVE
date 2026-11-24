@@ -43,9 +43,9 @@ func TestLoadRoomsCacheHitStillInvalidatesInflight(t *testing.T) {
 		t.Fatalf("两个分区的 feedKey 相同：%q", keyB)
 	}
 	a.feedCache[keyB] = feedEntry{
-		rooms: []Streamer{{Platform: "douyu", RoomID: "b", Name: "B 分区主播"}},
-		page:  1,
-		at:    time.Now(),
+		rooms:  []Streamer{{Platform: "douyu", RoomID: "b", Name: "B 分区主播"}},
+		cursor: listPageSize,
+		at:     time.Now(),
 	}
 
 	a.loadRooms()
@@ -127,22 +127,22 @@ func TestRetryReloadsCategoryTreeWhenMissing(t *testing.T) {
 // 的状态，多数时候是 false，闸门形同虚设：按住空格每秒翻几十次。
 func TestPlayerKeysIgnoreAutoRepeat(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
-	app.Playing = false
+	app.setFocusPlaying(false)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 
 	tt.KeyDown(ui.KeySpace)
-	if !app.Playing {
+	if !app.focusPlaying() {
 		t.Fatal("首次按下空格没有切换播放状态")
 	}
 	// 按住不放：系统发来的自动重复不该再切一次。
 	tt.KeyRepeat(0, ui.KeySpace)
-	if !app.Playing {
+	if !app.focusPlaying() {
 		t.Fatal("第一次自动重复又切换了播放状态")
 	}
 	tt.KeyRepeat(0, ui.KeySpace)
-	if !app.Playing {
+	if !app.focusPlaying() {
 		t.Fatal("第二次自动重复又切换了播放状态")
 	}
 	tt.KeyUp(ui.KeySpace)

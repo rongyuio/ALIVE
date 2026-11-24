@@ -88,12 +88,14 @@ ry 的判断在这件事上是对的：**Go 不好做的、或者有更成熟更
 - **软件渲染是单线程的，但 4K60 实测跑得满。** 1080p60 靠 bilinear + sws-fast 才跑到
   59.3fps；4K60 实测 59.9fps、1.61 核（2026-11-16，见
   [measurements](../reference/measurements.md)）。真正的成本是每帧约 27ms 的 CPU 时间——
-  解码、YUV→RGB、上传全压在 CPU 上。要拿掉只能走 GPU 互操作（OpenGL/D3D11 render API），
-  那需要拿到 MyGo 的渲染上下文，现在没有。
+  解码、YUV→RGB、上传全压在 CPU 上。2026-11-23 起观测墙改走 D3D11 render API 零拷贝
+  （12 路 8.7 核 → 0.4 核，见 measurements「视频零拷贝」）：mpv 直接渲进共享纹理，
+  播放页仍用软件渲染。零拷贝帧的 CPU 消费者（截图、CPU 光栅器）按需回读。
 - **`bgr0` 的第四个字节是不确定值**（文档原话「contains uninitialized garbage」，实测 0）。
   真实窗口走 GPU 采样不看 alpha，所以画面正常；而 CPU 光栅化（截图验收、无 GPU 时的
   渲染器）按预乘 alpha 混合，alpha=0 等于整块透明 → 播放区纯黑。所以在 CPU 路径自己
-  转一遍，alpha 一律 255。这个坑花了很久才定位：同一份帧，GPU 正常、截图全黑。
+  转一遍，alpha 一律 255；零拷贝帧的回读也一样。这个坑花了很久才定位：同一份帧，
+  GPU 正常、截图全黑。
 - **我们 fork 了 mygo 的一处核心代码**：`internal/raster/sampleOp` 在采样前先
   `Image.Pixels()`。GPU 上传后 `ReleasePixels` 会把 CPU 像素丢掉、只留一个 `Restore`，
   而采样路径直接读 `Pix`，读到空切片就画成透明。NV12 有专门分支不受影响，其它格式

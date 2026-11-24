@@ -49,12 +49,22 @@ func newWatchMock(t *testing.T, rooms []Streamer) (*App, *ui.Tester) {
 	return app, openWatchWall(t, app)
 }
 
-// openTile 点一格：在墙上点任何一间 = 进去看这一间，和首页卡片同一个语义。
-func openTile(t *testing.T, tt *ui.Tester, room Streamer) {
+// doubleClick 双击一个元素：两次 Click 之间不 Frame，才落到同一帧的
+// Clicks=2。中间插一帧就只是两次单击——墙上前者是打开播放页，后者是激活。
+func doubleClick(t *testing.T, tt *ui.Tester, label string) {
 	t.Helper()
-	if err := tt.Click(watchTileLabel(room)); err != nil {
+	if err := tt.Click(label); err != nil {
 		t.Fatal(err)
 	}
+	if err := tt.Click(label); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// openTile 双击一格进播放页。
+func openTile(t *testing.T, tt *ui.Tester, room Streamer) {
+	t.Helper()
+	doubleClick(t, tt, watchTileLabel(room))
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
@@ -149,12 +159,12 @@ func TestWatchClickOpensPlayer(t *testing.T) {
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("单击没有进播放页，route=%q", app.Router.Path())
 	}
-	if got := watchKey(app.Player); got != watchKey(rooms[0]) {
+	if got := app.focusKey(); got != watchKey(rooms[0]) {
 		t.Fatalf("打开的是 %q，期望 %q", got, watchKey(rooms[0]))
 	}
 	// 进去就是这一间在出声。
-	if app.WatchActive != watchKey(rooms[0]) || !app.Playing {
-		t.Fatalf("active=%q playing=%v", app.WatchActive, app.Playing)
+	if app.wallActiveKey() != watchKey(rooms[0]) || !app.focusPlaying() {
+		t.Fatalf("active=%q playing=%v", app.wallActiveKey(), app.focusPlaying())
 	}
 }
 
@@ -167,11 +177,11 @@ func TestWatchListenKeySwitchesSoundOnWall(t *testing.T) {
 	if app.Router.Path() != routeFollows {
 		t.Fatalf("在墙上听不该离开观测盒，route=%q", app.Router.Path())
 	}
-	if app.WatchActive != watchKey(rooms[0]) {
-		t.Fatalf("active=%q，期望 %q", app.WatchActive, watchKey(rooms[0]))
+	if app.wallActiveKey() != watchKey(rooms[0]) {
+		t.Fatalf("active=%q，期望 %q", app.wallActiveKey(), watchKey(rooms[0]))
 	}
-	if app.Player.Name != rooms[0].Name || !app.Playing {
-		t.Fatalf("播放项 %+v playing=%v", app.Player, app.Playing)
+	if app.current().Name != rooms[0].Name || !app.focusPlaying() {
+		t.Fatalf("播放项 %+v playing=%v", app.current(), app.focusPlaying())
 	}
 	// 激活格的音量必须是真实音量，而不是非 active 格记住的 0%。
 	if !tt.HasText("60%") {
@@ -184,8 +194,8 @@ func TestWatchListenKeySwitchesSoundOnWall(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.Volume != 0 {
-		t.Fatalf("点了静音，volume=%v", app.Volume)
+	if app.focusVolume() != 0 {
+		t.Fatalf("点了静音，volume=%v", app.focusVolume())
 	}
 	if _, ok := tt.Find("取消静音 " + rooms[0].Name); !ok {
 		t.Fatal("静音后控件没有变成取消静音")
@@ -206,13 +216,13 @@ func TestWatchListenKeySwitchesSoundOnWall(t *testing.T) {
 		}
 	}
 	// 播放/暂停 = 切 active 这一路的播放态，不换台。
-	active := app.WatchActive
+	active := app.wallActiveKey()
 	if err := tt.Click("暂停"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.Playing || app.WatchActive != active {
-		t.Fatalf("暂停后 playing=%v active %q -> %q", app.Playing, active, app.WatchActive)
+	if app.focusPlaying() || app.wallActiveKey() != active {
+		t.Fatalf("暂停后 playing=%v active %q -> %q", app.focusPlaying(), active, app.wallActiveKey())
 	}
 	if _, ok := tt.Find("播放"); !ok {
 		t.Fatal("暂停后按钮没有变回播放")
@@ -227,8 +237,8 @@ func TestWatchTileVolumeDoesNotStealFocus(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
 	listenOnWall(t, tt, rooms[0])
-	if app.WatchActive != watchKey(rooms[0]) {
-		t.Fatalf("前置：active=%q", app.WatchActive)
+	if app.wallActiveKey() != watchKey(rooms[0]) {
+		t.Fatalf("前置：active=%q", app.wallActiveKey())
 	}
 	app.setVolume(0.6)
 
@@ -246,14 +256,14 @@ func TestWatchTileVolumeDoesNotStealFocus(t *testing.T) {
 	tt.ClickAt(vol.X+vol.W*0.2, vol.Y+vol.H/2)
 	tt.Frame()
 
-	if app.WatchActive != watchKey(rooms[0]) {
-		t.Fatalf("调预览格音量把焦点切走了：active=%q", app.WatchActive)
+	if app.wallActiveKey() != watchKey(rooms[0]) {
+		t.Fatalf("调预览格音量把焦点切走了：active=%q", app.wallActiveKey())
 	}
 	if got := app.watchVolume(watchKey(rooms[1])); got < 0.15 || got > 0.25 {
 		t.Fatalf("这一格记住的音量没有变：%v", got)
 	}
-	if app.Volume != 0.6 {
-		t.Fatalf("出声那一路的音量被改了：%v", app.Volume)
+	if app.focusVolume() != 0.6 {
+		t.Fatalf("出声那一路的音量被改了：%v", app.focusVolume())
 	}
 }
 
@@ -279,17 +289,17 @@ func TestWatchHoverInactiveShowsControls(t *testing.T) {
 	if !slices.Contains(tt.Texts(), "60%") {
 		t.Fatalf("非 active 格没有显示自己记住的音量：texts=%q", tt.Texts())
 	}
-	if app.WatchActive != "" {
-		t.Fatalf("hover 不该激活，active=%q", app.WatchActive)
+	if app.wallActiveKey() != "" {
+		t.Fatalf("hover 不该激活，active=%q", app.wallActiveKey())
 	}
 	// 播放/暂停只切这一格自己的播放状态，不负责激活/换台。
-	before := app.WatchActive
+	before := app.wallActiveKey()
 	if err := tt.Click("播放"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.WatchActive != before {
-		t.Fatalf("点播放改了 active：%q -> %q", before, app.WatchActive)
+	if app.wallActiveKey() != before {
+		t.Fatalf("点播放改了 active：%q -> %q", before, app.wallActiveKey())
 	}
 }
 
@@ -312,8 +322,7 @@ func TestWatchOpenDeadTileTargetsThatRoom(t *testing.T) {
 
 	t.Run("wall has another active room", func(t *testing.T) {
 		app, tt, dead, key := setup(t)
-		app.WatchActive = watchKey(app.WatchRooms[0])
-		app.Player = app.WatchRooms[0]
+		focusForTest(app, app.WatchRooms[0])
 		tt.Frame()
 
 		openTile(t, tt, dead)
@@ -321,14 +330,14 @@ func TestWatchOpenDeadTileTargetsThatRoom(t *testing.T) {
 		if app.Router.Path() != routePlayer {
 			t.Fatalf("点死格没进播放页，route=%q", app.Router.Path())
 		}
-		if got := watchKey(app.Player); got != key {
+		if got := app.focusKey(); got != key {
 			t.Fatalf("播放页打开的是 %q，期望点的那一间 %q", got, key)
 		}
 	})
 
 	t.Run("nothing played before", func(t *testing.T) {
 		app, tt, dead, key := setup(t)
-		app.WatchActive, app.Player = "", Streamer{}
+		app.setFocus(nil)
 		tt.Frame()
 
 		openTile(t, tt, dead)
@@ -336,13 +345,13 @@ func TestWatchOpenDeadTileTargetsThatRoom(t *testing.T) {
 		if app.Router.Path() != routePlayer {
 			t.Fatalf("点死格没进播放页，route=%q", app.Router.Path())
 		}
-		if got := watchKey(app.Player); got != key {
-			t.Fatalf("播放页没有目标房间：app.Player=%+v", app.Player)
+		if got := app.focusKey(); got != key {
+			t.Fatalf("播放页没有目标房间：focus=%+v", app.current())
 		}
 
 		// 取流结果回来确认未开播：画面上要有提示和刷新入口，不是一片黑。
 		app.media.setLoading(false)
-		app.media.session.stream = live.Stream{
+		app.media.session().stream = live.Stream{
 			Platform: live.Platform(dead.Platform), RoomID: dead.RoomID, Live: false,
 		}
 		tt.Frame()
@@ -482,8 +491,7 @@ func TestIslandIdleOnWatchWallKeepsClock(t *testing.T) {
 func TestIslandShowsActiveRoomOnWatchWall(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(2))
 	room := app.WatchRooms[1]
-	app.WatchActive = watchKey(room)
-	app.Player = room
+	focusWithPlayer(t, app, room)
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
@@ -541,8 +549,8 @@ func TestWatchDragSwapsTiles(t *testing.T) {
 				app.WatchRooms[0].RoomID, app.WatchRooms[1].RoomID, app.WatchRooms[2].RoomID, want)
 		}
 	}
-	if app.WatchActive != "" {
-		t.Fatalf("拖动不该激活格子，active=%q", app.WatchActive)
+	if app.wallActiveKey() != "" {
+		t.Fatalf("拖动不该激活格子，active=%q", app.wallActiveKey())
 	}
 }
 
@@ -578,8 +586,8 @@ func TestWatchVolumeIsPerTile(t *testing.T) {
 	}
 
 	activate(0)
-	if !almostEqual(float64(app.Volume), 0.6) {
-		t.Fatalf("初始音量 %v", app.Volume)
+	if !almostEqual(float64(app.focusVolume()), 0.6) {
+		t.Fatalf("初始音量 %v", app.focusVolume())
 	}
 	r, ok := tt.Find("音量 " + rooms[0].Name)
 	if !ok {
@@ -587,14 +595,14 @@ func TestWatchVolumeIsPerTile(t *testing.T) {
 	}
 	tt.ClickAt(r.X+r.W*0.3, r.Y+r.H/2)
 	tt.Frame()
-	if !almostEqual(float64(app.Volume), 0.3) {
-		t.Fatalf("A 调到 30%% 后 volume=%v", app.Volume)
+	if !almostEqual(float64(app.focusVolume()), 0.3) {
+		t.Fatalf("A 调到 30%% 后 volume=%v", app.focusVolume())
 	}
 
 	// 切到 B：B 用自己记住的音量，不该继承 A 刚调的 30%。
 	activate(1)
-	if !almostEqual(float64(app.Volume), 0.6) || !slices.Contains(tt.Texts(), "60%") {
-		t.Fatalf("切到 B 后 volume=%v texts=%q，期望 B 自己的 60%%", app.Volume, tt.Texts())
+	if !almostEqual(float64(app.focusVolume()), 0.6) || !slices.Contains(tt.Texts(), "60%") {
+		t.Fatalf("切到 B 后 volume=%v texts=%q，期望 B 自己的 60%%", app.focusVolume(), tt.Texts())
 	}
 	r, ok = tt.Find("音量 " + rooms[1].Name)
 	if !ok {
@@ -602,14 +610,14 @@ func TestWatchVolumeIsPerTile(t *testing.T) {
 	}
 	tt.ClickAt(r.X+r.W*0.2, r.Y+r.H/2)
 	tt.Frame()
-	if !almostEqual(float64(app.Volume), 0.2) {
-		t.Fatalf("B 调到 20%% 后 volume=%v", app.Volume)
+	if !almostEqual(float64(app.focusVolume()), 0.2) {
+		t.Fatalf("B 调到 20%% 后 volume=%v", app.focusVolume())
 	}
 
 	// 切回 A：A 仍是自己调过的 30%，没被 B 的 20% 覆盖。
 	activate(0)
-	if !almostEqual(float64(app.Volume), 0.3) || !slices.Contains(tt.Texts(), "30%") {
-		t.Fatalf("切回 A 后 volume=%v texts=%q，期望 A 自己的 30%%", app.Volume, tt.Texts())
+	if !almostEqual(float64(app.focusVolume()), 0.3) || !slices.Contains(tt.Texts(), "30%") {
+		t.Fatalf("切回 A 后 volume=%v texts=%q，期望 A 自己的 30%%", app.focusVolume(), tt.Texts())
 	}
 }
 
@@ -663,7 +671,7 @@ func TestWatchVolumesPersist(t *testing.T) {
 func TestWatchActiveTileShowsGreenDot(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
-	app.WatchActive = watchKey(rooms[0])
+	focusWithPlayer(t, app, rooms[0])
 	tt.Frame()
 
 	want := theme.StatusOnline
@@ -909,22 +917,18 @@ func TestWallKeepsTheRoomCollapsedIntoTheIsland(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(1))
 	room := Streamer{Platform: "bilibili", RoomID: "9999", Name: "盒外的主播"}
 	key := watchKey(room)
-	app.media.roomKey = key
 	p := gifPlayer(t)
-	app.media.session = &roomSession{key: key, room: room, player: p}
-	app.watch.sessions[key] = app.media.session
-	app.media.background = true
-	app.Player = room
-	app.Playing = true
-	app.Volume = 0.6
+	s := focusSessionForTest(app, &roomSession{key: key, room: room, player: p})
+	app.setFocusPlaying(true)
+	app.setVolume(0.6)
 
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
 
-	if app.media.session == nil || app.media.roomKey != key {
-		t.Fatalf("进观测墙之后收在岛里的那一间被关了：roomKey=%q session=%v",
-			app.media.roomKey, app.media.session != nil)
+	if app.focusKey() != key || app.watch.sessions[key] != s {
+		t.Fatalf("进观测墙之后收在岛里的那一间被关了：focus=%q session=%v",
+			app.focusKey(), app.watch.sessions[key] != nil)
 	}
 	if got := app.focusKey(); got != key {
 		t.Fatalf("焦点变成了 %q，期望还是后台那一间 %q", got, key)

@@ -11,6 +11,8 @@
 //
 //	ALIVE_MOCK=danmu    在播、有弹幕（画面停在封面上，不起 ffmpeg）
 //	ALIVE_MOCK=offline  未开播（测空态覆盖层）
+//	ALIVE_MOCK_FEED=partial  列表共 400 条、每段 40 条，cursor=40 那一段只回
+//	                         20 条并标 Partial（测续取与退避）
 package live
 
 import (
@@ -85,11 +87,17 @@ func (m *mockProvider) Rooms(_ context.Context, _ string, page, size int) (Page,
 	if page > 1 || m.mode == MockOffline {
 		return Page{}, nil
 	}
+	_ = size
+	return Page{Rooms: mockRooms(m.platform)}, nil
+}
+
+// mockRooms 是默认模式的 8 条房间：首页第一屏。
+func mockRooms(platform Platform) []Room {
 	total := 8
 	rooms := make([]Room, 0, total)
 	for i := 1; i <= total; i++ {
 		rooms = append(rooms, Room{
-			Platform: m.platform,
+			Platform: platform,
 			RoomID:   fmt.Sprintf("mock-%d", i),
 			Title:    fmt.Sprintf("Mock 直播间 %d —— 用来验界面，不连真实接口", i),
 			Nickname: mockNicks[(i-1)%len(mockNicks)],
@@ -98,8 +106,74 @@ func (m *mockProvider) Rooms(_ context.Context, _ string, page, size int) (Page,
 			Live:     true,
 		})
 	}
+	return rooms
+}
+
+// ALIVE_MOCK_FEED=partial 的列表规模：共 400 条，每段 40 条。
+const (
+	mockFeedTotal     = 400
+	mockFeedChunkSize = 40
+)
+
+// RoomsFrom 是 mock 的续取入口，让界面走和真实平台同一条无限流路径。
+//
+// 默认只有一段 8 条，取完 HasMore=false；ALIVE_MOCK_FEED=partial 时共
+// 400 条、每段 40 条，并在 cursor=40 处故意只回 20 条、标 Partial，用来
+// 验证「半段先交出去、下一次从 Cursor 续、按 Partial 退避」那条路径。
+func (m *mockProvider) RoomsFrom(_ context.Context, _ string, cursor, size int) (Chunk, error) {
+	if m.mode == MockOffline {
+		return Chunk{Cursor: cursor}, nil
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	// 段大小固定：partial 模式的分支要可复现，不能随调用方的 size 变。
 	_ = size
-	return Page{Rooms: rooms}, nil
+
+	if os.Getenv("ALIVE_MOCK_FEED") != "partial" {
+		if cursor > 0 {
+			return Chunk{Cursor: cursor}, nil
+		}
+		rooms := mockRooms(m.platform)
+		return Chunk{Rooms: rooms, Cursor: len(rooms)}, nil
+	}
+
+	if cursor >= mockFeedTotal {
+		return Chunk{Cursor: cursor}, nil
+	}
+	n := mockFeedChunkSize
+	if cursor == mockFeedChunkSize {
+		// 故意少给一半：界面要先渲染这 20 条，再从这个 Cursor 续。
+		n = mockFeedChunkSize / 2
+	}
+	if cursor+n > mockFeedTotal {
+		n = mockFeedTotal - cursor
+	}
+	rooms := make([]Room, 0, n)
+	for i := cursor + 1; i <= cursor+n; i++ {
+		rooms = append(rooms, mockFeedRoom(m.platform, i))
+	}
+	next := cursor + len(rooms)
+	return Chunk{
+		Rooms:   rooms,
+		Cursor:  next,
+		HasMore: next < mockFeedTotal,
+		Partial: cursor == mockFeedChunkSize,
+	}, nil
+}
+
+// mockFeedRoom 是 partial 模式的第 n 条房间（n 从 1 起）：RoomID 可预测，
+// 测试能据此断言不重复、不跳号。
+func mockFeedRoom(platform Platform, n int) Room {
+	return Room{
+		Platform: platform,
+		RoomID:   fmt.Sprintf("mock-feed-%d", n),
+		Title:    fmt.Sprintf("Mock 续取直播间 #%d —— 用来看瀑布流加载，不连真实接口", n),
+		Nickname: mockNicks[(n-1)%len(mockNicks)],
+		Viewers:  int64(1200 * n),
+		Area:     "全部",
+		Live:     true,
+	}
 }
 
 func (m *mockProvider) Search(context.Context, string) ([]Room, error) {
@@ -310,8 +384,9 @@ func mockScript() []Danmu {
 
 // 编译期确认 mock 覆盖了 UI 用到的全部接口。
 var (
-	_ Provider   = (*mockProvider)(nil)
-	_ RoomInfoer = (*mockProvider)(nil)
-	_ Streamer   = (*mockProvider)(nil)
-	_ Danmakuer  = (*mockProvider)(nil)
+	_ Provider       = (*mockProvider)(nil)
+	_ CursorProvider = (*mockProvider)(nil)
+	_ RoomInfoer     = (*mockProvider)(nil)
+	_ Streamer       = (*mockProvider)(nil)
+	_ Danmakuer      = (*mockProvider)(nil)
 )

@@ -24,11 +24,10 @@ func TestDetachWhileBackgroundRecomputesPresent(t *testing.T) {
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
 
-	a.media.background = true
-	a.media.session.present = presentSize{W: 1280, H: 720}
+	a.focus.present = presentSize{W: 1280, H: 720}
 	a.Router = ui.NewRouter(routeHome)
 
-	a.detachMedia()
+	a.backgroundEnter()
 
 	if got, ok := spy.last(); !ok || got != (presentSize{W: 160, H: 90}) {
 		t.Fatalf("后台收听离开页面后呈现尺寸是 %+v（推过 %v），期望 160×90", got, ok)
@@ -76,29 +75,29 @@ func TestStaleHotSwapFailureDoesNotPolluteSession(t *testing.T) {
 
 // 从列表点开另一间房就是真正换台：播放意图必须回到「在播」。
 //
-// a.Playing 是焦点会话的视图状态：上一个房间暂停过（或点了「取消观测发声」）
+// a.focusPlaying() 是焦点会话的视图状态：上一个房间暂停过（或点了「取消观测发声」）
 // 之后它一直是 false，ensureMedia 换台时若不重置，adoptPlayback 会照着它
 // Pause()，新房间以暂停态起播——没画面、没声音、控制条显示「播放」。
 func TestEnterNewRoomResetsPlayIntent(t *testing.T) {
 	a := seededApp(t)
 	// 不支持取流的平台：startStream 同步落错误，不派后台 goroutine。
 	useProvider(t, plainProvider{})
-	a.Playing = false
-	a.Player = Streamer{Platform: "douyu", RoomID: "456", Name: "新房间"}
+	a.setFocusPlaying(false)
+	focusForTest(a, Streamer{Platform: "douyu", RoomID: "456", Name: "新房间"})
 
-	a.ensureMedia(nil)
+	a.ensureFocusMedia()
 
-	if !a.Playing {
-		t.Fatal("进入新直播间后 a.Playing 仍是 false：新房间会以暂停态起播")
+	if !a.focusPlaying() {
+		t.Fatal("进入新直播间后 a.focusPlaying() 仍是 false：新房间会以暂停态起播")
 	}
-	if got := a.media.roomKey; got != "douyu|456" {
+	if got := a.media.roomKey(); got != "douyu|456" {
 		t.Fatalf("换台后媒体房间是 %q，期望 douyu|456", got)
 	}
 
 	// 同一间房的重新起播（热切换、断流重连）不走换台分支，暂停态要保住。
-	a.Playing = false
-	a.ensureMedia(nil)
-	if a.Playing {
+	a.setFocusPlaying(false)
+	a.ensureFocusMedia()
+	if a.focusPlaying() {
 		t.Fatal("同一间房重进时把用户的暂停态重置了")
 	}
 }
@@ -116,9 +115,7 @@ func TestCloseMediaRestoresTilePresentSize(t *testing.T) {
 	tt.Frame()
 
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
+	doubleClick(t, tt, label)
 	tt.Frame()
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("双击格子没有进播放页，route=%q", app.Router.Path())

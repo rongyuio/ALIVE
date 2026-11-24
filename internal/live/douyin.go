@@ -26,12 +26,19 @@ import (
 // 搜索没有可选用的关键词接口（匿名一律 2483「请先登录」），语义改成
 // 「按房间号查房间」，见 Search 与 douyin_room.go。
 const (
-	douyinPageSize      = 15
-	douyinTokenLen      = 107
-	douyinBrowserVer    = "140.0.0.0"
-	douyinAreaTTL       = 30 * time.Minute
-	douyinListTTL       = 15 * time.Second
-	douyinBlockCooldown = 3 * time.Minute
+	// 上游列表接口单次最多回 20 条：count 给 30/40/100 都只回 20（2026-11-24 实测）。
+	// 首页按 listPageSize=40 的契约取一段，这里拆成两次上游请求拼满。
+	//
+	// 曾经这里写死 15 当段大小，于是抖音每个分区的首屏永远只有 15 张卡：
+	// 15 张在常见窗口里填不满一屏，列表没有可滚动范围，而「加载更多」只在
+	// 用户滚动到末尾附近时触发（ui.List 的 EndReached），结果下一段永远取不到。
+	douyinUpstreamPageSize = 20
+	douyinMaxChunkSize     = 40
+	douyinTokenLen         = 107
+	douyinBrowserVer       = "140.0.0.0"
+	douyinAreaTTL          = 30 * time.Minute
+	douyinListTTL          = 15 * time.Second
+	douyinBlockCooldown    = 3 * time.Minute
 
 	douyinURLPartition = "https://live.douyin.com/webcast/web/partition/detail/room/v2/"
 	douyinReferer      = "https://live.douyin.com/"
@@ -44,7 +51,8 @@ var douyinCategoriesJSON []byte
 type douyinProvider struct {
 	api   *apiClient
 	areas *cache[[]CategoryGroup]
-	rooms *cache[Page]
+	// rooms 缓存的是按 cursor 取到的一段（Chunk），不是「页」。
+	rooms *cache[Chunk]
 	// ids 缓存「web_rid → 内部 roomId + 分区名」，见 douyin_room.go。
 	ids *cache[douyinRoomRef]
 	lim *limiter
@@ -68,7 +76,7 @@ func newDouyin() *douyinProvider {
 	p := &douyinProvider{
 		api:   newAPIClient(Douyin, douyinReferer),
 		areas: newCache[[]CategoryGroup](),
-		rooms: newCache[Page](),
+		rooms: newCache[Chunk](),
 		ids:   newCache[douyinRoomRef](),
 		// 关注刷新并发：前台 6，后端不限流。
 		// 抖音的单房间是两次请求（房间页 + reflow），6 并发是最激进的；
@@ -116,62 +124,137 @@ func (p *douyinProvider) loadCategories() ([]CategoryGroup, map[string]string, e
 
 /* ---------------------------------------------------------------- 列表 */
 
+// Rooms 是按页取数的兼容入口。界面走 RoomsFrom（无限流按 cursor 续取）；
+// 这里把 page 换算成 upstream offset，给只认页的调用方和测试用。
+//
+// Page 表达不了「部分结果」：中途某一块失败时 RoomsFrom 会把 Cursor 停在
+// 真实消费位置，这里只能把已经取到的房间当成这一页交出去，下一页的 offset
+// 仍按 page*size 算，中间那段不会补。界面不走这条路径，别拿它当无限流用。
 func (p *douyinProvider) Rooms(ctx context.Context, areaID string, page, size int) (Page, error) {
 	if page < 1 {
 		page = 1
 	}
-	if size <= 0 || size > douyinPageSize {
-		size = douyinPageSize
+	if size <= 0 || size > douyinMaxChunkSize {
+		size = douyinMaxChunkSize
 	}
-	partitionType, partition, err := douyinSplitAreaID(areaID)
+	chunk, err := p.RoomsFrom(ctx, areaID, (page-1)*size, size)
 	if err != nil {
 		return Page{}, err
 	}
+	return Page{Rooms: chunk.Rooms, HasMore: chunk.HasMore}, nil
+}
 
-	key := fmt.Sprintf("%s|%s|%d|%d", partitionType, partition, page, size)
-	return p.rooms.load(key, douyinListTTL, func() (Page, error) {
-		release, err := p.lim.acquire(ctx)
-		if err != nil {
-			return Page{}, err
-		}
-		defer release()
+// RoomsFrom 从 cursor 这个 upstream offset 往后取一段。
+//
+// 用户看到的是无限瀑布流；一段没取满（中途某一块失败）不是「半页」，
+// 而是这一段的 Cursor 停在实际消费到的位置。上层把 Rooms append 上去，
+// 下一次从 Cursor 续，既不跳也不丢。
+func (p *douyinProvider) RoomsFrom(ctx context.Context, areaID string, cursor, size int) (Chunk, error) {
+	if cursor < 0 {
+		cursor = 0
+	}
+	if size <= 0 || size > douyinMaxChunkSize {
+		size = douyinMaxChunkSize
+	}
+	partitionType, partition, err := douyinSplitAreaID(areaID)
+	if err != nil {
+		return Chunk{}, err
+	}
 
-		params := douyinLiveParams()
-		params = append(params,
-			[2]string{"count", strconv.Itoa(size)},
-			[2]string{"offset", strconv.Itoa((page - 1) * size)},
-			[2]string{"partition", partition},
-			[2]string{"partition_type", partitionType},
-			[2]string{"req_from", "2"},
-			[2]string{"msToken", douyinMsToken()},
-		)
-
-		var resp douyinPartitionResponse
-		target := douyinSignedURL(douyinURLPartition, params, p.api.ua)
-		if err := p.api.getJSON(ctx, "直播列表", target, &resp, nil); err != nil {
-			return Page{}, p.wrap("直播列表", err)
-		}
-		if resp.StatusCode != 0 {
-			return Page{}, p.wrap("直播列表", fmt.Errorf("status_code=%d %s", resp.StatusCode, resp.StatusMsg))
-		}
-
-		var wrapper douyinPartitionData
-		if err := json.Unmarshal(resp.Data, &wrapper); err != nil {
-			return Page{}, p.wrap("直播列表解析", err)
-		}
-
+	key := fmt.Sprintf("%s|%s|%d|%d", partitionType, partition, cursor, size)
+	chunk, err := p.rooms.load(key, douyinListTTL, func() (Chunk, error) {
 		_, names, _ := p.loadCategories()
 		area := names[partitionType+"_"+partition]
-		rooms := make([]Room, 0, len(wrapper.Data))
-		for _, entry := range wrapper.Data {
-			if room, ok := douyinMapEntry(entry, area); ok {
+
+		// 上游一次最多 20 条，按调用方要的 size 拼满：40 就是两次请求。
+		// offset 是「跳过多少条」，按这一段要覆盖的区间推进；即使中途
+		// 上游顺序变了、有重复被剔掉，Cursor 也停在真实消费位置。
+		end := cursor + size
+		rooms := make([]Room, 0, size)
+		seen := make(map[string]bool, size)
+		offset := cursor
+		hasMore := false
+		partial := false
+		for offset < end {
+			want := min(douyinUpstreamPageSize, end-offset)
+			entries, upstreamMore, err := p.partitionChunk(ctx, partitionType, partition, offset, want)
+			if err != nil && offset > cursor {
+				// 第二块起失败：这一段本来会整个丢，前面已经拿到的房间也
+				// 白取。再试一次这一块，避免一次抖动把整段判死。
+				entries, upstreamMore, err = p.partitionChunk(ctx, partitionType, partition, offset, want)
+			}
+			if err != nil {
+				if offset == cursor {
+					return Chunk{}, err
+				}
+				// 已经取到一部分：交出去，Cursor 停在 offset，下一次从这里续。
+				partial = true
+				hasMore = true
+				break
+			}
+			for _, entry := range entries {
+				room, ok := douyinMapEntry(entry, area)
+				if !ok || seen[room.RoomID] {
+					continue
+				}
+				seen[room.RoomID] = true
 				rooms = append(rooms, room)
 			}
+			offset += len(entries)
+			// 上游的 has_more 恒为 false（实测），不能拿它当判据；
+			// 「这一块取满了」才说明后面可能还有。
+			hasMore = upstreamMore || len(entries) >= want
+			if len(entries) < want {
+				// 上游说还有、这一块却没取满：不能直接判死（列表会提前
+				// 停），也不能让下一次从 cursor+size 起跳（这一块没覆盖到
+				// 的区间会永远拿不到）。继续从 offset+len(entries) 取；
+				// 零进度才停——那种情况再取也是原地打转。
+				if !upstreamMore || len(entries) == 0 {
+					break
+				}
+			}
 		}
-		// 上游不给总页数；has_more 缺失时用「本页是否满页」兜底。
-		hasMore := bool(wrapper.HasMore) || len(wrapper.Data) >= size
-		return Page{Rooms: rooms, HasMore: hasMore}, nil
+		return Chunk{Rooms: rooms, Cursor: offset, HasMore: hasMore, Partial: partial}, nil
 	})
+	if err == nil && chunk.Partial {
+		// 部分结果不进缓存：下一次同一个 cursor 要真的重试没取到的区间。
+		p.rooms.drop(key)
+	}
+	return chunk, err
+}
+
+// partitionChunk 取一页上游列表，count 不超过上游上限。
+func (p *douyinProvider) partitionChunk(ctx context.Context, partitionType, partition string, offset, count int) ([]douyinRoomEntry, bool, error) {
+	release, err := p.lim.acquire(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
+
+	params := douyinLiveParams()
+	params = append(params,
+		[2]string{"count", strconv.Itoa(count)},
+		[2]string{"offset", strconv.Itoa(offset)},
+		[2]string{"partition", partition},
+		[2]string{"partition_type", partitionType},
+		[2]string{"req_from", "2"},
+		[2]string{"msToken", douyinMsToken()},
+	)
+
+	var resp douyinPartitionResponse
+	target := douyinSignedURL(douyinURLPartition, params, p.api.ua)
+	if err := p.api.getJSON(ctx, "直播列表", target, &resp, nil); err != nil {
+		return nil, false, p.wrap("直播列表", err)
+	}
+	if resp.StatusCode != 0 {
+		return nil, false, p.wrap("直播列表", fmt.Errorf("status_code=%d %s", resp.StatusCode, resp.StatusMsg))
+	}
+
+	var wrapper douyinPartitionData
+	if err := json.Unmarshal(resp.Data, &wrapper); err != nil {
+		return nil, false, p.wrap("直播列表解析", err)
+	}
+	return wrapper.Data, bool(wrapper.HasMore), nil
 }
 
 /* ---------------------------------------------------------------- 搜索 */
@@ -454,3 +537,7 @@ func (p *douyinProvider) wrap(op string, err error) error {
 }
 
 var _ Provider = (*douyinProvider)(nil)
+
+// 界面靠这个接口走无限流；方法名或签名一改，没有这条断言就会静默回落到
+// Rooms 的按页路径，续取跳段也没人发现。
+var _ CursorProvider = (*douyinProvider)(nil)

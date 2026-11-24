@@ -172,12 +172,12 @@ func TestContentLayerStableAcrossSwitches(t *testing.T) {
 	a := stillApp()
 	a.Platform = "bilibili"
 	a.GroupsByPlatform["douyu"] = a.Groups
-	a.feedCache["douyu|86|-1"] = feedEntry{rooms: stillRooms(24), page: 1, at: time.Now()}
+	a.feedCache["douyu|86|-1"] = feedEntry{rooms: stillRooms(24), cursor: listPageSize, at: time.Now()}
 	second := stillRooms(24)
 	for i := range second {
 		second[i].Name = fmt.Sprintf("二区%02d", i)
 	}
-	a.feedCache["douyu|87|-1"] = feedEntry{rooms: second, page: 1, at: time.Now()}
+	a.feedCache["douyu|87|-1"] = feedEntry{rooms: second, cursor: listPageSize, at: time.Now()}
 
 	tt := ui.NewTester(a.Shell, 1391, 845)
 	tt.Frame()

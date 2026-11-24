@@ -4,6 +4,7 @@ package live
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -212,5 +213,141 @@ func TestMockStreamSkipsPlayback(t *testing.T) {
 	}
 	if s.Live {
 		t.Error("offline 模式应报告未开播")
+	}
+}
+
+// RoomsFrom 的默认模式必须和原来 Rooms 的行为一致：一段 8 条，取完就停。
+func TestMockRoomsFromDefault(t *testing.T) {
+	// 钉死成「未设置」：外面 shell 里恰好导出了 partial 时，这条测试不能跟着变。
+	t.Setenv("ALIVE_MOCK_FEED", "")
+	prov := newMockProvider(Douyu, MockDanmu)
+	ctx := context.Background()
+
+	chunk, err := prov.RoomsFrom(ctx, "1_1", 0, 40)
+	if err != nil {
+		t.Fatalf("RoomsFrom(0) 失败: %v", err)
+	}
+	if len(chunk.Rooms) != 8 {
+		t.Fatalf("RoomsFrom(0) 应返回 8 条，得到 %d 条", len(chunk.Rooms))
+	}
+	if chunk.Cursor != 8 {
+		t.Errorf("RoomsFrom(0) 的 Cursor 应为 8，得到 %d", chunk.Cursor)
+	}
+	if chunk.HasMore {
+		t.Error("8 条取完后 HasMore 应为 false")
+	}
+	if chunk.Partial {
+		t.Error("默认模式不该标 Partial")
+	}
+	for i, r := range chunk.Rooms {
+		want := fmt.Sprintf("mock-%d", i+1)
+		if r.RoomID != want {
+			t.Errorf("第 %d 条 RoomID 应为 %q，得到 %q", i+1, want, r.RoomID)
+		}
+		if r.Platform != Douyu || !r.Live {
+			t.Errorf("第 %d 条应为斗鱼在播房间，得到 platform=%s live=%v", i+1, r.Platform, r.Live)
+		}
+	}
+
+	next, err := prov.RoomsFrom(ctx, "1_1", 8, 40)
+	if err != nil {
+		t.Fatalf("RoomsFrom(8) 失败: %v", err)
+	}
+	if len(next.Rooms) != 0 {
+		t.Errorf("RoomsFrom(8) 应为空，得到 %d 条", len(next.Rooms))
+	}
+	if next.Cursor != 8 || next.HasMore {
+		t.Errorf("RoomsFrom(8) 应停在 Cursor=8、HasMore=false，得到 Cursor=%d HasMore=%v",
+			next.Cursor, next.HasMore)
+	}
+}
+
+// partial 模式：400 条、每段 40 条，cursor=40 那一段只回 20 条并标 Partial；
+// 按 Cursor 续到 400 条时 HasMore=false，全程 RoomID 不重复、不跳号。
+func TestMockRoomsFromPartial(t *testing.T) {
+	t.Setenv("ALIVE_MOCK_FEED", "partial")
+	prov := newMockProvider(Bilibili, MockDanmu)
+	ctx := context.Background()
+
+	first, err := prov.RoomsFrom(ctx, "1_1", 0, 40)
+	if err != nil {
+		t.Fatalf("RoomsFrom(0) 失败: %v", err)
+	}
+	if len(first.Rooms) != 40 {
+		t.Fatalf("RoomsFrom(0) 应返回 40 条，得到 %d 条", len(first.Rooms))
+	}
+	if first.Cursor != 40 || !first.HasMore || first.Partial {
+		t.Errorf("RoomsFrom(0) 应为 Cursor=40、HasMore=true、Partial=false，得到 Cursor=%d HasMore=%v Partial=%v",
+			first.Cursor, first.HasMore, first.Partial)
+	}
+
+	second, err := prov.RoomsFrom(ctx, "1_1", 40, 40)
+	if err != nil {
+		t.Fatalf("RoomsFrom(40) 失败: %v", err)
+	}
+	if len(second.Rooms) != 20 {
+		t.Fatalf("RoomsFrom(40) 应只回 20 条，得到 %d 条", len(second.Rooms))
+	}
+	if second.Cursor != 60 || !second.HasMore || !second.Partial {
+		t.Errorf("RoomsFrom(40) 应为 Cursor=60、HasMore=true、Partial=true，得到 Cursor=%d HasMore=%v Partial=%v",
+			second.Cursor, second.HasMore, second.Partial)
+	}
+
+	third, err := prov.RoomsFrom(ctx, "1_1", 60, 40)
+	if err != nil {
+		t.Fatalf("RoomsFrom(60) 失败: %v", err)
+	}
+	if len(third.Rooms) != 40 {
+		t.Fatalf("RoomsFrom(60) 应返回 40 条，得到 %d 条", len(third.Rooms))
+	}
+	if third.Cursor != 100 || !third.HasMore || third.Partial {
+		t.Errorf("RoomsFrom(60) 应为 Cursor=100、HasMore=true、Partial=false，得到 Cursor=%d HasMore=%v Partial=%v",
+			third.Cursor, third.HasMore, third.Partial)
+	}
+
+	seen := make(map[string]bool, mockFeedTotal)
+	cursor := 0
+	want := 1
+	for {
+		chunk, err := prov.RoomsFrom(ctx, "1_1", cursor, 40)
+		if err != nil {
+			t.Fatalf("cursor=%d 取数失败: %v", cursor, err)
+		}
+		for _, r := range chunk.Rooms {
+			id := fmt.Sprintf("mock-feed-%d", want)
+			if r.RoomID != id {
+				t.Fatalf("第 %d 条 RoomID 应为 %q，得到 %q（跳号或顺序错）", want, id, r.RoomID)
+			}
+			if seen[r.RoomID] {
+				t.Fatalf("RoomID %q 重复出现", r.RoomID)
+			}
+			seen[r.RoomID] = true
+			if r.Platform != Bilibili || !r.Live {
+				t.Fatalf("第 %d 条应为 B 站在播房间，得到 platform=%s live=%v", want, r.Platform, r.Live)
+			}
+			if !strings.Contains(r.Title, fmt.Sprintf("#%d", want)) {
+				t.Errorf("第 %d 条的 Title 里没有序号：%q", want, r.Title)
+			}
+			want++
+		}
+		if !chunk.HasMore {
+			if len(chunk.Rooms) == 0 {
+				t.Fatalf("cursor=%d 返回空段且 HasMore=false，没取满 %d 条", cursor, mockFeedTotal)
+			}
+			if chunk.Cursor != mockFeedTotal {
+				t.Errorf("末段的 Cursor 应为 %d，得到 %d", mockFeedTotal, chunk.Cursor)
+			}
+			break
+		}
+		if chunk.Cursor <= cursor {
+			t.Fatalf("HasMore=true 但 Cursor 没前进：%d -> %d", cursor, chunk.Cursor)
+		}
+		cursor = chunk.Cursor
+	}
+	if want-1 != mockFeedTotal {
+		t.Errorf("应取到 %d 条，实际 %d 条", mockFeedTotal, want-1)
+	}
+	if len(seen) != mockFeedTotal {
+		t.Errorf("应见到 %d 个不同 RoomID，实际 %d 个", mockFeedTotal, len(seen))
 	}
 }

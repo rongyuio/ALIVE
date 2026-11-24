@@ -13,22 +13,26 @@ func TestIslandSkipsOfflineActiveTile(t *testing.T) {
 	app.watch.init()
 	room := Streamer{Platform: "bilibili", RoomID: "9001", Name: "离线的主播"}
 	key := watchKey(room)
+	s := &roomSession{key: key, room: room, offline: true}
 	app.WatchRooms = []Streamer{room}
-	app.WatchActive = key
-	app.watch.sessions[key] = &roomSession{
-		key: key, room: room, offline: true,
-	}
+	app.watch.sessions[key] = s
 
+	// 已知没有声音的格子点一下只重试，不抢焦点。
+	app.watchActivate(room)
 	if got := app.focusKey(); got != "" {
-		t.Fatalf("离线 active 格仍被当成声音焦点：%q", got)
+		t.Fatalf("离线格仍被当成声音焦点：%q", got)
 	}
 	if got := app.islandFormOf(); got != islandIdle {
-		t.Fatalf("离线 active 格的岛形态是 %v，期望时钟", got)
+		t.Fatalf("离线格的岛形态是 %v，期望时钟", got)
 	}
 
-	// 这一格还在取流时（loading）允许出现在岛上：声音正在来。
-	app.watch.sessions[key].loading = true
+	// 这一格还在取流时（loading）允许成为焦点：声音正在来。
+	s.offline, s.err, s.loading = false, "", true
+	app.watchActivate(room)
 	if got := app.focusKey(); got != key {
 		t.Fatalf("在途会话被误判成没有声音：%q", got)
+	}
+	if got := app.islandFormOf(); got != islandOpen {
+		t.Fatalf("在途会话的岛形态是 %v，期望展开", got)
 	}
 }

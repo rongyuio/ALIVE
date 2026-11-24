@@ -13,7 +13,7 @@ import (
 // SearchOpen 有「按钮不在就收掉」的处理，全屏这条路以前漏了。
 func TestTopbarPopoversCloseWhenFullscreen(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 
 	tt := ui.NewTester(app.Shell, 1440, 900)

@@ -31,6 +31,14 @@ func newCache[T any]() *cache[T] {
 	}
 }
 
+// drop 丢掉一个 key。部分结果不能留在缓存里：下一次同一个 cursor 要真的
+// 重试没取到的区间。
+func (c *cache[T]) drop(key string) {
+	c.mu.Lock()
+	delete(c.items, key)
+	c.mu.Unlock()
+}
+
 func (c *cache[T]) load(key string, ttl time.Duration, fn func() (T, error)) (T, error) {
 	c.mu.Lock()
 	if item, ok := c.items[key]; ok && time.Now().Before(item.exp) {

@@ -110,7 +110,7 @@ func TestIslandRingIsVisibleInEveryPalette(t *testing.T) {
 		} else {
 			app.ThemeMode = themeModeLight
 		}
-		app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "直播中"}
+		focusForTest(app, Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "直播中"})
 		app.Router.Push(routePlayer)
 		tt := ui.NewTester(app.Shell, 1440, 900)
 		tt.Frame()
@@ -128,7 +128,7 @@ func TestIslandRingIsVisibleInEveryPalette(t *testing.T) {
 // reduced motion 下光不转，但仍然要在。
 func TestIslandRingHoldsStillWithReducedMotion(t *testing.T) {
 	app := NewMockApp()
-	app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "直播中"}
+	focusForTest(app, Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "直播中"})
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
@@ -246,7 +246,7 @@ func TestIslandEdgeIsInkNotBar(t *testing.T) {
 		app := NewMockApp()
 		app.PaletteID = id
 		app.ThemeMode = themeModeLight
-		app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "直播中"}
+		focusForTest(app, Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "直播中"})
 		app.Router.Push(routePlayer)
 		tt := ui.NewTester(app.Shell, 1440, 900)
 		tt.Frame()

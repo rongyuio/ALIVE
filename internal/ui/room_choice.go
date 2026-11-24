@@ -19,8 +19,8 @@ type roomChoice struct {
 // choiceKey 是「当前这一路」的房间键：播放页用媒体层记下的 key，还没起播
 // 时退回当前选中的直播间。拿不到房间时返回空串，调用方跳过读写。
 func (a *App) choiceKey() string {
-	if a.media.roomKey != "" {
-		return a.media.roomKey
+	if a.media.roomKey() != "" {
+		return a.media.roomKey()
 	}
 	s := a.current()
 	if s.Platform == "" || s.RoomID == "" {

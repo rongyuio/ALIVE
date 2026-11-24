@@ -13,7 +13,7 @@ import (
 // mygo-automation 都只能按坐标找它。
 func TestDanmuFilterFieldHasAccessibleName(t *testing.T) {
 	app := NewMockApp()
-	app.Player = app.Streamers[0]
+	focusForTest(app, app.Streamers[0])
 	app.Router.Push(routePlayer)
 	app.DanmuFilterOpen = true
 

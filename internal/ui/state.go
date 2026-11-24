@@ -135,7 +135,7 @@ func (a *App) saveState() {
 	for _, s := range a.WatchRooms {
 		watchRooms = append(watchRooms, a.watchRecordOf(s))
 	}
-	volume := a.Volume
+	volume := a.DefaultVolume
 	saveData := a.WatchSaveData
 	panelW := a.panelWidth()
 	panelOn := a.DanmuPanelOn
@@ -244,7 +244,7 @@ func (a *App) restore() {
 		a.roomChoices = p.RoomChoices
 	}
 	if p.Volume != nil {
-		a.Volume = *p.Volume
+		a.DefaultVolume = *p.Volume
 	}
 	if p.DanmuOn != nil {
 		a.DanmuOn = *p.DanmuOn

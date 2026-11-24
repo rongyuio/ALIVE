@@ -43,6 +43,16 @@ type App struct {
 	liveSeq          int
 	// 分区级列表缓存：切回看过的分区先渲染缓存，再判断是否过期刷新。
 	feedCache map[string]feedEntry
+	// homeCursor 是首页列表自己的续取位置。不能读 feedCache 的 cursor：
+	// 那个 cursor 首页和订阅页共用，另一边续过之后会把这一边没取到的一段
+	// 整段跳过（首页只到 40、缓存被订阅页推到 120，再续就从 120 起，
+	// 41..120 永久缺失）。订阅页的 subCursor 同理。
+	homeCursor int
+	// topUpAfter / topUpFailures 是自动补页的失败退避。补页写在渲染路径里，
+	// 失败回包复位 LoadingMore 后如果不退避，下一帧就会再次发起——每帧一次
+	// 上游请求。冷却只拦自动补页，不拦用户滚动触发的 EndReached。
+	topUpAfter    time.Time
+	topUpFailures int
 
 	// 分区搜索：查询词、输入框是否展开、当前高亮项
 	CategoryQuery        string
@@ -72,14 +82,26 @@ type App struct {
 	SubErr         string
 	subKey         string // 已经发起过的 platform|areaId
 	subSeq         int
+	// subCursor 是订阅列表自己的续取位置（平台 offset）。不能读 feedCache
+	// 的 cursor：那个 cursor 首页和订阅页共用，另一边续过之后会把这一边
+	// 没取到的一段整段跳过。
+	subCursor int
 
-	// 播放页：当前播放项与音量（0–1）
-	Player       Streamer // 当前直播间（从任意列表点进来）
-	PlayerIndex  int
-	PlayerRemote bool // 播放项来自 a.Remote 而不是示例池
-	Volume       float32
-	Playing      bool // 播放页的播放 / 暂停状态
-	WinFull      bool // 窗口全屏：播放页铺满窗口，应用顶栏让位
+	// focus 是唯一的焦点：用户此刻「在」的那一间，至多一个或为空。
+	//
+	// 播放页画它、岛上显示它、出声的也是它；墙上的 active、后台收听、
+	// 呈现尺寸、岛形态全部从它推导（见 surface.go）。以前的
+	// a.Player / a.WatchActive / a.media.roomKey 三份平行状态已经删掉。
+	//
+	// 只通过 setFocus / closeFocus 改，不直接赋值。
+	focus *roomSession
+	// playerExitUntil 是离开播放页那段过渡的截止时刻。过渡期间呈现尺寸
+	// 还得是全尺寸，否则飞出去的舞台会在半路变糊。
+	playerExitUntil time.Time
+	// DefaultVolume 是新房间的初始音量（0–1），也就是落盘的 volume。
+	// 某间房自己的音量住在 roomSession.volume 里。
+	DefaultVolume float32
+	WinFull       bool // 窗口全屏：播放页铺满窗口，应用顶栏让位
 	// InfoOpen 是播放页灵动岛是否展开。展开态现在常驻（岛同时承担「正在看谁」
 	// 和「声音从哪来」），所以这个字段只表示「进过这个房间」，不再有收起。
 	// infoRoom 记着当前房间，用来判断是不是换了直播间。
@@ -104,12 +126,8 @@ type App struct {
 
 	// 观测盒：最多 watch.MaxRooms 间，顺序即墙上的布局顺序。
 	WatchRooms []Streamer
-	// WatchActive 是当前激活（出声）的房间 key：platform|roomID。
-	// 它可能由 a.media 持有（从播放页回来），也可能是墙上的 roomSession。
-	WatchActive string
-	// WatchPending 是点了但还没出首帧的激活目标。
-	WatchPending string
-	// watch 是墙上非 active 的播放会话。
+	// watch 是所有直播间的运行态：一间房一个 roomSession，外加墙面布局、
+	// 冷存的音量与签名地址。播放页和墙格画的是同一张表里的同一个对象。
 	watch wallMedia
 	// WatchSaveData 是"暂离时省流量"：开=离开墙就关掉看不见的会话（回来
 	// 重新取流），关（默认）=会话留着，只停渲染，回来无缝。
@@ -350,26 +368,60 @@ type App struct {
 	// 冷启动的读屏播报只发一次：每帧 Announce 会把读屏变成复读机
 	bootAnnounced bool
 
-	// routeTransitionUntil 是表面之间连续过渡的结束时刻；零值表示当前
-	// 不播页面过渡。由 pushRoute 置、tickRouteTransition 收尾。
+	// routeTransitionUntil 是 Match 过渡的结束时刻；零值表示当前不播页面
+	// 过渡。由 enterPlayer / leavePlayerTo 置、tickRouteTransition 收尾。
 	routeTransitionUntil time.Time
 	// resizedAt / lastWindowW/H 是窗口尺寸的观测点：刚改过尺寸的一小段
 	// 时间里不挂 Match（见 matchable）。
 	resizedAt                time.Time
 	lastWindowW, lastWindowH int
-	// exitRelease 表示退出过渡演完之后才让媒体层放手（见 exitPlayer）。
-	// 过渡期间引擎必须留着，否则旧页面那一侧没有画面可画。
-	exitRelease bool
-	// exitDetach 是同一段过渡的另一种收尾：演完只 detach，不关（Esc 收进岛）。
-	// 演完之前同样不能提前 detach，理由和 exitRelease 一样。
-	exitDetach bool
-	// exitArm 是离开播放页的第一拍：让舞台这一帧带上 Match 身份，下一拍
+	// surfaceFlight 是一次表面过渡的进行态：路由已经切走，窗口里还有一块
+	// 画面在两个表面之间飞（见 surface_flight.go）。nil 表示没有在飞。
+	surfaceFlight *surfaceFlight
+	// exitArm 是「飞回墙格」的第一拍：让舞台这一帧带上 Match 身份，两拍之后
 	// 再换路由。Match 的起点取自上一帧，同一帧里刚加上的身份没有起点。
-	exitArm bool
-	// buildSeq 是 Shell 的构建序号；exitArmAt 记下 arm 发生在哪一趟，
-	// 同一趟里不能立刻换路由，否则带身份的那一帧根本不存在。
-	buildSeq  uint64
-	exitArmAt uint64
+	//
+	// 舞台的 Match 平时常挂（matchable 挡住 resize 那几百毫秒），但离开可能
+	// 正好落在那段窗口里——那时舞台身上没有身份，必须临时补一拍。
+	exitArm      bool
+	exitArmAt    uint64
+	exitMatchKey string
+	exitAction   func()
+	// buildSeq 是 Shell 的构建序号；exitArmAt 记下 arm 发生在哪一趟。
+	buildSeq uint64
+	// frameNow 是这一帧的视图时钟：生产里是系统时钟，Tester 里是它自己的。
+	// 过渡的截止时刻必须和 Router 的进度用同一个时钟——用墙钟的话，测试里
+	// 墙钟先到、动画还在原地，tickRouteTransition 会在半路把过渡抽掉。
+	frameNow time.Time
+	// winFullscreen 是系统全屏的缓存：问窗口只能在主线程，Shell 每帧记一次。
+	// 事件处理器（离开播放页）读缓存，不直接问窗口——测试里的零值窗口一问
+	// 就永远阻塞。
+	winFullscreen bool
+	// playerReturnRoute / playerReturnSection 是进播放页时记下的「退回哪一页」。
+	// 退出时由它求目标页上的画面归属；不用"从墙进来"这种一次性的代理。
+	playerReturnRoute   string
+	playerReturnSection int
+	// cardRects 是列表卡片的矩形（按房间 key），用于进 / 出播放页的飞行。
+	// 见 surface_cards.go：带页身份、窗口尺寸和构建代次，过期即作废。
+	cardRects map[string]cardRect
+	// gridGen / gridDone 是每一页网格的构建代次：cardRect 只在「目标页
+	// 最近一次构建里仍然被铺出来」时有效。滚出虚拟列表、换分区、换订阅
+	// chip 都会让旧记录自然过期。
+	gridGen  map[string]uint64
+	gridDone map[string]uint64
+	// playerStageBounds 是播放页舞台上一帧的矩形（窗口 DIP）。收起时画面
+	// 从这里起飞——舞台可能被弹幕面板挤窄，按正文区算会先跳大一圈。
+	playerStageBounds ui.Rect
+	// wasFullSize 是上一帧 fullSize() 的值，只用来做边沿触发：进入/离开
+	// 播放页时各做一次收尾（断弹幕、拨看门狗基准、重求呈现尺寸）。
+	// 它不是真相，真相是 fullSize()。
+	wasFullSize bool
+	// wasPlayerFullscreen 是上一帧 playerFullscreen() 的值。应用内全屏
+	// 切换不改变窗口尺寸，但会撤掉 Navbar、把左右 padding 收到 0；带
+	// Match 的外壳会把这次布局变化做成弹簧动画，视频逐帧重排。边沿处
+	// 复用 resize 的 400ms 抑制（matchable 的同一个写者）。离开播放页
+	// 时不算：那一路的 Match 落点是墙格，不能被这次复位挡掉。
+	wasPlayerFullscreen bool
 }
 
 // CategoryGroup 是一级分区及其下的二级分区。
@@ -398,8 +450,7 @@ func newApp() *App {
 		Router:        ui.NewRouter(routeHome),
 		PaletteID:     theme.Palettes[0].ID,
 		ThemeMode:     themeModeSystem,
-		Volume:        0.6,
-		Playing:       true,
+		DefaultVolume: 0.6,
 		clock:         time.Now,
 		DanmuOn:       true,
 		DanmuFont:     20,
@@ -424,6 +475,8 @@ func newApp() *App {
 	// Router 按路径层级决定往哪边滑，在这套结构上只会滑出三种不一样的结果，
 	// 所以干脆关掉页面过渡：切过去就是切过去，动的只有那颗滑块。
 	a.Router.Transition = ui.TransitionNone
+	// 媒体层读焦点用；焦点是 App 上的唯一真相，媒体层不再自己存一份。
+	a.media.app = a
 	return a
 }
 
@@ -491,8 +544,13 @@ func (a *App) applyAuthChange(p live.Platform, logged bool) {
 	// 登录态一变就要重取流，两个方向都是：登录后能拿到更高的档位；退出后
 	// 那些「仅登录可见」的档位必须立刻作废——继续播原来的地址，等于拿着
 	// 一个已经没有权限的流，界面上还写着那个档位。
-	if a.media.roomKey != "" && a.current().Platform == key {
-		a.startStream(true)
+	if a.media.roomKey() != "" && a.current().Platform == key {
+		if a.onWatchWall() {
+			// 墙上这一格由墙自己驱动：重开它，别把播放页那套取流塞进来。
+			a.watchReload(a.current())
+		} else {
+			a.startStream(true)
+		}
 	}
 }
 
@@ -525,6 +583,10 @@ func (a *App) currentAuth() live.Authenticator {
 // 而且每帧重绘一张噪点纹理不划算）。
 func (a *App) Shell(c *ui.Context) {
 	a.buildSeq++
+	a.frameNow = c.Now()
+	a.winFullscreen = a.Win != nil && windowFullScreen(a.Win)
+	// 飞回墙格的第二拍：上一帧的舞台已经带着 Match 身份建完，这一帧换路由。
+	a.tickExitArm()
 	// 一帧只让第一个 spinner 驱动动画时钟，其余的读它的相位
 	resetSpinFrame()
 	// 窗口尺寸的观测点：刚改过尺寸时不挂 Match，避免整墙做尺寸动画。
@@ -542,7 +604,13 @@ func (a *App) Shell(c *ui.Context) {
 	c.SetTheme(theme.Theme())
 
 	// 表面之间的连续过渡到点收尾：恢复成"不播页面过渡"。
-	a.tickRouteTransition(time.Now())
+	a.tickRouteTransition(a.now())
+	// 全尺寸视图出现/消失的边沿：断弹幕、拨看门狗基准、重求呈现尺寸。
+	// 真相由 fullSize() 推导，这里只做一次性收尾。
+	a.tickSurface()
+	// 呈现尺寸每帧从 presentSizeFor 求一次，值没变就不推。墙出现/消失、
+	// 全屏切换、后台收听都走这一条，不再有第二条推送路径。
+	a.applyPresent()
 
 	// 各平台登录头像提前进缓存：切平台换头像时才不会先画灰人再跳图。
 	a.syncAuthAvatars()
@@ -560,7 +628,7 @@ func (a *App) Shell(c *ui.Context) {
 	// 漏一条就是窗口卡死（见 leavePlayer）。
 	//
 	// 注意它不管媒体层：后台收听要的正是「界面收了、声音留着」，
-	// 引擎的开关在下面和 closeMedia 里。
+	// 引擎的开关由焦点的存活决定（setFocus / closeFocus）。
 	if a.Router.Path() != routePlayer {
 		a.leavePlayer()
 	}
@@ -569,6 +637,17 @@ func (a *App) Shell(c *ui.Context) {
 	// inset:0 z-index:9999，顶栏和灵动岛都被盖住）。
 	// 窗口全屏是我们自己的状态，原生全屏是系统状态，两者都算。
 	fullscreen := a.playerFullscreen()
+	// 应用内全屏切换和窗口 resize 一样会改变外壳的盒子；带 Match 的外壳
+	// 会把这次变化做成尺寸/位置弹簧动画。只在仍停留在播放页时抑制——
+	// 离开播放页那一路的 Match 落点是墙格，不能被这次复位挡掉。
+	if a.Router.Path() == routePlayer && fullscreen != a.wasPlayerFullscreen {
+		a.resizedAt = time.Now()
+		// 全屏边沿优先：还没过期的表面过渡窗口不能把 Match 又挂回来，
+		// 否则这次布局变化会被做成 0.5s 弹簧动画。
+		a.routeTransitionUntil = time.Time{}
+		a.Router.Transition = ui.TransitionNone
+	}
+	a.wasPlayerFullscreen = fullscreen
 
 	root.Background(theme.BgPrimary).Children(func() {
 		ui.Column(c).Fill().Children(func() {
@@ -587,20 +666,13 @@ func (a *App) Shell(c *ui.Context) {
 			})
 			// 离开播放页：默认进后台收听，声音留着、画面关掉。
 			//
-			// 只有 X 才真关——播放页灵动岛上的 X（全屏时是左上角那颗），
-			// 它自己调 closeMedia。Esc 收进岛，顶栏 tab、点岛回直播间、
-			// 搜索跳转也都保留这一路的声音，回来时接着看。
+			// 只有 X / 不在播放页的 Esc 才真关——它们走 closeFocus。Esc 在
+			// 播放页收进岛，顶栏 tab、点岛回直播间也都保留这一路的声音，
+			// 回来时接着看。
 			//
-			// 换台不在这里判：从后台收听点开另一个直播间时，ensureMedia 会发现
-			// roomKey 变了，reset 之后重开一路，旧引擎在 stopPlayback 里关掉。
-			// 退出过渡期间不 detach：那会把呈现尺寸收成格子大小，而飞出去的
-			// 舞台这一拍还在按全尺寸画——画面会在飞行途中变糊。过渡结束由
-			// tickRouteTransition 收尾（它负责放手）。
-			if a.Router.Path() != routePlayer && a.media.roomKey != "" && !a.exitRelease && !a.exitDetach {
-				a.detachMedia()
-			}
-			// 墙不可见时关掉非 active 的格子；active 留着出声。播放页打开时
-			// 墙上的 active 已经被 PlayerPage 接管，这里只剩清理其余会话。
+			// 进/出播放页的收尾不在这里逐条判断：fullSize() 的边沿由
+			// tickSurface 统一处理（Shell 开头），呈现尺寸也由它一处求值。
+			// 墙不可见时关掉非焦点格；焦点留着出声。
 			if a.Router.Path() != routeFollows || a.FollowsSection != followsSectionWatch {
 				a.watchHide()
 			}
@@ -608,6 +680,9 @@ func (a *App) Shell(c *ui.Context) {
 			// 地址续期和断流重连会跟着一起停摆。
 			a.kickMediaTick()
 		})
+		// 表面过渡：一块画面正在两个表面之间飞（进 / 出播放页）。必须画在
+		// 岛之前——落点在岛的位置，岛盖住它的最后一段。
+		a.surfaceFlightView(c)
 		// 灵动岛浮在内容之上。两种全屏下整块不画：画面上只留返回钮和控制条，
 		// 岛连同它那圈流光和投影压在满屏画面上纯属干扰。
 		if !fullscreen {
@@ -628,10 +703,6 @@ func (a *App) Shell(c *ui.Context) {
 	// 全局键盘放在整棵视图构建完之后：PopoverBase 的 Esc 是在构建浮层时
 	// 消费的，这里如果先跑，一次 Esc 会同时关掉浮层和它外面的东西。
 	a.shellKeys(c)
-	// 离开播放页的第二拍：这一帧的舞台已经带着 Match 身份建完，现在换
-	// 路由，下一帧退回去那一页的同一间就有起点可飞。必须放在构建之后：
-	// 放在构建之前的话，带身份的那一帧和换路由的是同一帧，起点还是空的。
-	a.tickExitArm()
 }
 
 // Home 是首页内容：分区栏 + 卡片网格。
@@ -661,6 +732,8 @@ func (a *App) Home(c *ui.Context) {
 		// 跳回顶部；旧的可见范围还会顺手触发一次「加载更多」。MyGo 的
 		// list.md 对这种情况写得很清楚：换一套行就 `ListState{}`。
 		a.HomeList = ui.ListState{}
+		// 正在飞的画面属于上一套行的卡片，换分区即作废。
+		a.surfaceFlight = nil
 	}
 	ui.Column(c).Grow(1).Padding(0, pad, 0, pad).Gap(14).Children(func() {
 		// 分区树还没到时给一块同高的占位，避免列表区先铺满、再被分区栏顶下去。
@@ -811,6 +884,16 @@ type gridView struct {
 // 滑到第 3000 张和第 30 张的每帧成本一样——这是「一直往下滑」的前提。
 // 行高由 List 自己测量（我们的卡片高度是算出来的固定值），不用手动喂。
 func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func(), views ...gridView) {
+	// 卡片归属哪一页在开始铺之前就定下来：点击卡片会立刻换路由，
+	// 同一个 build 里后面的卡片不能按新路由记账（见 noteCardRect）。
+	page := ""
+	if a.Router != nil {
+		page = pageKey(a.Platform, a.Router.Path(), a.FollowsSection)
+	}
+	gen := a.beginGridPage(page)
+	// 一页铺完（包括空列表的早退）才把代次记成「已完成」：cardRectFor
+	// 只认上一次完成的构建，点击发生在构建中途时用的是上一帧的矩形。
+	defer a.endGridPage(page, gen)
 	view := gridView{
 		loading:       a.ListLoading,
 		loadingMore:   a.ListLoadingMore,
@@ -869,14 +952,17 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 				i := i
 				st := list[i]
 				a.builtCards++
-				Card(c, st, cardW, a.isFollowed(st), func() {
-					a.Player = st
-					a.Router.Push(routePlayer)
+				card := Card(c, st, cardW, a.isFollowed(st), func() {
+					a.openRoom(st)
 				}, func() {
 					a.toggleFollow(st)
 				}, func() {
 					a.watchAdd(st)
 				})
+				// 卡片的位置：进播放页时画面从这里起飞，回列表时缩回这里。
+				// 只对记下它的那一页 / 那个窗口尺寸 / 那一次构建有效
+				// （见 surface_cards.go）。
+				a.noteCardRect(st, card, page, gen)
 			}
 			// 最后一行不足 cols 时补空位，卡片宽度才不会被拉宽
 			if r == rows-1 {
@@ -886,6 +972,17 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 			}
 		})
 	}).Gap(theme.GridGap).Grow(1)
+
+	// 内容铺不满一屏时列表没有可滚动范围，EndReached 永远不会来，下一页
+	// 就永远取不到。抖音一页 40 条在超大窗口里也可能刚好不够一屏，这跟
+	// 「用户滚到底」无关，是布局本身没有可滚的余量。
+	//
+	// AtEnd 读的是上一帧的布局，所以数据刚到的那一帧不会误判。onMore 自己
+	// 用 ListLoadingMore 去重：同一次事件重建的多帧里只会真正发起一次。
+	if onMore != nil && a.LiveMode && ls.AtEnd() && view.hasMore &&
+		!view.loadingMore && !view.loading && a.topUpAllowed() {
+		onMore()
+	}
 
 	first, last := ls.Visible()
 	if last >= first {
@@ -1192,7 +1289,7 @@ func (a *App) switchTab(id string) {
 		if a.Router.Path() == routeFollows {
 			return
 		}
-		a.Router.Push(routeFollows)
+		a.pushPage(routeFollows)
 		return
 	}
 	if id == a.Platform {
@@ -1202,7 +1299,7 @@ func (a *App) switchTab(id string) {
 			return
 		}
 		a.pendingSwitch = ""
-		a.Router.Push(routeHome)
+		a.pushPage(routeHome)
 		return
 	}
 	if a.platformSwitchReady(id) {
@@ -1268,7 +1365,7 @@ func (a *App) commitPlatformSwitch(id string) {
 	a.SearchQuery, a.SearchResults, a.SearchErr, a.SearchLoading = "", nil, "", false
 	a.SearchHit = 0
 	a.searchSeq.Add(1)
-	a.Router.Push(routeHome)
+	a.pushPage(routeHome)
 	a.onPlatformChanged()
 }
 

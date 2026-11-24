@@ -168,11 +168,8 @@ func useProvider(t *testing.T, prov live.Provider) {
 func seededApp(t *testing.T) *App {
 	t.Helper()
 	a := NewMockApp()
-	a.Player = Streamer{Platform: "douyu", RoomID: "123", Name: "主播"}
-	a.media.roomKey = "douyu|123"
-	// 媒体层现在只是这一间房的一个视图：房间自己住在 roomStore 里。
-	a.media.session = a.sessionFor("douyu|123", a.Player)
-	// 媒体层的状态机默认站在播放页上：attachMedia 有路由判据，
+	focusForTest(a, Streamer{Platform: "douyu", RoomID: "123", Name: "主播"})
+	// 媒体层的状态机默认站在播放页上：全尺寸呈现只在播放页上成立，
 	// 留在 NewMockApp 给的首页就等于「人在别的页面」，那条路测不到。
 	if a.Router == nil || a.Router.Path() != routePlayer {
 		a.Router = ui.NewRouter(routePlayer)
@@ -242,7 +239,7 @@ func TestStartStreamUsesSelectedVariant(t *testing.T) {
 
 	a := seededApp(t)
 	a.setRoomQuality("douyu|123", "原画") // 请求原画，但服务端只给了蓝光
-	a.media.session.stream = live.Stream{Variants: menu}
+	a.media.session().stream = live.Stream{Variants: menu}
 
 	a.startStream(false)
 	// 一次取流结果上屏，一次打开播放引擎。
@@ -270,9 +267,8 @@ func TestQualityDowngradeShowsNotice(t *testing.T) {
 	}
 	useProvider(t, prov)
 	a := seededApp(t)
-	a.media.session.stream = live.Stream{Variants: prov.full.Variants}
-	a.media.roomKey = "douyu|1"
-	a.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "主播"}
+	a.media.session().stream = live.Stream{Variants: prov.full.Variants}
+	focusForTest(a, Streamer{Platform: "douyu", RoomID: "1", Name: "主播"})
 
 	a.PickQuality("原画1080P60")
 	stubs.pump(t)
@@ -335,7 +331,7 @@ func TestPickQualityFetchesOnDemand(t *testing.T) {
 	useProvider(t, prov)
 
 	a := seededApp(t)
-	a.media.session.stream = live.Stream{Variants: []live.Variant{
+	a.media.session().stream = live.Stream{Variants: []live.Variant{
 		{ID: "origin", Label: "原画"},
 		{ID: "hd", Label: "高清"},
 	}}
@@ -359,7 +355,7 @@ func TestPickQualityPlaysDirectlyWhenURLPresent(t *testing.T) {
 	useProvider(t, prov)
 
 	a := seededApp(t)
-	a.media.session.stream = live.Stream{Variants: []live.Variant{
+	a.media.session().stream = live.Stream{Variants: []live.Variant{
 		{ID: "origin", Label: "原画", URL: "https://example.invalid/origin.flv"},
 		{ID: "hd", Label: "高清", URL: "https://example.invalid/hd.flv"},
 	}}
@@ -457,13 +453,13 @@ func TestCloseMediaDropsDanmaku(t *testing.T) {
 	a.media.danmaku = stream
 	seq := a.media.danmuSeq
 
-	a.closeMedia()
+	a.closeFocus()
 	waitFor(t, func() bool { return stream.closes() == 1 })
 	if a.media.danmuSeq == seq {
 		t.Fatal("离开播放页没推进弹幕代号")
 	}
-	if a.media.roomKey != "" {
-		t.Fatalf("roomKey 没清掉：%q", a.media.roomKey)
+	if a.focusKey() != "" {
+		t.Fatalf("焦点没清掉：%q", a.focusKey())
 	}
 }
 
@@ -474,18 +470,19 @@ func TestNeedFirstFrameTimeout(t *testing.T) {
 	opened := time.Now()
 	for _, tc := range []struct {
 		name    string
-		m       playerMedia
+		s       *roomSession
 		playing bool
 		at      time.Duration
 		want    bool
 	}{
-		{"预算内", playerMedia{session: &roomSession{openedAt: opened}}, true, firstFrameBudget / 2, false},
-		{"到点", playerMedia{session: &roomSession{openedAt: opened}}, true, firstFrameBudget, true},
-		{"已出图", playerMedia{session: &roomSession{openedAt: opened, firstFrame: true}}, true, time.Hour, false},
-		{"暂停中", playerMedia{session: &roomSession{openedAt: opened}}, false, time.Hour, false},
-		{"还没打开", playerMedia{}, true, time.Hour, false},
+		{"预算内", &roomSession{openedAt: opened}, true, firstFrameBudget / 2, false},
+		{"到点", &roomSession{openedAt: opened}, true, firstFrameBudget, true},
+		{"已出图", &roomSession{openedAt: opened, firstFrame: true}, true, time.Hour, false},
+		{"暂停中", &roomSession{openedAt: opened}, false, time.Hour, false},
+		{"还没打开", &roomSession{}, true, time.Hour, false},
 	} {
-		if got := tc.m.needFirstFrameTimeout(opened.Add(tc.at), tc.playing); got != tc.want {
+		m := &playerMedia{}
+		if got := m.needFirstFrameTimeout(tc.s, opened.Add(tc.at), tc.playing); got != tc.want {
 			t.Fatalf("%s: needFirstFrameTimeout=%v，期望 %v", tc.name, got, tc.want)
 		}
 	}
@@ -494,13 +491,14 @@ func TestNeedFirstFrameTimeout(t *testing.T) {
 // 首帧预算里要扣掉用户暂停的时间，否则网络抖动一次就过早判失败。
 func TestStartupElapsedExcludesPause(t *testing.T) {
 	opened := time.Now()
-	m := playerMedia{session: &roomSession{openedAt: opened}}
+	m := &playerMedia{}
+	sess := &roomSession{openedAt: opened}
 	// 播了 1 秒，然后暂停 10 秒，再继续。
 	m.observeStartupPause(true, opened.Add(time.Second))
 	m.observeStartupPause(false, opened.Add(time.Second))
 	m.observeStartupPause(false, opened.Add(11*time.Second))
 	m.observeStartupPause(true, opened.Add(11*time.Second))
-	elapsed := m.startupElapsed(opened.Add(12 * time.Second))
+	elapsed := m.startupElapsed(sess, opened.Add(12*time.Second))
 	if elapsed > 3*time.Second {
 		t.Fatalf("暂停时间没被扣掉，startupElapsed=%v", elapsed)
 	}
@@ -511,9 +509,9 @@ func TestStartupElapsedExcludesPause(t *testing.T) {
 // 播放键在正常状态下只翻 UI 意图，不碰媒体层。
 func TestTogglePlaybackPauses(t *testing.T) {
 	a := seededApp(t)
-	a.Playing = true
+	a.setFocusPlaying(true)
 	a.togglePlayback()
-	if a.Playing {
+	if a.focusPlaying() {
 		t.Fatal("播放键没有翻成暂停")
 	}
 }
@@ -642,9 +640,6 @@ func useTrack(t *testing.T, a *App, spy *trackSpy) {
 	old := engineOf
 	engineOf = func(*ui.VideoPlayer) videoTrack { return spy }
 	t.Cleanup(func() { engineOf = old })
-	if a.media.session != nil {
-		a.media.session = &roomSession{player: nil}
-	}
 }
 
 // 离开播放页进后台收听：全尺寸呈现关掉、房间记号留着、引擎不关。
@@ -653,21 +648,23 @@ func TestDetachKeepsSound(t *testing.T) {
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
 
-	a.detachMedia()
+	a.Router.Push(routeHome)
+	a.backgroundEnter()
 
-	if !a.media.background {
+	if !a.inBackground() {
 		t.Fatal("没有进入后台收听")
 	}
 	if got, ok := spy.last(); !ok || got != (presentSize{W: 160, H: 90}) {
 		t.Fatalf("后台收听该收成 160×90，实际 %+v（推过 %v）", got, ok)
 	}
-	if a.media.roomKey == "" {
+	if a.media.roomKey() == "" {
 		t.Fatal("后台收听把房间记号清了：地址续期和断流重连都会失去目标")
 	}
 
 	// 幂等：再调一次不该重复推。
+	a.backgroundEnter()
 	if n := spy.count(); n != 1 {
-		t.Fatalf("第二次 detach 又推了一次呈现（共 %d 次）", n)
+		t.Fatalf("第二次进后台又推了一次呈现（共 %d 次）", n)
 	}
 }
 
@@ -684,12 +681,14 @@ func TestAttachResumesSameEngine(t *testing.T) {
 	useTrack(t, a, spy)
 	useProvider(t, &stubStreamer{full: live.Stream{Live: true}, selected: live.Variant{Label: "原画"}})
 
-	a.detachMedia()
+	a.Router.Push(routeHome)
+	a.backgroundEnter()
 	before := a.media.seq
 	epoch := a.media.opened()
-	a.attachMedia()
+	a.Router.Push(routePlayer)
+	a.foregroundEnter()
 
-	if a.media.background {
+	if a.inBackground() {
 		t.Fatal("回到播放页之后还挂着后台收听标记")
 	}
 	if a.media.seq != before {
@@ -709,38 +708,17 @@ func TestAttachResumesSameEngine(t *testing.T) {
 	}
 }
 
-// 引擎真的不在时（理论上不该发生：detach 需要引擎），回来只能整路起播，
+// 引擎真的不在时（失败后重进、从列表回来），进入播放页只能整路起播，
 // 不能把人留在一张黑屏上。
-func TestAttachWithoutEngineStartsStream(t *testing.T) {
+func TestEnsureFocusMediaStartsStream(t *testing.T) {
 	a := seededApp(t)
-	old := engineOf
-	engineOf = func(*ui.VideoPlayer) videoTrack { return nil }
-	t.Cleanup(func() { engineOf = old })
 	useProvider(t, &stubStreamer{full: live.Stream{Live: true}, selected: live.Variant{Label: "原画"}})
-	a.media.background = true
 	before := a.media.seq
 
-	a.attachMedia()
+	a.ensureFocusMedia()
 
-	if a.media.background {
-		t.Fatal("没有引擎时回来还挂着后台收听标记")
-	}
 	if a.media.seq == before {
-		t.Fatal("没有引擎时回来没有重新起播")
-	}
-}
-
-// 没有引擎时不该进后台收听：那会留下一个「假装在听」的态。
-func TestDetachWithoutEngineDoesNothing(t *testing.T) {
-	a := seededApp(t)
-	old := engineOf
-	engineOf = func(*ui.VideoPlayer) videoTrack { return nil }
-	t.Cleanup(func() { engineOf = old })
-
-	a.detachMedia()
-
-	if a.media.background {
-		t.Fatal("没有引擎也进了后台收听")
+		t.Fatal("焦点没有引擎时进入播放页没有重新起播")
 	}
 }
 
@@ -750,10 +728,11 @@ func TestCloseMediaClearsBackground(t *testing.T) {
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
 
-	a.detachMedia()
-	a.closeMedia()
+	a.Router.Push(routeHome)
+	a.backgroundEnter()
+	a.closeFocus()
 
-	if a.media.background {
+	if a.inBackground() {
 		t.Fatal("关掉媒体之后还挂着后台收听标记")
 	}
 	if a.media.eng() != nil {
@@ -767,8 +746,9 @@ func TestBackgroundIgnoresFirstFrameBudget(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
-	a.Playing = true
-	a.detachMedia()
+	a.setFocusPlaying(true)
+	a.Router.Push(routeHome)
+	a.backgroundEnter()
 
 	// 把打开时刻拨到很久以前：真按首帧预算算，这一下必然超时。
 	a.media.setOpened(time.Now().Add(-time.Minute))
@@ -778,7 +758,7 @@ func TestBackgroundIgnoresFirstFrameBudget(t *testing.T) {
 	if a.media.errText() != "" {
 		t.Fatalf("后台收听被首帧预算判成了失败：%s", a.media.errText())
 	}
-	if a.media.background == false {
+	if !a.inBackground() {
 		t.Fatal("后台收听被首帧预算关掉了")
 	}
 }
@@ -790,14 +770,15 @@ func TestAttachIgnoredOffPlayerPage(t *testing.T) {
 	a := seededApp(t)
 	spy := &trackSpy{}
 	useTrack(t, a, spy)
-	a.detachMedia()
+	a.backgroundEnter()
 
-	// 人已经不在播放页了。
+	// 人已经不在播放页了：fullSize 的边沿观察者不该把全尺寸呈现打开。
+	a.wasFullSize = true
 	a.Router = ui.NewRouter(routeHome)
-	a.attachMedia()
+	a.tickSurface()
 
-	if !a.media.background {
-		t.Fatal("不在播放页时 attachMedia 把后台收听标记清了")
+	if !a.inBackground() {
+		t.Fatal("不在播放页时把后台收听标记清了")
 	}
 	if got, ok := spy.last(); ok && got == (presentSize{}) {
 		t.Fatal("不在播放页时 attachMedia 把呈现放回了全尺寸")
@@ -857,7 +838,6 @@ func TestPresentSizeFor(t *testing.T) {
 		if tc.watch {
 			a.FollowsSection = followsSectionWatch
 		}
-		a.media.roomKey = "douyu|123"
 		if tc.hasRec {
 			a.watch.init()
 			a.watch.rects["douyu|123"] = tc.rect
@@ -917,21 +897,18 @@ func TestEnsureMediaKeepsPlayerItAlreadyHolds(t *testing.T) {
 	p := gifPlayer(t)
 	s := &roomSession{key: key, room: room, player: p}
 	app.watch.sessions[key] = s
-	// 媒体层还指着这一间，但房间记号已经被一次收尾清空了。
-	app.media.session = s
-	app.media.roomKey = ""
 	app.Router = ui.NewRouter(routeHome)
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
-	app.Player = room
+	focusForTest(app, room)
 	app.Router.Push(routePlayer)
 	tt.Frame()
 
 	if s.player == nil {
 		t.Fatal("接手把这一间的播放器关了")
 	}
-	if app.media.session != s || app.media.roomKey != key {
+	if app.media.session() != s || app.media.roomKey() != key {
 		t.Fatalf("接手后媒体层指着 roomKey=%q session=%v，期望 %q / 同一份",
-			app.media.roomKey, app.media.session != nil, key)
+			app.media.roomKey(), app.media.session() != nil, key)
 	}
 }

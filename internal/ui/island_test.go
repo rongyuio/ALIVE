@@ -63,7 +63,7 @@ func TestPlayerIslandStaysExpanded(t *testing.T) {
 func islandWidth(t *testing.T, s Streamer, winW int) float32 {
 	t.Helper()
 	app := NewMockApp()
-	app.Player = s
+	focusForTest(app, s)
 	app.Router.Push(routePlayer)
 	tt := ui.NewTester(app.Shell, winW, 900)
 	tt.Frame()
@@ -135,7 +135,7 @@ func TestBackgroundIslandStaysAPill(t *testing.T) {
 	}
 
 	app.Router.Push(routeHome)
-	app.detachMedia()
+	app.backgroundEnter()
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
@@ -154,8 +154,8 @@ func TestBackgroundIslandStaysAPill(t *testing.T) {
 	if got := app.Router.Path(); got != routePlayer {
 		t.Fatalf("点岛之后路由是 %s，期望回播放页 %s", got, routePlayer)
 	}
-	if watchKey(app.Player) != watchKey(room) {
-		t.Fatalf("点岛打开的是 %q，期望 %q", watchKey(app.Player), watchKey(room))
+	if app.focusKey() != watchKey(room) {
+		t.Fatalf("点岛打开的是 %q，期望 %q", app.focusKey(), watchKey(room))
 	}
 }
 
@@ -293,14 +293,13 @@ func TestClockRollsOnlyChangedDigit(t *testing.T) {
 // 屏幕上就是「闪一下」。keep 集合必须带上当前主播的图。
 func TestSwitchTabKeepsNowPlayingAvatar(t *testing.T) {
 	app := NewMockApp()
-	app.Player = Streamer{
+	focusForTest(app, Streamer{
 		Platform:  "douyu",
 		RoomID:    "9999",
 		Name:      "主播",
 		AvatarURL: "https://example.invalid/avatar.jpg",
 		CoverURL:  "https://example.invalid/cover.jpg",
-	}
-	app.media.background = true
+	})
 
 	keep := app.feedURLs("bilibili")
 	if !keep["https://example.invalid/avatar.jpg"] {
@@ -328,8 +327,7 @@ func TestFeedURLsWithoutPlayer(t *testing.T) {
 func TestIslandWatchActiveFollowButtonClicks(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(2))
 	room := app.WatchRooms[1]
-	app.WatchActive = watchKey(room)
-	app.Player = room
+	focusWithPlayer(t, app, room)
 	app.Follows = []FollowRecord{{
 		Platform: room.Platform, RoomID: room.RoomID,
 		Name: room.Name, Title: room.Title,
@@ -358,8 +356,7 @@ func TestIslandWatchActiveFollowButtonClicks(t *testing.T) {
 func TestIslandWatchActiveCancelButton(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(2))
 	room := app.WatchRooms[0]
-	app.WatchActive = watchKey(room)
-	app.Player = room
+	focusWithPlayer(t, app, room)
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
@@ -371,8 +368,8 @@ func TestIslandWatchActiveCancelButton(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if app.WatchActive != "" {
-		t.Fatalf("取消后 active=%q", app.WatchActive)
+	if app.wallActiveKey() != "" {
+		t.Fatalf("取消后 active=%q", app.wallActiveKey())
 	}
 	if app.Router.Path() != routeFollows {
 		t.Fatalf("取消 active 离开了观测墙：route=%q", app.Router.Path())
@@ -390,9 +387,9 @@ func TestIslandWatchActiveCancelButton(t *testing.T) {
 // 点岛进的是 active 那一间，不是 a.Player 里碰巧剩下的别的房间。
 func TestIslandWatchActiveClickOpensActiveRoom(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(2))
+	// 焦点就是 active 那一间；没有第二份"碰巧剩下的 a.Player"。
 	room := app.WatchRooms[1]
-	app.WatchActive = watchKey(room)
-	app.Player = app.WatchRooms[0] // 目标被别处改掉了
+	focusWithPlayer(t, app, room)
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
@@ -404,8 +401,8 @@ func TestIslandWatchActiveClickOpensActiveRoom(t *testing.T) {
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("点岛没有进播放页：route=%q", app.Router.Path())
 	}
-	if watchKey(app.Player) != watchKey(room) {
-		t.Fatalf("进的是 %q，期望 active 那一间 %q", watchKey(app.Player), watchKey(room))
+	if app.focusKey() != watchKey(room) {
+		t.Fatalf("进的是 %q，期望 active 那一间 %q", app.focusKey(), watchKey(room))
 	}
 }
 
@@ -434,7 +431,7 @@ func TestLiveDotIgnoresThemeMode(t *testing.T) {
 		app := NewMockApp()
 		app.PaletteID = tc.palette
 		app.ThemeMode = tc.mode
-		app.Player = Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true}
+		focusForTest(app, Streamer{Platform: "douyu", RoomID: "1", Name: "甲", Title: "标题", Live: true})
 		app.Router.Push(routePlayer)
 		tt := ui.NewTester(app.Shell, 1440, 900)
 		tt.Frame()
@@ -455,9 +452,7 @@ func TestIslandPlayerExitButton(t *testing.T) {
 	tt.Frame()
 
 	label := watchTileLabel(rooms[0])
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
+	doubleClick(t, tt, label)
 	tt.Frame()
 	tt.Advance(time.Second)
 	tt.Frame()
@@ -494,8 +489,7 @@ func TestIslandPlayerExitButton(t *testing.T) {
 func TestIslandFollowLeftOfCancel(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(2))
 	room := app.WatchRooms[0]
-	app.WatchActive = watchKey(room)
-	app.Player = room
+	focusWithPlayer(t, app, room)
 	app.Follows = []FollowRecord{{
 		Platform: room.Platform, RoomID: room.RoomID, Name: room.Name,
 	}}

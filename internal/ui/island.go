@@ -310,10 +310,10 @@ func islandPlayerMeta(s Streamer) string {
 // 不再按「在不在观测盒里」分叉：在盒里就改道去墙，会让点岛的人落在一面
 // 没有这间的墙上——那读起来就是"收起的直播间没了"。
 //
-// 换路由之后 attachMedia / watchShow 各自把呈现尺寸求对。
+// 换路由之后 tickSurface / watchShow 各自把呈现尺寸求对。
 //
-// onWall 区分那颗 X 的文案与动作：播放页上是「退出直播间」，墙上与后台
-// 收听都是「结束这一路的声音」——墙上只收声、格子留成静音预览。
+// onWall 只决定那颗 X 的文案：播放页上是「退出直播间」，墙上「取消观测
+// 发声」，别的页面「关闭直播间」。动作只有一个——closeFocus。
 func (a *App) playerIsland(c *ui.Context, w, openW float32, onWall bool) {
 	s := a.current()
 
@@ -361,43 +361,31 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, onWall bool) {
 	// （点收藏等于点整块岛），头像虽然不可点，压在热区上面同样会挡住它。
 	// 顺序因此是 文字 → 头像 → 热区 → 按钮。
 	{
-		key := a.focusKey()
 		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 			Cursor(ui.CursorPointer).Label("回到直播间")
 		if hit.Hovered() {
 			hit.Background(ui.RGBA(255, 255, 255, 0.06))
 		}
 		if hit.Clicked() {
-			// 在播放页点岛 = 收起这一路（Esc 第一档）：墙上有格子就收回
-			// 格子，没有就收回岛本身。以前这里算出的目标还是播放页，点了
-			// 等于原地不动——用户说的「点灵动岛不能收起直播间」。
-			if a.Router != nil && a.Router.Path() == routePlayer {
-				a.collapsePlayer()
-				return
-			}
-			// 热区写着「回到直播间」，就回到直播间——不管这一间在不在
-			// 观测盒里。以前在盒里会改道去墙，用户点岛想回来，结果落在
-			// 一面没有这间的墙上，听起来就是"收起的直播间没了"。
-			// 目标永远是焦点那一间：a.Player 可能被别处改过，真正在出声的
-			// 房间才是这一下该打开的那一个。
-			if key != "" {
-				if room, ok := a.watchRoom(key); ok {
-					a.Player = room
-				}
-			}
-			a.pushRoute(routePlayer)
+			// 在播放页点岛 = 收起（用户确认保留的手感）；在别的页面点岛
+			// = 回到焦点那一间。两者都只在 returnToFocus 一处判断。
+			a.returnToFocus()
 		}
 	}
 
-	// X：同一个位置同一颗按钮，动作按当前表面走——
-	//	播放页      结束整路并退回上一页（和全屏时左上角那颗叉同一个动作）
+	// X：同一个位置同一颗按钮，动作永远是「结束焦点」——closeFocus。
+	//	播放页      结束整路并退回上一页
 	//	墙上        只收声，格子留在墙上做静音预览
 	//	后台收听    结束这一路，岛回到时钟
+	// 文案按表面走；动作不再按表面分叉（以前非播放页走 watchDeactivate，
+	// 它对 WatchActive 为空的焦点直接 return，收起的直播间点 X 没反应）。
 	cancelLabel := "退出直播间"
 	if onWall {
-		cancelLabel = "取消观测发声"
-		if a.Router != nil && a.Router.Path() != routeFollows {
-			cancelLabel = "关闭直播间"
+		cancelLabel = "关闭直播间"
+		// 只有「墙上那一格正在出声」才是取消 active（收声、留静音预览）；
+		// 焦点不在盒里时这一下就是关闭整路，文案不能骗人。
+		if a.wallActiveKey() != "" {
+			cancelLabel = "取消观测发声"
 		}
 	}
 	cancel := ui.Box(c).Absolute().Left(cancelX).Top((islandContentH-islandPlayerFollowW)/2).
@@ -408,11 +396,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, onWall bool) {
 		cancel.Background(theme.MediaHair).BorderColor(theme.MediaHairStrong)
 	}
 	if cancel.Clicked() {
-		if onWall {
-			a.watchDeactivate()
-		} else {
-			a.exitPlayer()
-		}
+		a.closeFocus()
 	}
 	cancelDown := cancel.Pressed()
 	cancel.Children(func() {

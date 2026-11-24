@@ -23,12 +23,12 @@ func islandRectsOverlap(a, b ui.Rect) bool {
 // 标题的岛取 360，正好越过两侧的 tab 组与工具组。
 func TestPlayerIslandStaysBetweenNavbarGroups(t *testing.T) {
 	app := NewMockApp()
-	app.Player = Streamer{
+	focusForTest(app, Streamer{
 		Platform: "douyu",
 		RoomID:   "1",
 		Name:     "甲",
 		Title:    strings.Repeat("很长很长的直播间标题", 20),
-	}
+	})
 	app.Router.Push(routePlayer)
 	// 900 是 main.go 的 MinWidth：最窄的真实窗口，岛最容易越界。
 	tt := ui.NewTester(app.Shell, 900, 700)

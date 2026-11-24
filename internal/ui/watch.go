@@ -97,7 +97,7 @@ func watchTileLabel(s Streamer) string {
 // 只有格子自己读得到，watchWall 收集后再画落点提示。
 func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, dropOver bool) {
 	key := watchKey(room)
-	active := key == a.WatchActive
+	active := key == a.wallActiveKey()
 	tile := ui.Box(c).Absolute().Left(r.X).Top(r.Y).Width(r.W).Height(r.H).
 		Radius(theme.RadiusMD).Clip().Background(theme.BgSecondary).
 		Cursor(ui.CursorPointer).Focusable().
@@ -111,21 +111,26 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 	//
 	// 唯一的例外是「刚改过窗口尺寸」：带 Match 的元素在 resize 时会做尺寸
 	// 动画，整墙格子一帧帧弹过去、视频每帧重新适配——就是「最大化会闪」。
-	// 所以那几百毫秒里不挂（见 matchable）。
-	if a.matchable() {
+	// 所以那几百毫秒里不挂（见 matchable）。正在走表面过渡时例外：
+	// exitArm 补的那一拍就是要让 resize 窗口里的格子也接住舞台。
+	if a.matchable() || !a.routeTransitionUntil.IsZero() {
 		tile.Transition(ui.ElementTransition{
 			Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
 		})
 	}
 
-	if tile.Clicked() {
-		// 点任何一间 = 看这一间。和首页卡片、关注行、搜索结果同一个语义：
-		// 全应用里"点一张直播画面"只有这一种结果。
-		//
-		// 以前这里切的是声音焦点：画面不动，只多一颗 10px 绿点，声音从别的
-		// 格子换过来。用户点完看不出发生了什么——长得一样的卡片做了不一样
-		// 的事，这是最贵的一类不一致。
+	// 墙上的手势分两档：单击激活（换声音焦点，留在墙上），双击进播放页。
+	//
+	// 激活就是 watchActivate：绿点亮起、岛换成这一间、声音切过来，画面不动。
+	// 双击走 watchOpenPlayer，它先保证这一间是焦点再打开播放页——两次单击
+	// 落在两帧里时，第一下已经把焦点换好了，第二下只是打开。
+	//
+	// 键盘和读屏没有双击：Enter 与单击同义（激活），打开播放页走底栏的
+	// 「放大观测」。双击是鼠标的快捷方式，不是唯一入口。
+	if tile.DoubleClicked() {
 		a.watchOpenPlayer(room)
+	} else if tile.Clicked() {
+		a.watchActivate(room)
 	}
 	tile.Drag(key)
 	_, dropOver = ui.DragOver[string](tile)
@@ -320,7 +325,7 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float
 		// 音量仍是单直播间那条全局音量；刷新只重载这一格。
 		ui.Row(c).Gap(m.leftGap).AlignItems(ui.Center).Children(func() {
 			key := watchKey(room)
-			playing := active && a.Playing
+			playing := active && a.focusPlaying()
 			if !active {
 				if s := a.watch.sessions[key]; s != nil && s.player != nil {
 					playing = s.player.Playing()
@@ -346,9 +351,8 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float
 				}
 			})
 			a.iconBtnSized(c, iconSync, m.iconSize, m.iconHit, false, "重新加载", func() {
-				// active 不总在媒体层：取流中 / 未开播的 active 只是墙上的
-				// pending 会话，retryStream 会因为 media.roomKey=="" 直接
-				// 返回。watchReload 自己分这两条路。
+				// active 不一定在播放页上：取流中 / 未开播的 active 只有墙上
+				// 这一份会话。watchReload 自己分播放页和墙上两条路。
 				a.watchReload(room)
 			})
 			if active {
@@ -446,7 +450,6 @@ func (a *App) watchTileAudio(c *ui.Context, m controlMetrics, room Streamer) {
 		a.iconBtnSized(c, iconVolumeMute, m.iconSize, m.iconHit, false,
 			"在墙上听 "+room.Name, func() {
 				a.watchActivate(room)
-				a.watchSyncActiveAudio()
 			})
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
 			Cursor(ui.CursorPointer).Label("音量 " + room.Name)
@@ -505,15 +508,8 @@ func platformBrand(id string) ui.Color {
 // 加载态直接复用播放页的整块遮罩、30px spinner 和同一句文案，不再自己画
 // 小胶囊；未开播/失败才是顶部的小提示。
 func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player *ui.VideoPlayer) {
-	key := watchKey(room)
 	msg, loading := "", false
 	switch {
-	case key == a.WatchActive && a.media.isLoading():
-		loading = true
-	case key == a.WatchActive && a.media.errText() != "" && a.media.eng() == nil:
-		msg = a.media.errText()
-	case key == a.WatchActive && player != nil && !player.Ready():
-		loading = true
 	case sess != nil && sess.offline:
 		msg = "主播暂时没有开播"
 	case sess != nil && sess.err != "":
@@ -563,7 +559,7 @@ func (a *App) watchEmpty(c *ui.Context) {
 					a.selectFollowsSection(followsSectionStreamers)
 				})
 				a.watchEmptyBtn(c, "去首页", func() {
-					a.Router.Push(routeHome)
+					a.pushPage(routeHome)
 				})
 			})
 		})

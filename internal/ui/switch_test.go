@@ -26,9 +26,9 @@ func TestPlatformSwitchWarmCacheRendersAtOnce(t *testing.T) {
 		CategoryIDs: []string{"86"},
 	}}
 	a.feedCache["douyu|86|-1"] = feedEntry{
-		rooms: []Streamer{{Platform: "douyu", RoomID: "42", Name: "主播"}},
-		page:  1,
-		at:    time.Now(),
+		rooms:  []Streamer{{Platform: "douyu", RoomID: "42", Name: "主播"}},
+		cursor: listPageSize,
+		at:     time.Now(),
 	}
 
 	a.applyLiveGroups("douyu", nil, groups)
@@ -55,9 +55,9 @@ func TestStaleCacheRefreshKeepsListOnScreen(t *testing.T) {
 	}}
 	// 一条过期的缓存：列表已经在屏幕上，但 TTL 过了要静默刷新。
 	a.feedCache["douyu|86|-1"] = feedEntry{
-		rooms: []Streamer{{Platform: "douyu", RoomID: "1", Name: "旧的"}},
-		page:  1,
-		at:    time.Now().Add(-2 * feedTTL),
+		rooms:  []Streamer{{Platform: "douyu", RoomID: "1", Name: "旧的"}},
+		cursor: listPageSize,
+		at:     time.Now().Add(-2 * feedTTL),
 	}
 
 	a.loadRooms()
@@ -84,8 +84,8 @@ func TestPlatformSwitchDoesNotWaitForCovers(t *testing.T) {
 			{Platform: "douyu", RoomID: "1", Name: "甲", CoverURL: "https://example.invalid/a.jpg"},
 			{Platform: "douyu", RoomID: "2", Name: "乙", CoverURL: "https://example.invalid/b.jpg"},
 		},
-		page: 1,
-		at:   time.Now(),
+		cursor: listPageSize,
+		at:     time.Now(),
 	}
 
 	a.switchTab("douyu")

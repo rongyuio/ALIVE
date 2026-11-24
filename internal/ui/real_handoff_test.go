@@ -134,8 +134,8 @@ func TestRealRoomSurvivesWallPlayerRoundTrip(t *testing.T) {
 		t.Fatalf("播放页舞台是黑的（亮度 %.1f）", l)
 	}
 
-	// 3. 退回墙上：还是同一个引擎，格子仍然有画面
-	app.watchReleaseActive()
+	// 3. 离开播放页进后台：还是同一个引擎，墙格仍然有画面
+	app.backgroundEnter()
 	pump(10)
 	if app.watch.sessions[watchKey(room)] == nil {
 		t.Fatal("退回墙上后会话不在册")
@@ -146,11 +146,10 @@ func TestRealRoomSurvivesWallPlayerRoundTrip(t *testing.T) {
 
 	// 4. 退出播放页：过渡期间不能出现黑帧。
 	//
-	// 引擎留到过渡演完才放手（exitRelease → tickRouteTransition），所以旧
-	// 页面在淡出期间仍然画着这一路；飞进来的墙格画的是同一个 session、
-	// 同一个播放器，两边天然一致。
-	// 三个退出入口（岛上的 X、Esc、左上角）都走这一个函数，这里直接调它。
-	app.exitPlayer()
+	// 引擎在过渡期间留着，旧页面在淡出时仍然画着这一路；飞进来的墙格
+	// 画的是同一个 session、同一个播放器，两边天然一致。
+	// 三个退出入口（岛上的 X、Esc、左上角）都走这个函数，这里直接调它。
+	app.closeFocus()
 	for i := 0; i < 8; i++ {
 		tt.Frame()
 		// 采样点远离墙格落点：旧页面那一侧的舞台有没有画面，只有格子盖不到

@@ -351,21 +351,16 @@ func (a *App) searchHits() []searchHit {
 }
 
 func (a *App) openSearchHit(hit searchHit) {
-	a.Player = hit.S
-	a.PlayerRemote = hit.Remote
-	a.PlayerIndex = hit.Index
 	a.SearchOpen = false
 	a.SearchQuery = ""
-	a.Router.Push(routePlayer)
+	a.openRoom(hit.S)
 }
 
 // openRoomNumber 用房间号直接进播放页：没有高亮项、而关键词是纯数字时就按号码
 // 直达，不等搜索接口。
 func (a *App) openRoomNumber(id string) {
-	a.Player = Streamer{Platform: a.viewPlatform(), RoomID: id, Name: "直播间 " + id}
-	a.PlayerRemote = true
-	a.PlayerIndex = -1
+	room := Streamer{Platform: a.viewPlatform(), RoomID: id, Name: "直播间 " + id}
 	a.SearchOpen = false
 	a.SearchQuery = ""
-	a.Router.Push(routePlayer)
+	a.openRoom(room)
 }

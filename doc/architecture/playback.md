@@ -67,8 +67,14 @@ mpv 的软件渲染只接受 RGB 单平面格式（`render.h` 里列得很清楚
 
 症状是「同一份帧，屏幕上有画面，截出来全黑」，极容易被误判成解码失败。所以
 `internal/playback` 的 `RGBA` 不走 `Surface.RGBA`，自己转一遍，alpha 一律 255。
+`TestRGBAOpaque` 把这条钉住：转换结果有内容，且 alpha 全 255。
 
-`live_test.go` 把这条变成了断言：CPU 转换必须有内容，且 alpha 全 255。
+**零拷贝帧同样要兑现这条。** 观测墙走 D3D11 零拷贝时，画面只住在共享纹理里，
+`Picture.RGBA` 必须按需回读（插件里 `gpuTarget.readPixels`：拿 keyed mutex →
+`CopyResource` 到 staging → `Map`，BGRA 换回 RGBA、alpha 一律 255），否则截图和
+CPU 渲染器拿到的是空像素——真实窗口正常、截图里整格是底色，又是一次「同一份帧，
+两条路径两种结果」。回读只在有人要像素时发生，不在渲染热路径上。
+`TestGPUFramesConvertForCPU` 是这条的断言（本地合成源，`GPU: true`）。
 
 另有一处 mygo 侧的修复：`raster.sampleOp` 采样前要先 `Image.Pixels()`。GPU 上传后会
 `ReleasePixels` 丢掉 CPU 像素、只留一个 `Restore`，而采样路径直接读 `Pix`，读到空

@@ -1,9 +1,6 @@
 package ui
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"testing"
 	"time"
 )
@@ -51,63 +48,49 @@ func TestIslandFormIsStableAcrossWallAndPlayer(t *testing.T) {
 	}
 }
 
-// 静态守卫：墙格上不许再出现"单击换声音"。
+// 墙格的手势分两档：单击激活（换声音焦点，留在墙上），双击进播放页。
 //
-// 单击 = 进这一间，全应用统一。如果哪天有人在 watchTile 里把 Clicked 接回
-// watchActivate，这条会红——那个改法看起来很像"恢复原来的行为"，实际上是把
-// 最贵的一类不一致放回去。
-func TestWallTileClickOpensPlayerStatically(t *testing.T) {
-	fset := token.NewFileSet()
-	src, err := parser.ParseFile(fset, "watch.go", nil, 0)
-	if err != nil {
+// 这条曾经反过来写过两次：先是单击激活、双击进播放页；后来改成单击进
+// 播放页、双击整个删掉。现在按 ry 的要求回到两档——但"激活"必须真的出声、
+// "打开"必须真的换路由，两者都不能只是看起来点到了。
+func TestWallTileClickActivates(t *testing.T) {
+	rooms := watchTestRooms(2)
+	app, tt := newWatchMock(t, rooms)
+	first := fakeSession(t, app, rooms[1])
+	fakeSession(t, app, rooms[0])
+	tt.Frame()
+
+	if err := tt.Click(watchTileLabel(rooms[1])); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	ast.Inspect(src, func(n ast.Node) bool {
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "watchTile" {
-			return true
-		}
-		found = true
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "watchActivate" {
-				return true
-			}
-			t.Errorf("watch.go:%d watchTile 里调了 watchActivate：单击该进播放页，"+
-				"换声音只走底栏的「在墙上听」", fset.Position(call.Pos()).Line)
-			return true
-		})
-		return false
-	})
-	if !found {
-		t.Fatal("找不到 watchTile：静态守卫失效了")
+	tt.Frame()
+
+	if got := app.focusKey(); got != watchKey(rooms[1]) {
+		t.Fatalf("单击之后焦点是 %q，期望 %q", got, watchKey(rooms[1]))
+	}
+	if got := app.Router.Path(); got != routeFollows {
+		t.Fatalf("单击就离开了墙：route=%q", got)
+	}
+	if v := first.player.Volume(); v <= 0 {
+		t.Fatalf("激活的那一格音量是 %v：单击没有真的出声", v)
 	}
 }
 
-// 双击这个手势在墙格上已经不存在了。
-//
-// 全应用只有墙格用过双击，删掉它之后"点一下"处处只有一个意思。
-func TestWallTileHasNoDoubleClick(t *testing.T) {
-	src, err := parser.ParseFile(token.NewFileSet(), "watch.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
+func TestWallTileDoubleClickOpensPlayer(t *testing.T) {
+	rooms := watchTestRooms(1)
+	app, tt := newWatchMock(t, rooms)
+	fakeSession(t, app, rooms[0])
+	tt.Frame()
+
+	doubleClick(t, tt, watchTileLabel(rooms[0]))
+	tt.Frame()
+
+	if got := app.Router.Path(); got != routePlayer {
+		t.Fatalf("双击没有进播放页：route=%q", got)
 	}
-	ast.Inspect(src, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if ok && sel.Sel.Name == "DoubleClicked" {
-			t.Errorf("watch.go 里还有 DoubleClicked：墙格的双击手势已经删了")
-		}
-		return true
-	})
+	if got := app.focusKey(); got != watchKey(rooms[0]) {
+		t.Fatalf("双击之后焦点是 %q，期望 %q", got, watchKey(rooms[0]))
+	}
 }
 
 // 展开态的岛上，X 的文案和动作按表面分：播放页退出整路，墙上只收声。

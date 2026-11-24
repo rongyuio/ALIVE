@@ -4,6 +4,7 @@ package video
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -24,6 +25,10 @@ type gpuTarget struct {
 	//
 	// 渲染线程写、State() 从 UI 线程读，必须原子。
 	frames atomic.Uint64
+	// mu 串行化 mpv 的渲染与 CPU 回读：两者都用这个 device 的 immediate
+	// context，而它不是线程安全的（render_d3d11.h 写明同一时刻只能有一个
+	// 使用者的道理，对 mpv 和我们自己同样成立）。
+	mu sync.Mutex
 }
 
 // newGPUTarget 在允许且硬件 device 可用时建一个目标；否则返回 nil，
@@ -95,6 +100,8 @@ func (t *gpuTarget) frameCount() uint64 { return t.frames.Load() }
 
 // release 释放这一路持有的 GPU 资源。
 func (t *gpuTarget) release() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.freeTexture()
 	if t.context != 0 {
 		releaseCom(t.context)
@@ -108,6 +115,8 @@ func (t *gpuTarget) release() {
 
 // render 让 mpv 把当前画面渲进共享纹理，返回这一帧的句柄与标识。
 func (t *gpuTarget) render(e *engine, w, h int) (uintptr, uint64, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if err := t.ensure(w, h); err != nil {
 		return 0, 0, err
 	}
@@ -130,4 +139,50 @@ func (t *gpuTarget) render(e *engine, w, h int) (uintptr, uint64, error) {
 	}
 	t.frames.Add(1)
 	return t.handle, t.id, nil
+}
+
+// readPixels 把一帧共享纹理读回 premultiplied RGBA，给没有 GPU 的消费者
+// （截图、CPU 光栅器）用。只在有人真的要像素时调用，不在渲染循环里。
+//
+// 读的必须是这一帧的那块纹理：id 对不上说明纹理已经重建，返回 nil，让上层
+// 当作没有像素，而不是把另一帧交出去。
+func (t *gpuTarget) readPixels(id uint64, w, h int, dst []byte) []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.tex == 0 || t.id != id || t.w != w || t.h != h || w <= 0 || h <= 0 {
+		return nil
+	}
+	// 和 mpv 写、渲染器读用同一把钥匙；拿不到说明别人正用着，这一拍放弃。
+	if r := comCall(t.mutex, acquireSync, 0, keyedReadWaitMS); failedHR(r) {
+		return nil
+	}
+	defer comCall(t.mutex, releaseSync, 0)
+
+	desc := textureDesc{Width: uint32(w), Height: uint32(h), MipLevels: 1, ArraySize: 1,
+		Format: formatBGRA, SampleCount: 1, Usage: usageStaging, CPUAccess: cpuAccessRead}
+	var stage uintptr
+	if r := comCall(t.device, devCreateTexture2D, uintptr(unsafe.Pointer(&desc)), 0, uintptr(unsafe.Pointer(&stage))); failedHR(r) {
+		return nil
+	}
+	defer releaseCom(stage)
+	comCall(t.context, ctxCopyResource, stage, t.tex)
+	var m mapped
+	if r := comCall(t.context, ctxMap, stage, 0, mapRead, 0, uintptr(unsafe.Pointer(&m))); failedHR(r) {
+		return nil
+	}
+	defer comCall(t.context, ctxUnmap, stage, 0)
+
+	need := 4 * w * h
+	if cap(dst) < need {
+		dst = make([]byte, need)
+	}
+	dst = dst[:need]
+	for y := 0; y < h; y++ {
+		row := unsafe.Slice((*byte)(unsafe.Add(ptr(m.Data), uintptr(y)*uintptr(m.RowPitch))), 4*w)
+		out := dst[4*w*y:][:4*w]
+		for x := 0; x < 4*w; x += 4 {
+			out[x], out[x+1], out[x+2], out[x+3] = row[x+2], row[x+1], row[x], 255
+		}
+	}
+	return dst
 }

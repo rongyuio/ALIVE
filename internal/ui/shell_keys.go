@@ -45,7 +45,7 @@ func (a *App) shellKeys(c *ui.Context) {
 	// 都会被当成一次新按下。
 	if c.Shortcut(0, ui.KeySpace) || c.Shortcut(0, ui.KeyK) {
 		if !c.ShortcutRepeated() {
-			a.Playing = !a.Playing
+			a.setFocusPlaying(!a.focusPlaying())
 		}
 		return
 	}
@@ -87,15 +87,10 @@ func (a *App) handleEscape() {
 		return
 	}
 	if a.Router.Path() != routePlayer {
-		// 第二档：已经收进岛（后台收听），或者在墙上开着声音。
-		// 结束这一路——和岛上那颗 X 同一个动作：在盒里只收声、格子留成
-		// 静音预览，不在盒里就彻底关掉。没有焦点时什么都不做。
-		switch {
-		case a.WatchActive != "":
-			a.watchDeactivate()
-		case a.media.roomKey != "":
-			a.closeMedia()
-		}
+		// 第二档：结束这一路——和岛上那颗 X 同一个动作。焦点在观测盒里时
+		// 只收声、格子留成静音预览；不在盒里就连引擎一起关。没有焦点时
+		// closeFocus 什么都不做。
+		a.closeFocus()
 		return
 	}
 	// 窗口全屏是我们自己的状态，一定要在系统全屏之前退：
@@ -153,17 +148,14 @@ func (a *App) toggleFullscreen() {
 
 // toggleMute 静音 / 取消静音：记住静音前的音量，恢复时回到那个值。
 func (a *App) toggleMute() {
-	if a.Volume > 0 {
-		a.volumeBeforeMute = a.Volume
+	if v := a.focusVolume(); v > 0 {
+		a.volumeBeforeMute = v
 		a.setVolume(0)
-		a.watchSyncActiveAudio()
 		return
 	}
 	if a.volumeBeforeMute > 0 {
 		a.setVolume(a.volumeBeforeMute)
-		a.watchSyncActiveAudio()
 		return
 	}
 	a.setVolume(0.6)
-	a.watchSyncActiveAudio()
 }
