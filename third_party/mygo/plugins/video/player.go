@@ -76,6 +76,10 @@ type Options struct {
 	// 默认上限占着内存；观测墙一屏最多 12 路，每路各留一份是纯浪费。
 	// 对画面没有任何影响：前向缓存（抗抖动要用的那段）不动。
 	NoBackBuffer bool
+
+	// LogLevel 是 mpv 自己的日志订阅级别，默认 warn。ALIVE 本地补丁：
+	// 排障时设 info / v 才能拿到 hls、http、demuxer 那一层的第一手信息。
+	LogLevel string
 }
 
 // Capabilities reflects a successfully created native renderer. Codec/container
@@ -102,6 +106,7 @@ type State struct {
 	// 呈现抖动时两者都正常。有了这些数才能把上游断供、音频断流、呈现抖动
 	// 分开，而不是靠猜。
 	AudioPTS                 time.Duration // 音频时钟；没有音轨或未起步时为 0
+	AudioPTSValid            bool          // AudioPTS 是否真的可用；否则 0 只是缺省值
 	CacheDuration, CacheTime time.Duration // 读前缓存里有多少秒、当前读头位置
 	CacheBuffering           int64         // 0–100，缓冲完成度
 	CacheIdle                bool          // demuxer 在等数据（读前缓存空）
@@ -132,8 +137,10 @@ type State struct {
 
 // LogLine 是 mpv 的一条日志。
 type LogLine struct {
-	Level string // error / warn / info
-	Text  string
+	Level  string // error / warn / info
+	Prefix string // mpv 的模块前缀（hls / ffmpeg / ao / vo），定位「哪一层」用
+	Text   string
+	At     time.Time
 	// Seq 单调递增。上层据此只转发没见过的那些，不必自己维护游标。
 	Seq uint64
 }
@@ -147,6 +154,7 @@ type Player struct {
 	state            State
 	native           backend
 	opts             Options
+	logRank          int // mpv 日志订阅级别；ALIVE 本地补丁
 	wake, renderWake chan struct{}
 	stop, done       chan struct{}
 	workers          sync.WaitGroup
@@ -210,7 +218,28 @@ func New(opts Options) (*Player, error) {
 	return p, nil
 }
 func makePlayer(opts Options) *Player {
-	return &Player{opts: opts, state: State{Phase: Idle, Volume: 100, Rate: 1}, paused: true, wake: make(chan struct{}, 1), renderWake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}), pending: map[uint64]bool{}, width: 0, height: 0}
+	return &Player{opts: opts, logRank: mpvLogRank(opts.LogLevel), state: State{Phase: Idle, Volume: 100, Rate: 1}, paused: true, wake: make(chan struct{}, 1), renderWake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}), pending: map[uint64]bool{}, width: 0, height: 0}
+}
+
+// mpvLogRank 把 mpv 的级别名映射成可比较的序号。默认 warn（4）。
+func mpvLogRank(level string) int {
+	switch level {
+	case "trace":
+		return 0
+	case "debug":
+		return 1
+	case "v":
+		return 2
+	case "info":
+		return 3
+	case "warn", "warning", "":
+		return 4
+	case "error":
+		return 5
+	case "fatal":
+		return 6
+	}
+	return 4
 }
 func (p *Player) start() { p.workers.Add(2); go p.events(); go p.frames(); signal(p.wake) }
 func (p *Player) State() State {
@@ -433,7 +462,13 @@ func (p *Player) apply(ev event) {
 		// mpv 自己的日志。默认只收 error / warn——正常播放一条都没有，出问题时
 		// 才是唯一能说明「卡在哪一层」的东西。存进环形缓冲，由上层落盘；
 		// ALIVE_MPV_LOG=1 时额外打到 stderr，开发时用。
-		if ev.name == "error" || ev.name == "fatal" || ev.name == "warn" {
+		// 零值 Player（测试里直接构造）没有 logRank：按默认 warn 处理，
+		// 显式设 trace 时 opts.LogLevel 非空，rank 0 仍然有效。
+		rank := p.logRank
+		if rank == 0 && p.opts.LogLevel == "" {
+			rank = mpvLogRank("warn")
+		}
+		if mpvLogRank(ev.name) >= rank {
 			if debugLog {
 				println("mpv log:", ev.name, ev.text)
 			}
@@ -447,7 +482,7 @@ func (p *Player) apply(ev event) {
 				p.moovWarned = true
 			}
 			p.mpvLogSeq++
-			p.mpvLog = append(p.mpvLog, LogLine{Level: ev.name, Text: ev.text, Seq: p.mpvLogSeq})
+			p.mpvLog = append(p.mpvLog, LogLine{Level: ev.name, Prefix: ev.prefix, Text: ev.text, At: time.Now(), Seq: p.mpvLogSeq})
 			if len(p.mpvLog) > mpvLogCap {
 				p.mpvLog = p.mpvLog[len(p.mpvLog)-mpvLogCap:]
 			}
@@ -541,8 +576,10 @@ func (p *Player) apply(ev event) {
 		case "audio-pts":
 			if !ev.unavailable && finite(ev.number) {
 				s.AudioPTS = seconds(ev.number)
+				s.AudioPTSValid = true
 			} else {
 				s.AudioPTS = 0
+				s.AudioPTSValid = false
 			}
 		case "demuxer-cache-duration":
 			s.CacheDuration = seconds(ev.number)

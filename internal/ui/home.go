@@ -124,17 +124,11 @@ type App struct {
 	// 它们要跨帧活着，所以挂在 App 上而不是视图里。
 	media playerMedia
 
-	// 观测盒：最多 watch.MaxRooms 间，顺序即墙上的布局顺序。
+	// 观测墙：最多 watch.MaxRooms 间，顺序即墙上的布局顺序。
 	WatchRooms []Streamer
 	// watch 是所有直播间的运行态：一间房一个 roomSession，外加墙面布局、
 	// 冷存的音量与签名地址。播放页和墙格画的是同一张表里的同一个对象。
 	watch wallMedia
-	// WatchSaveData 是"暂离时省流量"：开=离开墙就关掉看不见的会话（回来
-	// 重新取流），关（默认）=会话留着，只停渲染，回来无缝。
-	//
-	// 默认无缝，因为"暂离"的全部意义就是还会回来。这笔账里唯一留给用户的
-	// 是带宽——只有他知道自己在不在用热点。
-	WatchSaveData bool
 	// pushedVolume 是最后一次推给播放器的音量。
 	// ui.VideoPlayer 没有 Volume() getter，只能自己记一份来避免每帧重设。
 	pushedVolume float64
@@ -315,13 +309,17 @@ type App struct {
 	lastFullscreenExit time.Time
 	ShortcutsOpen      bool
 
-	// 顶栏「数据同步」面板：导出 / 导入两个页签。
-	// SyncBusy 期间按钮不响应，SyncNotice / SyncError 是上一次动作的反馈。
-	SyncOpen   bool
-	SyncTab    string // "export" / "import"
-	SyncBusy   bool
-	SyncNotice string
-	SyncError  string
+	// 顶栏「数据同步」面板：导出 / 导入 / 诊断三个页签。
+	// SyncBusy 期间按钮不响应，SyncNotice / SyncError 是上一次动作的反馈；
+	// SyncPlan 是选完文件、还没确认落地的导入改动清单。
+	SyncOpen    bool
+	SyncTab     string // "export" / "import" / "diag"
+	SyncBusy    bool
+	SyncNotice  string
+	SyncPlan    *importPlan
+	SyncCounts  configCounts
+	DiagSummary []string // 诊断页签的指标快照；切到该页签时算一次
+	SyncError   string
 
 	// 播放页悬浮 chrome（顶栏 / 控制条 / 窗口按钮）的自动隐藏，
 	// 指针静止 2.8 秒后淡出，一动就回来。
@@ -346,21 +344,41 @@ type App struct {
 	// 状态落盘：300ms 内的连续变更合并成一次写盘
 	stateDirty       bool
 	stateSavePending bool
+	// stateSaveFailed 是后台写盘失败留下的旗标：writeState 只置这一位，
+	// Shell 下一帧取走并变成一条通知（取一次就清）。stateSaveWarned
+	// 保证一次会话只提醒一次：持续失败反复弹会盖住别的通知。
+	stateSaveFailed atomic.Bool
+	stateSaveWarned bool
 
 	// 关注（键是 platform|name）
 	Follows []FollowRecord
 	// 关注状态刷新的闸门：自动刷新和手动刷新共用，避免两轮请求叠在一起
 	followsBusy bool
+	// 关注状态的新鲜度：上一轮刷完的时刻、失败退避的截止时刻、连续失败轮数。
+	//
+	// 这三个字段只有 refreshFollows 的收尾会写（见 follow.go），读的人
+	// 只有 followsDue。自动刷新的三个触发点都靠它们判断「该不该刷」——
+	// 不要在别处对着它们加减。
+	followsRefreshedAt time.Time
+	followsRetryAt     time.Time
+	followsFailStreak  int
+	// windowHidden 是窗口正处于最小化。窗口可见性只有 WatchHidden /
+	// WatchShown 两个写者；关注页的心跳靠它判断「有没有人在看」，
+	// 不在渲染路径里回头去问窗口。
+	windowHidden bool
+	// lastRoute 是上一帧的路由，Shell 用它求「进入关注页」那一帧的边沿。
+	lastRoute string
 	// 刷新进度：面板按钮上的圆环按 done/total 画弧。
 	// 每查完一条就推进一格，所以环是连续往前走的，不是等整批结束才跳。
 	followRefreshDone  int
 	followRefreshTotal int
 
-	// Toast：右下角一条短提示，3.2s 后自动消失。
-	// Tone 决定左侧图标与颜色；Seq 每条自增，用来换代播入场动画。
-	ToastText string
-	ToastTone string
-	ToastSeq  int
+	// toastQueue 是待显示的通知，按到达顺序排队。
+	//
+	// toastTone 只入队，不直接 AddToast：刷新关注完成落在 win.Update
+	// 回调里，那里没有构建帧的 Context。Shell 每帧认领一次并清空，
+	// 同一次事件重建的后续帧看到的是空队列，不会重复弹。
+	toastQueue []ui.Toast
 
 	// 列表加载态：数据层接上之前由 main.go 的拉取结果驱动
 	Loading bool
@@ -603,6 +621,16 @@ func (a *App) Shell(c *ui.Context) {
 	a.applyTheme(c, root)
 	c.SetTheme(theme.Theme())
 
+	// 进入关注页那一帧的边沿：从别处过来才刷一次，不是每帧问。
+	// 放在这里和 tickSurface 同一层——读的是路由这个事实，做的是它的
+	// 一次性收尾，不写在任何页面的渲染路径里。
+	if p := a.Router.Path(); p != a.lastRoute {
+		a.lastRoute = p
+		if p == routeFollows {
+			a.FollowsEntered()
+		}
+	}
+
 	// 表面之间的连续过渡到点收尾：恢复成"不播页面过渡"。
 	a.tickRouteTransition(a.now())
 	// 全尺寸视图出现/消失的边沿：断弹幕、拨看门狗基准、重求呈现尺寸。
@@ -672,9 +700,15 @@ func (a *App) Shell(c *ui.Context) {
 			//
 			// 进/出播放页的收尾不在这里逐条判断：fullSize() 的边沿由
 			// tickSurface 统一处理（Shell 开头），呈现尺寸也由它一处求值。
-			// 墙不可见时关掉非焦点格；焦点留着出声。
-			if a.Router.Path() != routeFollows || a.FollowsSection != followsSectionWatch {
+			//
+			// 墙不在了只是标记；真正离开墙（去首页 / 别的分区）才停掉墙上的
+			// 预览。播放页不算离开：从墙上点进某一间，背后还是这面墙，退出
+			// 就回来了，其余格子继续播。
+			if !a.onWatchWall() {
 				a.watchHide()
+				if a.Router.Path() != routePlayer {
+					a.watchPark()
+				}
 			}
 			// 媒体层的心跳：后台收听时视频元素不在了，没有东西替它请求帧，
 			// 地址续期和断流重连会跟着一起停摆。
@@ -692,9 +726,19 @@ func (a *App) Shell(c *ui.Context) {
 		if a.SyncOpen {
 			a.syncOverlay(c)
 		}
-		if a.ToastText != "" {
-			a.toastView(c)
+		// 后台写盘失败：旗标只置位，这里取一次变成通知。取走即清，
+		// 一次会话只提醒一次——持续失败反复弹会盖住别的通知。
+		if a.stateSaveFailed.CompareAndSwap(true, false) && !a.stateSaveWarned {
+			a.stateSaveWarned = true
+			a.toastTone("设置没能保存，重启后可能丢失", toastError)
 		}
+		// 通知：先认领本帧排队的条目，再画视口。视口挂在 MyGo 的 overlay
+		// 层上，排在整棵视图之后——不管当前是哪个表面、模态开没开，它都
+		// 在最上面。视口常驻，最后一条也要把退场过渡播完。
+		a.flushToasts(c)
+		ui.ToastViewportBase(c, func(viewport ui.Element, toasts []ui.Toast) {
+			a.toastViewport(c, viewport, toasts)
+		})
 		// 播放页的快捷键说明
 		if a.ShortcutsOpen {
 			a.shortcutsOverlay(c)
@@ -1162,23 +1206,44 @@ func (a *App) Navbar(c *ui.Context) {
 	})
 }
 
-// toastTone 是带色调的 toast：success / info / error 决定图标和图标颜色。
+// toastTone 把一条通知排进队列：success / info / error 决定图标和图标颜色。
 func (a *App) toastTone(msg, tone string) {
-	a.ToastText = msg
-	a.ToastTone = tone
-	// 每条新提示换一次序号，入场动画的 key 跟着换代，才会重新播
-	a.ToastSeq++
-	if a.Win == nil {
+	if msg == "" {
 		return
 	}
-	win := a.Win
-	time.AfterFunc(3200*time.Millisecond, func() {
-		win.Update(func() {
-			if a.ToastText == msg {
-				a.ToastText = ""
-			}
-		})
+	a.toastQueue = append(a.toastQueue, ui.Toast{
+		// 同一条消息重复触发只刷新那一条的计时，不叠第二条。
+		ID:      msg,
+		Title:   msg,
+		Type:    tone,
+		Timeout: toastLife(tone),
 	})
+	a.invalidateWindows()
+}
+
+// toastMotionDur 是通知入场/退场过渡的时长，和原来的入场动画一致。
+const toastMotionDur = 220 * time.Millisecond
+
+// toastLife 是通知停留的时长。错误要给足读完的时间，其余保持原来的 3.2 秒。
+func toastLife(tone string) time.Duration {
+	if tone == toastError {
+		return 6 * time.Second
+	}
+	return 3200 * time.Millisecond
+}
+
+// flushToasts 把队列里的通知交给 MyGo 的 toast 管理器，然后清空。
+//
+// 认领即出队：一次事件可能重建好几帧，后续帧拿到的是空队列，不会重弹。
+func (a *App) flushToasts(c *ui.Context) {
+	if len(a.toastQueue) == 0 {
+		return
+	}
+	q := a.toastQueue
+	a.toastQueue = nil
+	for _, t := range q {
+		c.AddToast(t)
+	}
 }
 
 // toast 的三种色调。
@@ -1199,51 +1264,65 @@ func toastIcon(tone string) *ui.SVG {
 	return iconAlert
 }
 
-// toastIconColor 是图标颜色：success / danger / text-tertiary。
+// toastIconColor 是图标颜色。通知压在任意表面上，必须用墨底上的固定色：
+// SuccessInk / DangerInk 是对卡片底推导的，浅色主题里放到深墨底上就没
+// 对比了。
 func toastIconColor(tone string) ui.Color {
 	switch tone {
 	case toastSuccess:
-		return theme.SuccessInk
+		return theme.MediaSuccessInk
 	case toastError:
-		return theme.DangerInk
+		return theme.MediaDangerInk
 	}
-	return theme.TextTertiary
+	return theme.MediaTextDim
 }
 
-// toastView 是右下角那条提示。
+// toastViewport 画右下角的通知栈。
 //
-// 尺寸与位置：right/bottom 18、min-height 38、padding 7 8 7 12、
-// 圆角 12、bg-elevated + 描边 + popover 阴影；左侧 15px 图标，间距 9；
-// 入场是 opacity 0→1、translateY 8→0，220ms ease-out（reduced motion 下不播）。
-func (a *App) toastView(c *ui.Context) {
+// 外观走「压在画面上的墨」那一组令牌，不跟配色走：通知会出现在首页、
+// 播放页、全屏画面上，跟着配色变浅的底色会直接融进背景——这正是旧的
+// 自绘 toast「经常注意不到」的原因。深墨底 + 亮字 + 大阴影，任何表面
+// 上都读得出来。
+//
+// 尺寸沿用原来的胶囊：右/下 18、min-height 38、padding 7 8 7 12、圆角
+// 12、15px 图标、间距 9。MyGo 管队列（最多 3 条）、计时、悬停暂停、
+// 读屏播报与 Esc 关闭；这里只负责长相和入场/退场。
+func (a *App) toastViewport(c *ui.Context, viewport ui.Element, toasts []ui.Toast) {
 	w, _ := c.Size()
 	maxW := w - 36
 	if maxW > 420 {
 		maxW = 420
 	}
-	// Center()：主轴和交叉轴都居中。MinHeight 撑出来的那点余量由它居中
-	// 分配——只写 AlignItems 时主轴仍是起始对齐，内容就贴着上边。
-	box := ui.Box(c).Absolute().Right(18).Bottom(18).MaxWidth(maxW).
-		MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).Center().
-		Background(theme.BgElevated).Border(1, theme.Border).
-		Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact)
-
-	if !c.Preferences().ReduceMotion {
-		in := box.Keyframes(fmt.Sprintf("toast-in-%d", a.ToastSeq), []ui.Keyframe{
-			{Value: 0},
-			{At: 220 * time.Millisecond, Value: 1, Ease: ui.EaseOut},
-		}, ui.KeyframeOptions{})
-		box.Opacity(in).Translate(0, (1-in)*8)
-	}
-
-	box.Children(func() {
-		ui.Row(c).Gap(9).Center().Children(func() {
-			ui.Icon(c, toastIcon(a.ToastTone)).FontSize(15).
-				TextColor(toastIconColor(a.ToastTone))
-			ui.Text(c, a.ToastText).FontSize(theme.TextSM).
-				TextColor(theme.TextPrimary).SingleLine()
+	viewport.Padding(18).AlignItems(ui.End).Gap(8)
+	for _, t := range toasts {
+		box := ui.ToastBase(c, t)
+		// Center()：主轴和交叉轴都居中。MinHeight 撑出来的余量由它分配，
+		// 文字才不会贴着上边。
+		root := box.Root.Row().Gap(9).Center().MaxWidth(maxW).
+			MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
+			Background(theme.MediaPanel).Border(1, theme.MediaHair).
+			Shadow(0, 22, 56, -22, theme.ShadowPanel).
+			Shadow(0, 4, 12, 0, theme.ShadowContact)
+		motion := ui.ElementTransition{
+			Duration: toastMotionDur,
+			Ease:     ui.EaseOut,
+			Position: true,
+			Size:     true,
+			Enter:    &ui.Motion{Y: 8},
+			Exit:     &ui.Motion{},
+		}
+		if c.Preferences().ReduceMotion {
+			motion.Duration = -1
+			motion.ExitDuration = -1
+		}
+		root.Transition(motion)
+		root.Children(func() {
+			ui.Icon(c, toastIcon(t.Type)).FontSize(15).
+				TextColor(toastIconColor(t.Type))
+			ui.Text(c, t.Title).FontSize(theme.TextSM).
+				TextColor(theme.MediaText).SingleLine()
 		})
-	})
+	}
 }
 
 // narrow 报告窗口是否落在 ≤1240 断点里。

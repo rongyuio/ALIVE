@@ -125,6 +125,33 @@ func (a *App) pictureNow(key string) picture {
 	return a.pictureOn(key, a.Router.Path(), a.FollowsSection, a.focusKey() == key)
 }
 
+// pictureFromIsland 求「点岛进播放页」的画面起点。
+//
+// 和 pictureNow 只差一条：不认卡片。用户点的是屏幕正中的岛，画面却从同一页
+// 上某张卡片长出来，读起来就是「不知道从哪冒出来一块封面」。墙格仍然优先——
+// 在观测墙上，这一间的画面确实在那一格里。
+func (a *App) pictureFromIsland(key string) picture {
+	if key == "" {
+		return pictureNone
+	}
+	if a.onWatchWall() && a.watchHas(key) {
+		return pictureTile
+	}
+	if a.focusKey() == key && a.focus != nil &&
+		(a.focus.player != nil || a.focus.loading) {
+		return pictureIsland
+	}
+	return pictureNone
+}
+
+// readyPicture 报告这一间此刻是不是已经在出画面。
+//
+// 有画面的房间不该再飞一张封面过去：飞行块会把活画面盖住，落地再从封面切回
+// 直播，是一次假的闪。只有墙格走 Match（两边画同一个播放器）。
+func (a *App) readyPicture(s *roomSession) bool {
+	return s != nil && s.player != nil && s.player.Ready()
+}
+
 // now 是这一帧的视图时钟。生产里就是系统时钟，Tester 里是它自己的时钟。
 // 过渡的截止时刻和 Router 的进度必须用同一个时钟（见 App.frameNow）。
 func (a *App) now() time.Time {
@@ -145,12 +172,12 @@ func (a *App) focusKey() string {
 	return a.focus.key
 }
 
-// wallActiveKey 是墙上那一格「正在出声」的标记者：焦点这一间在盒里时，
+// wallActiveKey 是墙上那一格「正在出声」的标记者：焦点这一间在墙上时，
 // 它的格子就是 active。
 //
 // 以前这是一个字段（a.WatchActive），要由墙上激活、watchShow、媒体层
 // 三条路各自维护，漏一条就是「声音在响但没有一格有绿点」。现在它只是
-// 「焦点在不在盒里」的推论。
+// 「焦点在不在墙里」的推论。
 func (a *App) wallActiveKey() string {
 	if a.focus != nil && a.watchHas(a.focus.key) {
 		return a.focus.key

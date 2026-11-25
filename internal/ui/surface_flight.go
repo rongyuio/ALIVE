@@ -17,6 +17,9 @@ import (
 //	播放页 → 卡片   画面从舞台缩回卡片
 //	播放页 → 岛     画面从舞台缩进岛（收起 / 离开播放页去别处）
 //
+// 进播放页的封面只在**这一间还没有画面**时飞。已经有画面的房间，封面过去
+// 只会盖住活画面、落地再切回直播，是一次凭空造出来的闪——那条路直接硬切，
+// 目标页第一帧就是画面（见 enterPlayer 的 readyPicture）。
 // 墙格和播放页之间不在这里：两边画的是同一个播放器、同一帧画面，走 MyGo 的
 // Match（见 watch.go / player.go）。其余组合（没有画面可接）硬切。
 //
@@ -42,7 +45,7 @@ type flightKind int
 
 const (
 	// flightEnter 是进播放页：舞台已经在下面，飞的是封面，落地后淡出。
-	// 不能画视频——同一个 VideoPlayer 同时被舞台和这块画，只有一块出画。
+	// 只在舞台还没有画面时用——已经有画面就直接切，见 enterPlayer。
 	flightEnter flightKind = iota
 	// flightLeave 是离开播放页：路由已经切走，飞的是画面本身。
 	flightLeave
@@ -203,8 +206,12 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 	w := f.fromRect.W + (f.toRect.W-f.fromRect.W)*e
 	h := f.fromRect.H + (f.toRect.H-f.fromRect.H)*e
 
+	// 底色必须是舞台那一种黑，不能用岛的墨色：飞行块从舞台矩形起飞，
+	// 起飞第一帧要和舞台最后一帧逐像素相同（黑边区尤其明显）。底图本身
+	// 是半透明的模糊层，底下的 1 级色差会透过来——TestLeaveFlightStartsAsTheStage
+	// 就是拿这个当判据。
 	box := ui.Box(c).Absolute().Left(x).Top(y).Width(w).Height(h).
-		Radius(theme.RadiusXL).Clip().Background(theme.IslandInk).
+		Radius(theme.RadiusXL).Clip().Background(ui.RGB(0, 0, 0)).
 		IgnoreInput(true).Label("表面过渡中的画面")
 	// 落点藏在岛 / 卡片后面了，但边缘还会漏出一点：最后一段淡掉，
 	// 收尾不是「啪」地消失。进入时还要露出下面已经就位的画面。
@@ -213,7 +220,9 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 	}
 	box.Children(func() {
 		if f.kind == flightEnter {
-			// 只画封面：舞台下面的播放器是同一个引擎，这里再画一次就只剩一块出画。
+			// 只画封面：这条路只在这一间还没有画面时才会被安排（enterPlayer
+			// 的 readyPicture）。舞台下面即便已经有了播放器，这里再画一遍
+			// 也是同一帧的重复，没有意义。
 			if bmp := media.Default.Bitmap(f.room.CoverURL, f.fromRect.W); bmp != nil {
 				ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
 			} else {
@@ -224,14 +233,8 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 		// 离开：和舞台同一套。底图铺满黑边，画面 contain，首帧没到用封面顶住。
 		player := a.surfaceFlightPlayer(f.key)
 		ready := player != nil && player.Ready()
-		bgURL := f.room.BackdropURL
-		if bgURL == "" {
-			bgURL = f.room.CoverURL
-		}
-		if bmp := media.Default.Bitmap(bgURL, f.fromRect.W); bmp != nil {
-			ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
-			ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-				Background(theme.MediaBackdropScrim)
+		if bmp := a.backdropFor(c, f.room); bmp != nil {
+			backdropLayers(c, bmp)
 		}
 		if player != nil {
 			ui.Video(c, player).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)

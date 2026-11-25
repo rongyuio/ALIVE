@@ -204,7 +204,7 @@ func TestWindowResizeDoesNotAnimateTheStage(t *testing.T) {
 	}
 }
 
-// listOpenedPlayer 是从分区卡片直接打开播放页的样子：这一间不在观测盒里
+// listOpenedPlayer 是从分区卡片直接打开播放页的样子：这一间不在观测墙里
 // （watchHas 为假），媒体层握着引擎。用户报的「Esc 没动画」「点岛收不起」
 // 都发生在这一格。
 func listOpenedPlayer(t *testing.T) (*App, *ui.Tester, Streamer) {
@@ -228,7 +228,7 @@ func listOpenedPlayer(t *testing.T) (*App, *ui.Tester, Streamer) {
 }
 
 // Esc 从哪来回哪去：从关注页（关注主播列表）打开的，回关注主播，
-// 不能因为这一间恰好在观测盒里就跳到观测墙。关注行没有画面可接（它是
+// 不能因为这一间恰好在观测墙里就跳到观测墙。关注行没有画面可接（它是
 // 头像不是封面），所以画面缩进岛，声音留着。
 func TestEscReturnsToFollowsRowItCameFrom(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
@@ -575,7 +575,7 @@ func TestEscFromWallOpenedPlayerFliesToWall(t *testing.T) {
 	}
 }
 
-// Esc 在盒外的播放页上：退回打开它之前那一页，声音留着，画面缩进岛。
+// Esc 在墙外的播放页上：退回打开它之前那一页，声音留着，画面缩进岛。
 //
 // 判据落在「路由回首页 + 这一路没关 + 不是整页交叉淡化 + 有一块画面在缩」。
 // 交叉淡化会把不透明的视频和浅色列表混成一层灰雾（2026-11-24）。

@@ -22,6 +22,7 @@
 | [platform.md](architecture/platform.md) | 四个平台的取流约束：入口、登录门槛、线路语义、编码分支 | 动 `internal/live` 之前，或遇到"取不到流 / 档位不对 / 选错了分支" |
 | [watch.md](architecture/watch.md) | 悲鸣观测：12 间全档会话、所有权交接、弹幕边界、16:9 布局、灵动岛 | **动 `internal/watch`、`internal/ui/watch*.go` 之前** |
 | [surfaces.md](architecture/surfaces.md) | 四个表面（单直播间 / 后台收听 / 观测墙 / 灵动岛）的统一模型、七条不变量、操作路径与过渡契约 | **动 `internal/ui` 里任何播放所有权、呈现尺寸、岛形态、页面过渡之前** |
+| [diagnostics.md](architecture/diagnostics.md) | 诊断事件 schema、run/room/session/engine 关联、症状→证据矩阵、崩溃黑匣子、外部标准与验收 | **加日志、改状态机、动 `internal/applog`/`internal/diag`/`cmd/alive-diag`、或排「黑格/卡/没声/闪退」之前** |
 
 ### decisions
 
@@ -40,6 +41,7 @@
 | [0011-watch-wall.md](decisions/0011-watch-wall.md) | 悲鸣观测：12 间硬上限、不降画质、不按带宽准入、同引擎交接、弹幕只属于播放页 | 动观测墙、加格数、讨论降档/带宽/弹幕保活之前 |
 | [0012-surface-model.md](decisions/0012-surface-model.md) | 一个会话集合 + 三个正交轴；关闭语义统一为「结束焦点」；资源策略与可见性分离；过渡分三处判断 | 想加一条表面之间的路径、想改 `background`/`WatchActive`、想给内容层加回动画之前 |
 | [0013-letterbox-backdrop.md](decisions/0013-letterbox-backdrop.md) | 黑边区的模糊底：B 站两端有没有这一层的实测、backdrop 材质为什么赢过元素 `.Blur()`、成本闸门与拉窗那一帧 | 改 `stageFrame`、动 `MediaBackdrop*` 令牌、或想把模糊铺到观测墙之前 |
+| [0014-follows-freshness.md](decisions/0014-follows-freshness.md) | 关注页在线状态的刷新时机：三条自动路径的门槛、失败退避、查不到不等于下播、取流只升不降 | 改关注页的刷新/退避/绿点、或又报「绿点不更新/全灭」之 |
 
 ### reference
 
@@ -66,6 +68,9 @@
 | `internal/watch/*`、`internal/ui/watch*.go` | [architecture/watch.md](architecture/watch.md)、[decisions/0011](decisions/0011-watch-wall.md)、[architecture/playback.md](architecture/playback.md)、[reference/ui-regressions.md](reference/ui-regressions.md) |
 | `internal/ui/player*.go`、`island.go`、`pages.go`、`surface.go` | [architecture/surfaces.md](architecture/surfaces.md)、[decisions/0012](decisions/0012-surface-model.md)、[decisions/0009](decisions/0009-live-continuity.md) |
 | `internal/ui/*`（界面） | [reference/mygo.md](reference/mygo.md)、[reference/palette-ladder.md](reference/palette-ladder.md)、[reference/ui-regressions.md](reference/ui-regressions.md)、根目录 `AGENTS.md` |
+| `internal/ui/follow.go`（关注状态与刷新时机） | [decisions/0014](decisions/0014-follows-freshness.md) |
+| `internal/applog/*`、`internal/diag/*`、`internal/hang/*`、`internal/metrics/*`、`internal/support/*`、`cmd/alive-diag/*` | [architecture/diagnostics.md](architecture/diagnostics.md) |
+| 任何状态机的日志/错误分支 | [architecture/diagnostics.md](architecture/diagnostics.md) 的「事件目录」与「症状→证据矩阵」 |
 
 ## 写作约定
 

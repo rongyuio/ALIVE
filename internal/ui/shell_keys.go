@@ -87,8 +87,8 @@ func (a *App) handleEscape() {
 		return
 	}
 	if a.Router.Path() != routePlayer {
-		// 第二档：结束这一路——和岛上那颗 X 同一个动作。焦点在观测盒里时
-		// 只收声、格子留成静音预览；不在盒里就连引擎一起关。没有焦点时
+		// 第二档：结束这一路——和岛上那颗 X 同一个动作。焦点在观测墙里时
+		// 只收声、格子留成静音预览；不在墙上就连引擎一起关。没有焦点时
 		// closeFocus 什么都不做。
 		a.closeFocus()
 		return

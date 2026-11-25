@@ -34,6 +34,22 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
 - `ui.NewTester` 的默认外观随版本变化，依赖配色的测试要显式设置
   （`internal/ui/app_test.go` 的 `TestPaletteSwitch` 因此改成显式 `ThemeMode = "light"`）
 
+## 通知
+
+通知走 MyGo 的 toast 管理器加 `ToastViewportBase`（`internal/ui/home.go` 的
+`toastViewport`），不再自绘单条。三条约束：
+
+- **外观自绘，行为交给框架。** 队列（最多 3 条）、计时、指针悬停暂停、读屏播报、
+  Esc 关闭都由 `ui.Toast` 提供，我们只画胶囊。外观用 `theme.Media*` 那组「压在画面
+  上的墨」：通知会出现在首页、播放页和全屏画面上，跟着配色变的浅色底会融进背景。
+- **`toastTone` 只入队，Shell 每帧认领一次。** 关注刷新完成落在 `win.Update` 回调里，
+  那里没有构建帧的 `Context`，不能直接 `AddToast`。队列认领即清空，同一次事件重建的
+  后续帧不会重弹。
+- **ID 就是消息文本。** 同一条消息再次触发只刷新那一条的计时，不叠第二条。
+
+2026-11-25 之前是自绘单条 `a.ToastText`：第二条直接顶掉第一条、固定 3.2 秒消失、
+读屏不播报。用户反馈「经常注意不到」。
+
 ## 能力边界
 
 这些不是 bug，是当前版本的设计，直接影响我们的播放路线（见

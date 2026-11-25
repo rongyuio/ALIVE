@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"alive/internal/diag"
 )
 
 // 表面之间的过渡与焦点的生命周期。
@@ -33,8 +35,8 @@ const routeTransitionDur = 280 * time.Millisecond
 
 // setFocus 是焦点的唯一写者。
 //
-// 换焦点时旧的那一间按"还有没有表面在显示它"收尾：在观测盒里 → 静音留着
-// 做预览；不在盒里 → 连引擎一起关。这条规则同时覆盖墙上换间、进播放页、
+// 换焦点时旧的那一间按"还有没有表面在显示它"收尾：在观测墙里 → 静音留着
+// 做预览；不在墙上 → 连引擎一起关。这条规则同时覆盖墙上换间、进播放页、
 // 关闭收起的直播间——不再有 watchAdoptActive / watchReleaseActive /
 // watchDropActive / watchStopActive / watchDeactivate 五个搬运函数。
 func (a *App) setFocus(s *roomSession) {
@@ -50,6 +52,17 @@ func (a *App) setFocus(s *roomSession) {
 	// 先换焦点，再收尾旧的那间：endSessionFocus 靠「它已经不是焦点」
 	// 把引擎音量落到 0，不需要另写一遍静音。
 	a.focus = s
+	from, to := "", ""
+	if old != nil {
+		from = old.key
+	}
+	if s != nil {
+		to = s.key
+	}
+	// 焦点是「谁在出声」。它变了却没有日志，所有「点一下就黑了/没声了」
+	// 都只能从别的行的缝里猜。
+	diag.Ref{Sub: "focus"}.Logger().Info("焦点切换",
+		"event", diag.EvFocusChange, diag.From, from, diag.To, to)
 	if old != nil {
 		a.endSessionFocus(old)
 	}
@@ -73,18 +86,20 @@ func (a *App) setFocus(s *roomSession) {
 
 // endSessionFocus 结束某一间的声音焦点。
 //
-// 会话存亡只由一件事决定：还在观测盒里吗。在 → 静音、留在墙上做预览；
+// 会话存亡只由一件事决定：还在观测墙里吗。在 → 静音、留在墙上做预览；
 // 不在 → 关掉。这就是"取消 active"和"关闭直播间"的全部区别。
 func (a *App) endSessionFocus(s *roomSession) {
 	if s == nil {
 		return
 	}
-	if a.watchHas(s.key) {
+	if a.watchHas(s.key) && !a.watch.parked {
 		// 只收声，画面不动：静音视频会被 MyGo 按住，看门狗会误判断流。
 		a.applySessionVolume(s)
 		return
 	}
-	a.closeSession(s)
+	// 已经离开墙（parked）：墙上也不留静音预览——墙上的预览是停掉的，
+	// 留一个只会让它继续解码。
+	a.closeSession(s, "focus-ended")
 }
 
 // applySessionVolume 是引擎音量的唯一写者。
@@ -123,6 +138,16 @@ func (a *App) applyFocusAudio() {
 	}
 }
 
+// noteRoute 记一次页面切换。只在路径真的变化时写；同一页换台由 focus.change
+// 覆盖，不在这里重复。
+func (a *App) noteRoute(from, to string) {
+	if a.Router == nil || from == to || to == "" {
+		return
+	}
+	diag.Ref{Sub: "nav"}.Logger().Info("页面切换",
+		"event", diag.EvRouteChange, diag.From, from, diag.To, to)
+}
+
 // openRoom 是「看这一间」的唯一入口：首页卡片、关注行、搜索结果、墙格、
 // 灵动岛都走这里。
 //
@@ -130,11 +155,24 @@ func (a *App) applyFocusAudio() {
 // 当前页上有没有画面（墙格 / 卡片）、岛是不是正显示它，各自对应一种接法。
 // 归属要在 setFocus 之前求——焦点一换，岛显示的就变成新的一间了。
 func (a *App) openRoom(room Streamer) {
+	a.openRoomFrom(room, pictureNone)
+}
+
+// openRoomFrom 是 openRoom 的带起点版本：from 非 pictureNone 时用它代替
+// 「当前页的画面归属」。
+//
+// 只有点岛那条路需要它。岛在屏幕正中被点，画面却可能从同一页上某张卡片
+// 长出来——用户点的是岛，看到的是「一块封面从别处冒出来」。墙格仍然优先：
+// 在观测墙上，这一间的画面确实在那一格里。
+func (a *App) openRoomFrom(room Streamer, from picture) {
 	if room.Platform == "" {
 		return
 	}
 	key := watchKey(room)
 	src := a.pictureNow(key)
+	if from != pictureNone {
+		src = from
+	}
 	s := a.sessionFor(key, room)
 	if a.focus != s {
 		a.setFocus(s)
@@ -164,7 +202,8 @@ func (a *App) openRoom(room Streamer) {
 // enterPlayer 换到播放页，按画面归属选接法。
 //
 //   - 墙格：舞台和格子画的是同一个播放器、同一帧画面，走 Match 连续放大；
-//   - 卡片 / 岛：路由立刻切走，封面从那个矩形长成舞台，落地后淡出；
+//   - 卡片 / 岛，且这一间还没有画面：封面从那个矩形长成舞台，落地后淡出；
+//   - 卡片 / 岛，但这一间已经在出画面：硬切；
 //   - 没有画面可接：硬切。
 func (a *App) enterPlayer(s *roomSession, src picture) {
 	a.surfaceFlight = nil
@@ -173,17 +212,29 @@ func (a *App) enterPlayer(s *roomSession, src picture) {
 		a.Router.Transition = ui.TransitionMatch
 		a.routeTransitionUntil = a.now().Add(routeTransitionDur + 120*time.Millisecond)
 	case pictureCard, pictureIsland:
-		a.startEnterFlight(s, src)
+		// 已经有画面时不能飞封面：那块封面会盖住活的画面，落地再从封面切回
+		// 直播——一次凭空造出来的闪（2026-11-25 报的「点岛放大先显示封面」）。
+		// 目标页第一帧就是画面，直接切。
+		if !a.readyPicture(s) {
+			a.startEnterFlight(s, src)
+		}
 		a.Router.Transition = ui.TransitionNone
 		a.routeTransitionUntil = time.Time{}
 	default:
 		a.Router.Transition = ui.TransitionNone
 		a.routeTransitionUntil = time.Time{}
 	}
+	a.noteRoute(a.Router.Path(), routePlayer)
 	a.Router.Push(routePlayer)
+	// 路由一换，全尺寸就已经成立；在这里立刻推一次，别等下一帧的 tickSurface。
+	//
+	// 后台听着的引擎还在 160×90 上渲染。硬切把这次「后台 → 全尺寸」的重渲染
+	// 直接暴露在第一帧上：晚推，第一帧就是一张放大的小图。早推一个帧间隔，
+	// 渲染线程才有时间交出全尺寸那一帧（实测 4ms，见 playback.md）。
+	a.applyPresent()
 }
 
-// returnToFocus 是点岛的「回到直播间」：不管这一间在不在盒里，目标都是它。
+// returnToFocus 是点岛的「回到直播间」：不管这一间在不在墙里，目标都是它。
 func (a *App) returnToFocus() {
 	if a.focus == nil || a.Router == nil {
 		return
@@ -193,7 +244,8 @@ func (a *App) returnToFocus() {
 		a.collapsePlayer()
 		return
 	}
-	a.openRoom(a.focus.room)
+	// 起点按「用户点的东西」求：点的是岛，就不该从卡片起飞。
+	a.openRoomFrom(a.focus.room, a.pictureFromIsland(a.focusKey()))
 }
 
 // leaveOp 决定焦点在离开播放页之后还活不活。
@@ -208,7 +260,7 @@ const (
 
 // closeFocus 结束焦点：岛的 X、全屏返回钮、不在播放页的 Esc 都走这里。
 //
-// 声音立刻停；会话存亡由 endSessionFocus 的盒规则决定。在播放页上还要
+// 声音立刻停；会话存亡由 endSessionFocus 的墙规则决定。在播放页上还要
 // 退回上一页——目标页上如果还有这一间的画面（墙格），画面连续缩回去。
 func (a *App) closeFocus() {
 	s := a.focus
@@ -225,7 +277,9 @@ func (a *App) closeFocus() {
 	// 清早了目标页上就没有这一间可接。
 	a.leavePlayerTo(leaveClose, a.playerReturnRoute, a.playerReturnSection, func() {
 		a.setFocus(nil)
+		from := a.Router.Path()
 		a.Router.Back()
+		a.noteRoute(from, a.Router.Path())
 	})
 }
 
@@ -240,11 +294,15 @@ func (a *App) collapsePlayer() {
 	if a.focus == nil {
 		a.surfaceFlight = nil
 		a.Router.Transition = ui.TransitionNone
+		from := a.Router.Path()
 		a.Router.Back()
+		a.noteRoute(from, a.Router.Path())
 		return
 	}
 	a.leavePlayerTo(leaveCollapse, a.playerReturnRoute, a.playerReturnSection, func() {
+		from := a.Router.Path()
 		a.Router.Back()
+		a.noteRoute(from, a.Router.Path())
 	})
 }
 
@@ -252,7 +310,7 @@ func (a *App) collapsePlayer() {
 //
 // 目标表面按**目标页上的画面归属**求，不再看「从哪一页进来的」：
 //
-//	墙格   在盒里、目标页是观测墙 → Match（两边画同一个播放器）
+//	墙格   在墙上、目标页是观测墙 → Match（两边画同一个播放器）
 //	卡片   目标页的网格里还看得见这一间的卡片 → 画面缩回卡片
 //	岛     收起且窗口模式 → 画面缩进岛
 //	没有   结束、全屏、或目标页上没有它的画面 → 硬切
@@ -365,11 +423,15 @@ func (a *App) pushPage(target string) {
 		a.Router.Transition = ui.TransitionNone
 		a.routeTransitionUntil = time.Time{}
 		a.surfaceFlight = nil
+		from := a.Router.Path()
 		a.Router.Push(target)
+		a.noteRoute(from, a.Router.Path())
 		return
 	}
 	a.leavePlayerTo(leaveCollapse, target, a.FollowsSection, func() {
+		from := a.Router.Path()
 		a.Router.Push(target)
+		a.noteRoute(from, a.Router.Path())
 	})
 }
 

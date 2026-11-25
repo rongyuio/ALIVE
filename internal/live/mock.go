@@ -11,6 +11,8 @@
 //
 //	ALIVE_MOCK=danmu    在播、有弹幕（画面停在封面上，不起 ffmpeg）
 //	ALIVE_MOCK=offline  未开播（测空态覆盖层）
+//	ALIVE_MOCK=blocked  取流/弹幕返回 ErrBlocked（测风控失败路径）
+//	ALIVE_MOCK=timeout  取流/弹幕返回 DeadlineExceeded（测超时失败路径）
 //	ALIVE_MOCK_FEED=partial  列表共 400 条、每段 40 条，cursor=40 那一段只回
 //	                         20 条并标 Partial（测续取与退避）
 package live
@@ -26,6 +28,8 @@ import (
 const (
 	MockDanmu   = "danmu"
 	MockOffline = "offline"
+	MockBlocked = "blocked"
+	MockTimeout = "timeout"
 )
 
 // init 在包初始化阶段就把数据层整体换掉。
@@ -198,6 +202,12 @@ func (m *mockProvider) RoomInfo(_ context.Context, roomID string) (Room, error) 
 // 真实 CDN——画面留在封面上，弹幕和所有控件照常可用。这正是测 UI
 // 需要的状态：有页面、无网络。
 func (m *mockProvider) Stream(_ context.Context, roomID, line string) (Stream, error) {
+	switch m.mode {
+	case MockBlocked:
+		return Stream{}, fmt.Errorf("%w: mock 403", ErrBlocked)
+	case MockTimeout:
+		return Stream{}, fmt.Errorf("mock timeout: %w", context.DeadlineExceeded)
+	}
 	return Stream{
 		RoomID:   roomID,
 		Platform: m.platform,
@@ -212,6 +222,12 @@ func (m *mockProvider) Stream(_ context.Context, roomID, line string) (Stream, e
 
 // Danmaku 按固定剧本循环发送，覆盖面板和飞屏要处理的每一种消息。
 func (m *mockProvider) Danmaku(ctx context.Context, roomID string, onMessage func(Danmu)) (DanmakuStream, error) {
+	switch m.mode {
+	case MockBlocked:
+		return nil, fmt.Errorf("%w: mock 403", ErrBlocked)
+	case MockTimeout:
+		return nil, context.DeadlineExceeded
+	}
 	if m.mode == MockOffline {
 		// 未开播的房间不会有弹幕：给一条永远静默的流，
 		// 免得 UI 上出现「在播却没有消息」的错位感。

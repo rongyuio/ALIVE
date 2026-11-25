@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"testing"
 	"time"
@@ -186,12 +187,20 @@ func TestCloseWithoutCardCutsHard(t *testing.T) {
 	}
 }
 
-// 岛 → 播放页：封面从岛的位置长出来。
+// 岛 → 播放页，这一间已经在出画面：硬切，不飞封面。
 //
-// 这一间在目标页上没有卡片（回的是首页，但卡片没记到），岛是它唯一的家。
-func TestIslandToPlayerFliesTheCover(t *testing.T) {
+// 2026-11-25 用户报的就是这条：「点岛放大直播间，明明在开播有画面，过程中
+// 显示封面然后放大变成直播画面，闪一下」。封面会盖住活画面，落地再切回
+// 直播——那次切换是凭空造出来的。有画面时目标页第一帧就该是画面本身。
+func TestIslandToLivePlayerCutsHard(t *testing.T) {
 	app, tt, room := listOpenedPlayer(t)
 	key := watchKey(room)
+	// 呈现尺寸的推需要一条引擎轨：Tester 里的 GIF 播放器底下没有
+	// *playback.Engine，不换这个钩子，present 永远停在 0,0。
+	spy := &trackSpy{}
+	oldEngine := engineOf
+	engineOf = func(*ui.VideoPlayer) videoTrack { return spy }
+	t.Cleanup(func() { engineOf = oldEngine })
 
 	// 先收进岛，让焦点活着、岛显示这一路。
 	app.collapsePlayer()
@@ -201,9 +210,51 @@ func TestIslandToPlayerFliesTheCover(t *testing.T) {
 	if app.focusKey() != key {
 		t.Fatalf("收起之后这一路没了：%q", app.focusKey())
 	}
-	if _, ok := tt.Find("表面过渡中的画面"); ok {
-		t.Fatal("收起演完之后画面还挂着")
+	if !app.readyPicture(app.focus) {
+		t.Fatal("夹具里这一间没有画面，测不到「有画面不飞」这条")
 	}
+	// 收起之后是后台收听：引擎按 160×90 渲染。
+	if got := app.focus.present; got != (presentSize{W: 160, H: 90}) {
+		t.Fatalf("后台收听的呈现尺寸是 %+v，期望 160×90", got)
+	}
+
+	app.returnToFocus()
+	// 进播放页的同一拍就要推全尺寸：晚一帧，硬切的第一帧就是一张放大的
+	// 160×90 糊图。
+	if got := app.focus.present; got != (presentSize{}) {
+		t.Fatalf("进播放页那一拍没有推全尺寸：present=%+v", got)
+	}
+	tt.Frame()
+	if app.Router.Path() != routePlayer {
+		t.Fatalf("点岛没有回播放页：%q", app.Router.Path())
+	}
+	if app.surfaceFlight != nil {
+		t.Fatalf("这一间已经在出画面，还飞了一块封面：%+v", app.surfaceFlight)
+	}
+	if app.Router.Transition != ui.TransitionNone {
+		t.Fatalf("从岛进播放页用了 %v：目标页第一帧就该是清楚的", app.Router.Transition)
+	}
+}
+
+// 岛 → 播放页，这一间还没有画面（在取流）：封面从岛的位置长出来。
+func TestIslandToPlayerFliesTheCoverWhileConnecting(t *testing.T) {
+	app, tt, room := listOpenedPlayer(t)
+	key := watchKey(room)
+
+	app.collapsePlayer()
+	tt.Frame()
+	tt.Advance(500 * time.Millisecond)
+	tt.Frame()
+	if app.focusKey() != key {
+		t.Fatalf("收起之后这一路没了：%q", app.focusKey())
+	}
+
+	// 把画面拿走，只留「正在取流」：这就是封面飞行该出现的状态。
+	s := app.focus
+	s.player.Close()
+	s.player = nil
+	s.loading = true
+	tt.Frame()
 
 	app.returnToFocus()
 	tt.Frame()
@@ -219,6 +270,69 @@ func TestIslandToPlayerFliesTheCover(t *testing.T) {
 	}
 	if f.fromRect.W <= 0 || f.fromRect.H <= 0 {
 		t.Fatalf("岛的位置没有量出来：%v", f.fromRect)
+	}
+}
+
+// 点岛的起点是岛，不是同一页上那张卡片。
+//
+// 用户在屏幕正中的岛上点了一下，画面却从列表里某张卡片长出来——读起来
+// 就是「不知道从哪冒出来一块封面」。卡片的画面归属只对「点卡片」成立。
+func TestIslandClickStartsFromTheIslandNotACard(t *testing.T) {
+	app, tt := cardFlightApp(t, cardFlightRooms("卡", "英雄联盟", 4))
+	room := app.Streamers[0]
+
+	// 焦点是这一间，还在取流：岛展开、首页上也有它的卡片。
+	s := focusForTest(app, room)
+	s.loading = true
+	tt.Frame()
+	tt.Advance(300 * time.Millisecond)
+	tt.Frame()
+
+	card, ok := tt.Find("直播间:" + room.Name)
+	if !ok {
+		t.Fatalf("找不到 %s 的卡片", room.Name)
+	}
+	island, ok := tt.Find("灵动岛")
+	if !ok {
+		t.Fatal("找不到岛")
+	}
+	if r := app.cardRectFor(watchKey(room), routeHome, app.FollowsSection); r.W <= 0 {
+		t.Fatal("卡片矩形没有记账，这条测试就测不到「被卡片抢走」")
+	}
+
+	if err := tt.Click("回到直播间"); err != nil {
+		t.Fatalf("点岛失败: %v", err)
+	}
+	tt.Frame()
+	f := app.surfaceFlight
+	if f == nil || f.from != pictureIsland {
+		t.Fatalf("点岛没有从岛起飞：%+v", f)
+	}
+	if nearRect(f.fromRect, card) {
+		t.Fatalf("画面从卡片起飞了：flight=%v card=%v", f.fromRect, card)
+	}
+	// 起点必须落在岛的中心：宽高由飞行块自己定，中心不能偏。
+	if dx := math.Abs(float64(f.fromRect.X + f.fromRect.W/2 - (island.X + island.W/2))); dx > 1 {
+		t.Fatalf("起点不在岛的中心：flight=%v island=%v", f.fromRect, island)
+	}
+}
+
+// 卡片 → 播放页，这一间已经在出画面：同样硬切。
+func TestCardToLivePlayerCutsHard(t *testing.T) {
+	app, tt := cardFlightApp(t, cardFlightRooms("卡", "英雄联盟", 4))
+	room := app.Streamers[0]
+	focusWithPlayer(t, app, room)
+	tt.Frame()
+
+	if err := tt.Click("直播间:" + room.Name); err != nil {
+		t.Fatalf("点卡片失败: %v", err)
+	}
+	tt.Frame()
+	if app.Router.Path() != routePlayer {
+		t.Fatalf("点卡片没有进播放页：%q", app.Router.Path())
+	}
+	if app.surfaceFlight != nil {
+		t.Fatalf("这一间已经在出画面，还飞了一块封面：%+v", app.surfaceFlight)
 	}
 }
 
@@ -257,9 +371,14 @@ func cardFlightApp(t *testing.T, rooms []Streamer) (*App, *ui.Tester) {
 
 // openCardAndCollapse 点一张真实卡片进播放页，再 Esc 收起（焦点留着，
 // 岛继续显示这一路）。后面的滚动 / 换分区测试都从这一刻开始。
+//
+// 这一间故意停在「正在取流」：封面飞行只在这一种状态下发生，有画面的房间
+// 进播放页是硬切（见 enterPlayer 的 readyPicture）。用活画面做夹具，点岛
+// 那一下根本不会有飞行块，测的就不是落点了。
 func openCardAndCollapse(t *testing.T, app *App, tt *ui.Tester, room Streamer) {
 	t.Helper()
-	focusWithPlayer(t, app, room)
+	s := focusForTest(app, room)
+	s.loading = true
 	if err := tt.Click("直播间:" + room.Name); err != nil {
 		t.Fatalf("点卡片失败: %v", err)
 	}
@@ -348,4 +467,96 @@ func TestCardRectExpiresAcrossCategories(t *testing.T) {
 	if f == nil || f.from != pictureIsland {
 		t.Fatalf("换分区后应从岛起飞：%+v", f)
 	}
+}
+
+// 收起的第一帧必须和舞台最后一帧是同一幅画。
+//
+// 飞行块从舞台矩形起飞，所以它的底图、模糊、压暗、画面位置都必须和舞台
+// 那一套完全一致。以前飞行块铺的是一张**没有模糊**的底图：起飞那一帧
+// 黑边区从「糊」跳到「实」，正是用户说的「闪一下」里最容易被漏掉的一种。
+//
+// 判据是像素：8×8 棋盘底图在模糊之后，格子边界附近和原图差得很远；
+// 两边共用 backdropLayers 时两帧逐点相等。容差 0——Tester 的软件光栅器
+// 没有随机源（见 ui-regressions.md）。
+func TestLeaveFlightStartsAsTheStage(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	app := NewMockApp()
+	room := Streamer{
+		Platform: "bilibili", RoomID: "42", Name: "甲", Title: "标题",
+		Live: true, CoverURL: "https://example.invalid/cover.jpg",
+	}
+	app.Router = ui.NewRouter(routeHome)
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	useBackdropBitmap(t, checkerBitmap(8, 8))
+	focusWithPlayer(t, app, room)
+	app.openRoom(room)
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	stage := app.playerStageBounds
+	if stage.W <= 0 || stage.H <= 0 {
+		t.Fatal("播放页没有量到舞台矩形")
+	}
+	before := tt.Image()
+
+	app.collapsePlayer()
+	tt.Frame()
+	if f := app.surfaceFlight; f == nil || f.kind != flightLeave {
+		t.Fatalf("收起没有起飞行块：%+v", f)
+	}
+	after := tt.Image()
+
+	// 只比黑边区。舞台中间那块是画面，上下还压着悬浮 chrome（顶栏 / 控制条），
+	// 飞行块不画 chrome，整块比会把“控制条消失”当成失败。
+	// 黑边区的宽度用生产同一个 letterbox 算，不从像素里猜。
+	pw, ph := app.focus.player.Size()
+	_, barR, _, barL := letterbox(stage.W, stage.H, float32(pw), float32(ph))
+	if barL < 40 || barR < 40 {
+		t.Fatalf("黑边太窄（左右 %v/%v），测不出底图差异", barL, barR)
+	}
+	// 上下各让 120：躲开顶栏和控制条。
+	top := int(stage.Y + 120)
+	bottom := int(stage.Y + stage.H - 120)
+	leftX0, leftX1 := int(stage.X+24), int(stage.X+barL-8)
+	rightX0, rightX1 := int(stage.X+stage.W-barR+8), int(stage.X+stage.W-24)
+	diff, samples := 0, 0
+	for y := top; y < bottom; y += 7 {
+		for _, span := range [][2]int{{leftX0, leftX1}, {rightX0, rightX1}} {
+			for x := span[0]; x < span[1]; x += 7 {
+				b, a := before.RGBAAt(x, y), after.RGBAAt(x, y)
+				samples++
+				if b != a {
+					diff++
+					if diff == 1 {
+						t.Logf("第一处不同 (%d,%d)：舞台 %v → 飞行 %v", x, y, b, a)
+					}
+				}
+			}
+		}
+	}
+	if samples == 0 {
+		t.Fatal("没有采到样")
+	}
+	if diff > 0 {
+		t.Fatalf("%d/%d 个采样点不同：收起的第一帧不是舞台那一帧", diff, samples)
+	}
+}
+
+// checkerBitmap 造一张黑白棋盘底图：模糊前后每个采样点都会变，用来区分
+// 「铺了同一套模糊底」和「铺了一张没模糊的底」。
+func checkerBitmap(w, h int) *ui.Bitmap {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			i := img.PixOffset(x, y)
+			c := uint8(0)
+			if (x+y)%2 == 0 {
+				c = 255
+			}
+			img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = c, c, c, 255
+		}
+	}
+	return ui.NewBitmap(img)
 }

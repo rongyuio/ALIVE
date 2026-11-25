@@ -14,19 +14,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/media"
 	"github.com/egoist/mygo/plugins/video"
 	"github.com/egoist/mygo/scene"
+
+	"alive/internal/diag"
 )
 
 // ErrUnsupported 表示这一路起不来：地址为空，或者 libmpv 不接受它。
-var ErrUnsupported = errors.New("playback: 该流无法自带解码")
+//
+// 它带 DiagClass，日志层不用 import playback 也能把它归类成 unsupported；
+// 否则 diag 与 playback 会互相 import。
+var ErrUnsupported error = unsupportedError{}
+
+type unsupportedError struct{}
+
+func (unsupportedError) Error() string     { return "playback: 该流无法自带解码" }
+func (unsupportedError) DiagClass() string { return "unsupported" }
 
 // Options 是一次播放的选项。
 type Options struct {
@@ -66,12 +78,31 @@ type Options struct {
 	// 观测墙一屏最多 12 路，每路各留一份是纯浪费。对画面没有影响：前向
 	// 缓存（抗抖动那段）不动。
 	NoBackBuffer bool
+
+	// Key 只用于日志：这一路属于哪一间房（platform|roomID）。空值也允许，
+	// 但不能用它做业务判断。
+	Key string
+	// Session 只用于日志：这一路属于哪一轮起播（取流#N / watch#N）。
+	Session string
+	// Role 只用于日志：player（播放页）或 wall（观测墙）。
+	Role string
+	// MPVLog 是 mpv 自己的日志订阅级别，默认 warn。排障时设 info / v，
+	// 能拿到 hls、http、demuxer 那一层的第一手信息。
+	MPVLog string
 }
 
 // Engine 是一路直播的播放引擎，实现 media.Engine。
 type Engine struct {
 	p    *video.Player
 	done chan struct{}
+
+	// id/key/role/openedAt 只服务日志：一路引擎从创建到销毁必须能配对，
+	// 否则「旧引擎什么时候关的、新引擎什么时候开的」永远说不清。
+	id       uint64
+	key      string
+	session  string
+	role     string
+	openedAt time.Time
 
 	mu     sync.Mutex
 	serial uint64
@@ -81,6 +112,7 @@ type Engine struct {
 	// 直播画面停住时这两种完全不同，不能靠猜。
 	calls  uint64
 	closed bool
+	live   bool // 是否已计入 LiveEngines；Close 与销毁 goroutine 只减一次
 	gate   audioGate
 }
 
@@ -165,29 +197,63 @@ func waitDestroys() {
 	if len(chans) == 0 {
 		return
 	}
+	start := time.Now()
 	deadline := time.NewTimer(destroyWaitBudget)
 	defer deadline.Stop()
 	for _, c := range chans {
 		select {
 		case <-c:
 		case <-deadline.C:
+			slog.Warn("等待旧引擎销毁超时",
+				"event", diag.EvEngineDestroyTimeout,
+				"pending", len(chans),
+				"waited_ms", time.Since(start).Milliseconds())
 			return
 		}
 	}
+	if d := time.Since(start); d > 500*time.Millisecond {
+		slog.Info("等待旧引擎销毁",
+			"event", diag.EvEngineDestroy,
+			"pending", len(chans),
+			"waited_ms", d.Milliseconds())
+	}
 }
+
+var (
+	engineSeq  atomic.Uint64
+	liveEngine atomic.Int64
+)
+
+// LiveEngines 是当前存活的引擎数。只用于诊断（指标、卡死现场、support bundle），
+// 不参与任何业务判断。
+func LiveEngines() int { return int(liveEngine.Load()) }
 
 // Open 打开一路直播并开始播放。
 //
 // 返回时 mpv 已经收到 loadfile，首帧要等 Frame 第一次给出画面。
 func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
+	id := engineSeq.Add(1)
+	started := time.Now()
+	fail := func(step string, err error) (*Engine, error) {
+		slog.Warn("引擎打开失败",
+			"event", diag.EvEngineOpenFail,
+			diag.Engine, id,
+			diag.Room, opts.Key,
+			diag.Session, opts.Session,
+			diag.Role, opts.Role,
+			diag.Stage, step,
+			"ms", time.Since(started).Milliseconds(),
+			diag.Err(err))
+		return nil, err
+	}
 	if upstream == "" {
-		return nil, fmt.Errorf("%w: 上游地址为空", ErrUnsupported)
+		return fail("empty", fmt.Errorf("%w: 上游地址为空", ErrUnsupported))
 	}
 	// 上一个实例可能还在释放 AO / mpv；等它真正结束再建新的。
 	waitDestroys()
 	lib, err := libraryPath()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+		return fail("library", fmt.Errorf("%w: %v", ErrUnsupported, err))
 	}
 	p, err := video.New(video.Options{
 		Library:      lib,
@@ -200,30 +266,41 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		ClientName:   audioClientName,
 		NoBackBuffer: opts.NoBackBuffer,
 		GPU:          opts.GPU,
+		LogLevel:     opts.MPVLog,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+		return fail("new", fmt.Errorf("%w: %v", ErrUnsupported, err))
 	}
-	e := &Engine{p: p, done: make(chan struct{})}
+	e := &Engine{p: p, done: make(chan struct{}), id: id, key: opts.Key, session: opts.Session, role: opts.Role, openedAt: time.Now(), live: true}
+	liveEngine.Add(1)
 	if opts.SkipAudioGate || opts.Silent {
 		e.gate.started = true
 	}
 	if opts.StartSilent {
 		if err := p.SetVolume(0); err != nil {
 			p.Close()
-			return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+			return fail("volume", fmt.Errorf("%w: %v", ErrUnsupported, err))
 		}
 	}
 	if err := p.Load(upstream); err != nil {
 		p.Close()
-		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+		return fail("load", fmt.Errorf("%w: %v", ErrUnsupported, err))
 	}
 	// 直接播：直播没有「准备好再开始」这一步，loadfile 之后越早开始读，
 	// 首帧越早。暂停着等反而会多一轮状态切换。
 	if err := p.Play(); err != nil {
 		p.Close()
-		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
+		return fail("play", fmt.Errorf("%w: %v", ErrUnsupported, err))
 	}
+	slog.Info("引擎打开",
+		"event", diag.EvEngineOpen,
+		diag.Engine, id,
+		diag.Room, opts.Key,
+		diag.Session, opts.Session,
+		diag.Role, opts.Role,
+		diag.GPU, opts.GPU,
+		diag.URLHost, diag.Host(upstream),
+		"open_ms", time.Since(started).Milliseconds())
 
 	go func() {
 		select {
@@ -235,6 +312,19 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		// 在 video.Player 自己的 goroutine 里。Done 必须等它结束，否则
 		// 「Done 表示这一路彻底停下」这句注释就是假的。
 		<-p.Done()
+		e.mu.Lock()
+		if e.live {
+			e.live = false
+			liveEngine.Add(-1)
+		}
+		e.mu.Unlock()
+		slog.Info("引擎销毁",
+			"event", diag.EvEngineDestroy,
+			diag.Engine, e.id,
+			diag.Room, e.key,
+			diag.Session, e.session,
+			diag.Role, e.role,
+			diag.AgeMS, time.Since(e.openedAt).Milliseconds())
 		close(e.done)
 	}()
 	return e, nil
@@ -469,7 +559,18 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	e.closed = true
+	if e.live {
+		e.live = false
+		liveEngine.Add(-1)
+	}
 	e.mu.Unlock()
+	slog.Info("引擎关闭",
+		"event", diag.EvEngineClose,
+		diag.Engine, e.id,
+		diag.Room, e.key,
+		diag.Session, e.session,
+		diag.Role, e.role,
+		diag.AgeMS, time.Since(e.openedAt).Milliseconds())
 	e.p.Close()
 	// 登记给下一次 Open：新实例要等这一路的 mpv / AO 真正释放完。
 	noteDestroy(e.p.Done())

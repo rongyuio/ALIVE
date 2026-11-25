@@ -122,8 +122,8 @@ func TestPlayerIslandWidthClamped(t *testing.T) {
 // 它在放、并且点得回去。
 // 后台收听：离开播放页之后岛还是那一条，不缩成一颗圆。
 //
-// 点它回到这一间——热区写着「回到直播间」，不管这一间在不在观测盒里。
-// 以前在盒里会改道去墙，用户点岛想回来，结果落在一面没有这间的墙上。
+// 点它回到这一间——热区写着「回到直播间」，不管这一间在不在观测墙里。
+// 以前在墙上会改道去墙，用户点岛想回来，结果落在一面没有这间的墙上。
 func TestBackgroundIslandStaysAPill(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(1))
 	room := app.WatchRooms[0]
@@ -375,7 +375,7 @@ func TestIslandWatchActiveCancelButton(t *testing.T) {
 		t.Fatalf("取消 active 离开了观测墙：route=%q", app.Router.Path())
 	}
 	if len(app.WatchRooms) != 2 {
-		t.Fatalf("取消 active 动了观测盒：%+v", app.WatchRooms)
+		t.Fatalf("取消 active 动了观测墙：%+v", app.WatchRooms)
 	}
 	tt.Advance(time.Second)
 	tt.Frame()
@@ -481,7 +481,7 @@ func TestIslandPlayerExitButton(t *testing.T) {
 		t.Fatalf("点岛上的 X 没回上一页：route=%q", app.Router.Path())
 	}
 	if len(app.WatchRooms) != 1 {
-		t.Fatalf("退出直播间动了观测盒：%+v", app.WatchRooms)
+		t.Fatalf("退出直播间动了观测墙：%+v", app.WatchRooms)
 	}
 }
 

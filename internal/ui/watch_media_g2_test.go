@@ -88,11 +88,11 @@ func TestWatchActivateInvalidatesPendingActiveFetch(t *testing.T) {
 	}
 }
 
-// 换焦点不能关掉盒里那一间：A 在墙上还要继续做静音预览。
+// 换焦点不能关掉墙上那一间：A 在墙上还要继续做静音预览。
 //
 // 以前 watchDropActive 先 closeMedia(A) 交还引擎，紧接着又无条件
 // watchCloseSession 把它删了，A 回墙要重新取流。现在换焦点只经过
-// setFocus 一个写者：在盒里 → 静音留着，不在盒里 → 关掉。
+// setFocus 一个写者：在墙上 → 静音留着，不在墙上 → 关掉。
 func TestWatchDropActiveKeepsSessionInBox(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, _ := newWatchMock(t, rooms)
@@ -106,7 +106,7 @@ func TestWatchDropActiveKeepsSessionInBox(t *testing.T) {
 	}
 	got := app.watch.sessions[watchKey(rooms[0])]
 	if got != a {
-		t.Fatal("换焦点之后 A 的会话不在册了：它还在盒里")
+		t.Fatal("换焦点之后 A 的会话不在册了：它还在墙上")
 	}
 	if a.player == nil {
 		t.Fatal("换焦点之后 A 的引擎被关了：它该留在墙上做静音预览")

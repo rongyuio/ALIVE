@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,61 +126,17 @@ func TestWatchCloseGuessesLifetimeWhenPlatformDoesNot(t *testing.T) {
 	}
 }
 
-// 「暂离时省流量」要落盘：用户设过一次，重启后还是那个选择。
-func TestWatchSaveDataPersists(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-
-	app := NewMockApp()
-	app.WatchSaveData = true
-	app.stateDirty = true
-	app.saveState()
-
-	path := statePath()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("状态文件没有落盘：%s", path)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if !NewMockApp().WatchSaveData {
-		t.Fatal("重启之后「暂离时省流量」丢了")
-	}
-
-	// 默认是关：暂离默认要无缝，省流量是用户主动开的。
-	other := NewMockApp()
-	other.WatchSaveData = false
-	other.stateDirty = true
-	other.saveState()
-	time.Sleep(100 * time.Millisecond)
-	if NewMockApp().WatchSaveData {
-		t.Fatal("关掉之后重启又变成了开")
-	}
-}
-
-// 开关画在墙上，改它就是改行为。
-func TestWatchSaveDataToggle(t *testing.T) {
+// 墙上不再有「暂离时省流量」开关（2026-11-25 去掉）。
+//
+// 停不停由导航决定，不再交给用户；墙头右侧那一格留空。
+func TestWatchHasNoSaveDataSwitch(t *testing.T) {
 	rooms := watchTestRooms(1)
-	app, tt := newWatchMock(t, rooms)
+	_, tt := newWatchMock(t, rooms)
 	tt.Frame()
-
-	label := "暂离时省流量：关"
-	if _, ok := tt.Find(label); !ok {
-		t.Fatalf("墙上没有「暂离时省流量」：texts=%q", tt.Texts())
-	}
-	if err := tt.Click(label); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if !app.WatchSaveData {
-		t.Fatal("点了开关但状态没变")
-	}
-	if _, ok := tt.Find("暂离时省流量：开"); !ok {
-		t.Fatalf("开关没有变成「开」：texts=%q", tt.Texts())
+	for _, text := range tt.Texts() {
+		if strings.Contains(text, "暂离时省流量") {
+			t.Fatalf("墙上还有「暂离时省流量」：%q", text)
+		}
 	}
 }
 
@@ -242,8 +198,8 @@ func TestWatchOfflineSchedulesRetry(t *testing.T) {
 // 最小化也要算"墙看不见"。
 //
 // Shell 每帧按路由判断墙在不在屏上，但最小化时 Shell 根本不重建，那条路
-// 走不到。没有 WatchHidden，开着「暂离时省流量」最小化窗口，墙上的会话
-// 永远不会被回收。
+// 走不到。没有 WatchHidden，hiddenSince 会停在最小化之前，回来时「刚回到
+// 墙上」的收尾（离线格立刻重探、隐藏/显示日志）就落错地方。
 func TestWatchHiddenCoversMinimize(t *testing.T) {
 	rooms := watchTestRooms(2)
 	app, tt := newWatchMock(t, rooms)
@@ -252,16 +208,16 @@ func TestWatchHiddenCoversMinimize(t *testing.T) {
 	}
 	tt.Frame()
 
-	app.WatchSaveData = true
 	app.WatchHidden()
-	app.watchReap(time.Now().Add(time.Hour))
-	if n := len(app.watch.sessions); n != 0 {
-		t.Fatalf("最小化之后还有 %d 路会话没回收", n)
+	if app.watch.hiddenSince.IsZero() {
+		t.Fatal("最小化没有标成「墙看不见」")
+	}
+	// 最小化不算离开墙：会话不拆。
+	if n := len(app.watch.sessions); n != len(rooms) {
+		t.Fatalf("最小化之后会话被拆了：只剩 %d/%d", n, len(rooms))
 	}
 
-	// 恢复：标记清掉，下一次隐藏重新计时。
 	app.WatchShown()
-	app.watchReap(time.Now().Add(2 * time.Hour))
 	if !app.watch.hiddenSince.IsZero() {
 		t.Fatal("恢复之后 hiddenSince 还留着")
 	}

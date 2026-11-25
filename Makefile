@@ -50,7 +50,7 @@ TEST_HOME := $(CURDIR)/.mygo/test-home
 TESTENV   = APPDATA="$(TEST_HOME)/Roaming" LOCALAPPDATA="$(TEST_HOME)/Local" GOCACHE="$(shell $(GO) env GOCACHE)" $(RUNENV)
 
 .DEFAULT_GOAL := build
-.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline mock-partial e2e tidy tools clean check-mpv
+.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline mock-partial e2e diag tidy tools clean check-mpv
 
 help:
 	@echo "build         package into $(BUILD_DIR)/<os>-<arch>/ (portable + installer)"
@@ -66,6 +66,7 @@ help:
 	@echo "mock-offline  run with mock data layer (offline state)"
 	@echo "mock-partial  run with mock feed: 400 rooms, a half chunk at cursor 40"
 	@echo "e2e           build with the automation plugin"
+	@echo "diag          build the log reader (cmd/alive-diag)"
 	@echo "tools         install mygo-automation CLI"
 	@echo "tidy          go mod tidy"
 	@echo "clean         remove $(BUILD_DIR)/, .mygo/ and built binaries"
@@ -129,6 +130,9 @@ mock-partial: check-mpv
 
 # automation 插件只在 e2e 构建里存在（见 automation_e2e.go）。产物要能直接跑，
 # 所以运行库跟着一起放过去。
+diag:
+	$(GO) build -o $(BUILD_DIR)/alive-diag.exe ./cmd/alive-diag
+
 e2e: check-mpv
 	@$(SH) 'mkdir -p "$(BUILD_DIR)/e2e"'
 	$(GO) build -tags e2e -o $(BUILD_DIR)/e2e/alive-e2e.exe .

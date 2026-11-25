@@ -47,7 +47,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	focusForTest(dst, Streamer{Platform: "bilibili", RoomID: "1001", Name: "老王"})
 	sum := dst.applyConfig(parsed)
 	if sum.Follows != 2 || sum.Subs != 1 || sum.Watch != 1 || sum.Filters != 1 {
-		t.Fatalf("导入 %+v，期望 2 位关注、1 个订阅、1 个观测盒、1 个屏蔽词", sum)
+		t.Fatalf("导入 %+v，期望 2 位关注、1 个订阅、1 个观测墙、1 个屏蔽词", sum)
 	}
 	if len(dst.Follows) != 2 || dst.Follows[0].RoomID != "1001" {
 		t.Fatalf("关注没有正确落地：%+v", dst.Follows)
@@ -59,10 +59,10 @@ func TestConfigRoundTrip(t *testing.T) {
 		t.Errorf("线路没有覆盖：%+v", c)
 	}
 	if len(dst.WatchRooms) != 1 || watchKey(dst.WatchRooms[0]) != "douyu|77" {
-		t.Fatalf("观测盒没有落地：%+v", dst.WatchRooms)
+		t.Fatalf("观测墙没有落地：%+v", dst.WatchRooms)
 	}
 	if v := dst.watchVolume("douyu|77"); v != 0.25 {
-		t.Errorf("观测盒音量 %v，期望 0.25", v)
+		t.Errorf("观测墙音量 %v，期望 0.25", v)
 	}
 	if dst.focusVolume() != 0.42 {
 		t.Errorf("全局音量 %v，期望 0.42", dst.focusVolume())
@@ -83,7 +83,7 @@ func TestConfigRoundTrip(t *testing.T) {
 		t.Errorf("增量合并不幂等：%+v", again)
 	}
 	if len(dst.Follows) != 2 || len(dst.WatchRooms) != 1 {
-		t.Errorf("重复导入后关注 %d 条、观测盒 %d 个", len(dst.Follows), len(dst.WatchRooms))
+		t.Errorf("重复导入后关注 %d 条、观测墙 %d 个", len(dst.Follows), len(dst.WatchRooms))
 	}
 }
 
@@ -116,7 +116,7 @@ func TestConfigFileHasNoEnvelope(t *testing.T) {
 	}
 }
 
-// 导入不许弄丢本机已有的观测盒和别的房间的清晰度：列表只加不删，
+// 导入不许弄丢本机已有的观测墙和别的房间的清晰度：列表只加不删，
 // 房间记录按房间合并。
 func TestImportMergesListsAndRoomChoices(t *testing.T) {
 	app := NewMockApp()
@@ -136,7 +136,7 @@ func TestImportMergesListsAndRoomChoices(t *testing.T) {
 	})
 
 	if len(app.WatchRooms) != 2 || watchKey(app.WatchRooms[0]) != "huya|9" || watchKey(app.WatchRooms[1]) != "douyu|77" {
-		t.Fatalf("观测盒合并结果不对：%+v", app.WatchRooms)
+		t.Fatalf("观测墙合并结果不对：%+v", app.WatchRooms)
 	}
 	if got := app.qualityFor("huya|9"); got != "蓝光" {
 		t.Errorf("本机别的房间被改掉了：%q", got)

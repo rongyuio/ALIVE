@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"alive/internal/diag"
 	"alive/internal/theme"
 )
 
@@ -44,7 +46,6 @@ type persisted struct {
 	FollowRecords       *[]FollowRecord `json:"followRecords,omitempty"` // 完整关注记录
 	Subs                *[]Subscription `json:"subscriptions,omitempty"`
 	WatchRooms          *[]watchRecord  `json:"watchRooms,omitempty"`
-	WatchSaveData       *bool           `json:"watchSaveData,omitempty"`
 	// RoomChoices 是每个直播间自己的清晰度 / 线路（键 platform|roomID）。
 	RoomChoices map[string]roomChoice `json:"roomChoices,omitempty"`
 	// Quality / Line 是旧版的全局字段。新模型按房间存，读旧文件时无法
@@ -72,14 +73,24 @@ func statePath() string {
 func loadState() (persisted, bool) {
 	path := statePath()
 	if path == "" {
+		slog.Warn("拿不到配置目录，状态不会落盘",
+			"event", diag.EvStateSaveFail, diag.Stage, "path")
 		return persisted{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("读取状态失败", "event", diag.EvStateLoadFail,
+				diag.Stage, "read", "path", filepath.Base(path), diag.Err(err))
+		}
 		return persisted{}, false
 	}
 	var p persisted
-	if json.Unmarshal(data, &p) != nil {
+	if err := json.Unmarshal(data, &p); err != nil {
+		// 坏文件会在下一次保存时被默认值覆盖。至少先留下「坏过」的证据，
+		// 否则用户报「设置全没了」时日志里什么都没有。
+		slog.Warn("状态文件损坏", "event", diag.EvStateLoadFail,
+			diag.Stage, "parse", "path", filepath.Base(path), diag.Err(err))
 		return persisted{}, false
 	}
 	return p, true
@@ -88,7 +99,7 @@ func loadState() (persisted, bool) {
 // stateMu 串行化写盘：拖音量时会连着触发几次保存。
 var stateMu sync.Mutex
 
-func writeState(data []byte) {
+func (a *App) writeState(data []byte) {
 	path := statePath()
 	if path == "" {
 		return
@@ -96,15 +107,31 @@ func writeState(data []byte) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		slog.Warn("建状态目录失败", "event", diag.EvStateSaveFail,
+			diag.Stage, "mkdir", "path", filepath.Base(path), diag.Err(err))
+		a.warnStateSave()
 		return
 	}
 	// 先写临时文件再 rename：写到一半退出也不会留下半个 JSON。
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		slog.Warn("写状态失败", "event", diag.EvStateSaveFail,
+			diag.Stage, "write", "path", filepath.Base(path), diag.Err(err))
+		a.warnStateSave()
 		return
 	}
-	_ = os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		slog.Warn("状态落盘失败", "event", diag.EvStateSaveFail,
+			diag.Stage, "rename", "path", filepath.Base(path), diag.Err(err))
+		a.warnStateSave()
+	}
 }
+
+// warnStateSave 记一次「设置没能落盘」。
+//
+// writeState 跑在后台 goroutine，视图数据只能在主线程写：这里只落一个
+// 原子旗标，Shell 下一帧取走再变成通知。
+func (a *App) warnStateSave() { a.stateSaveFailed.Store(true) }
 
 // markDirty 记一次状态变更，300ms 内的连续变更合并成一次落盘。
 //
@@ -136,7 +163,6 @@ func (a *App) saveState() {
 		watchRooms = append(watchRooms, a.watchRecordOf(s))
 	}
 	volume := a.DefaultVolume
-	saveData := a.WatchSaveData
 	panelW := a.panelWidth()
 	panelOn := a.DanmuPanelOn
 	danmuOn := a.DanmuOn
@@ -161,7 +187,6 @@ func (a *App) saveState() {
 		FollowRecords:       &follows,
 		Subs:                &subs,
 		WatchRooms:          &watchRooms,
-		WatchSaveData:       &saveData,
 		RoomChoices:         a.roomChoices,
 		Volume:              &volume,
 		DanmuOn:             &danmuOn,
@@ -174,7 +199,7 @@ func (a *App) saveState() {
 	if err != nil {
 		return
 	}
-	go writeState(data)
+	go a.writeState(data)
 }
 
 // restore 把落盘的状态盖回新 App 的默认值上；文件不存在或坏掉就保持默认。
@@ -229,16 +254,13 @@ func (a *App) restore() {
 		for _, r := range *p.WatchRooms {
 			s := r.streamer()
 			rooms = append(rooms, s)
-			// 每格音量是盒子状态的一部分，和房间一起恢复；没存过的不写，
+			// 每格音量是墙状态的一部分，和房间一起恢复；没存过的不写，
 			// 下次上墙继续继承全局音量。
 			if r.Volume != nil {
 				a.watch.volumes[watchKey(s)] = *r.Volume
 			}
 		}
 		a.WatchRooms = normalizeWatchRooms(rooms)
-	}
-	if p.WatchSaveData != nil {
-		a.WatchSaveData = *p.WatchSaveData
 	}
 	if p.RoomChoices != nil {
 		a.roomChoices = p.RoomChoices

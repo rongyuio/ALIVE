@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -13,21 +14,27 @@ const (
 	syncDialogW float32 = 520
 	syncBtnH    float32 = 32
 	syncTabH    float32 = 28
+	// 页签行的几何：图标宽、图标与文字间距、左右 padding、页签间距。
+	syncTabIcoW float32 = 14
+	syncTabGap  float32 = 2
+	syncTabPadH float32 = 14
 )
 
-// openSyncPanel 打开面板，并清掉上一次留下的页签和反馈。
+// openSyncPanel 打开面板，并清掉上一次留下的页签、预览和反馈。
 func (a *App) openSyncPanel() {
 	a.SyncOpen = true
 	a.SyncTab = "export"
 	a.SyncNotice = ""
 	a.SyncError = ""
+	a.SyncPlan = nil
+	a.SyncCounts = a.configCounts()
+	a.DiagSummary = nil
 }
 
 // syncOverlay 是顶栏「数据同步」的模态弹窗。
 //
-// 结构：标题行 + 导出/导入两个页签 + 内容区。
-// 局域网共享（二维码、一键导入）还没做，所以两个页签里各自只有一条本地
-// 文件的路；补局域网时在对应 actionRow 里加按钮即可。
+// 结构：标题行 + 导出 / 导入 / 诊断页签 + 内容区。导出页列本机条目并保存
+// 成文件；导入页选完文件先列改动、确认后才落地。
 func (a *App) syncOverlay(c *ui.Context) {
 	// Modal 让窗口级快捷键等待：否则遮罩挡住指针，Space / F / M 仍会
 	// 穿透到 Shell 末尾的 shellKeys，对背后正在播的那一路生效。
@@ -37,6 +44,7 @@ func (a *App) syncOverlay(c *ui.Context) {
 		Background(ui.RGBA(4, 5, 7, 0.72)).Center().Modal().Label("关闭数据同步")
 	if bg.Clicked() || bg.OverlayShortcut(0, ui.KeyEscape) {
 		a.SyncOpen = false
+		a.SyncPlan = nil
 	}
 
 	bg.Children(func() {
@@ -52,29 +60,29 @@ func (a *App) syncOverlay(c *ui.Context) {
 		panel.Children(func() {
 			a.syncHeader(c)
 			a.syncTabs(c)
-			if a.SyncTab == "import" {
+			switch a.SyncTab {
+			case "import":
 				a.syncImportBody(c)
-			} else {
+			case "diag":
+				a.syncDiagBody(c)
+			default:
 				a.syncExportBody(c)
 			}
 		})
 	})
 }
 
-// syncHeader 是标题行：圆角图标块 + 标题 / 副标题 + 关闭键。
+// syncHeader 是标题行：圆角图标块 + 标题 + 关闭键。
 func (a *App) syncHeader(c *ui.Context) {
-	ui.Row(c).Padding(14, 16, 10, 16).Gap(10).AlignItems(ui.Center).Children(func() {
+	ui.Row(c).Padding(theme.Space4, theme.Space4, theme.Space2, theme.Space4).
+		Gap(theme.Space3).AlignItems(ui.Center).Children(func() {
 		ui.Box(c).Size(32, 32).Radius(theme.RadiusMD).Center().
 			Background(theme.AccentSoft).Children(func() {
 			ui.Icon(c, iconMonitorSmartphone).FontSize(17).TextColor(theme.AccentInk)
 		})
 
-		ui.Column(c).Grow(1).Gap(1).Children(func() {
-			ui.Text(c, "数据同步").FontSize(theme.TextMD).FontWeight(600).
-				LetterSpacing(-0.01).TextColor(theme.TextPrimary)
-			ui.Text(c, "同步关注、订阅、观测墙与播放偏好").FontSize(theme.Text2XS).
-				TextColor(theme.TextTertiary).SingleLine()
-		})
+		ui.Text(c, "数据同步").FontSize(theme.TextMD).FontWeight(600).
+			LetterSpacing(-0.01).TextColor(theme.TextPrimary).Grow(1)
 
 		close := ui.Box(c).Size(28, 28).Radius(theme.RadiusFull).Center().
 			Background(theme.FillQuaternary).Cursor(ui.CursorPointer).Label("关闭")
@@ -83,6 +91,7 @@ func (a *App) syncHeader(c *ui.Context) {
 		}
 		if close.Clicked() {
 			a.SyncOpen = false
+			a.SyncPlan = nil
 		}
 		close.Children(func() {
 			col := theme.TextTertiary
@@ -94,34 +103,71 @@ func (a *App) syncHeader(c *ui.Context) {
 	})
 }
 
-// syncTabs 是导出 / 导入两枚页签。
+// syncTabItem 是页签行里的一项。
+type syncTabItem struct {
+	id    string
+	ico   *ui.SVG
+	label string
+}
+
+// syncTabs 是导出 / 导入 / 诊断三枚页签。
+//
+// 和顶栏平台 tab、一二三级分区同一套语言（见 nav_motion.go）：一枚滑块停在
+// 选中项下面，换页签时它滑过去，标签着色跟着弹簧走。旧实现是旧高亮瞬灭、
+// 新高亮瞬亮，位置关系断了，看一眼还以为没切。
 func (a *App) syncTabs(c *ui.Context) {
-	ui.Row(c).Padding(0, 16, 0, 16).Children(func() {
-		ui.Row(c).Gap(2).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
-			Background(theme.FillQuaternary).
-			Children(func() {
-				a.syncTab(c, "export", iconUpload, "导出")
-				a.syncTab(c, "import", iconDownload, "导入")
+	tabs := []syncTabItem{
+		{"export", iconUpload, "导出"},
+		{"import", iconDownload, "导入"},
+		{"diag", iconActivity, "诊断"},
+	}
+
+	// 页签宽度按内容量：图标 + 间距 + 文字 + 左右 padding。三枚都是两字，
+	// 但量一次比重写一个「正好等于」的常数更稳——换文案时不用回来改数。
+	box := rowBox{x: make([]float32, len(tabs)), w: make([]float32, len(tabs))}
+	var x float32
+	for i, t := range tabs {
+		w := syncTabIcoW + 5 + textWidth(c, t.label, theme.TextXS, 600) + 2*syncTabPadH
+		box.x[i], box.w[i] = x, w
+		x += w + syncTabGap
+	}
+	selected := 0
+	for i, t := range tabs {
+		if t.id == a.SyncTab {
+			selected = i
+			break
+		}
+	}
+
+	ui.Row(c).Padding(0, theme.Space4, 0, theme.Space4).Children(func() {
+		ui.Row(c).Padding(3, 3, 3, 3).Radius(theme.RadiusFull).
+			Background(theme.FillQuaternary).Children(func() {
+			ui.Row(c).Width(box.last()).Height(syncTabH).Children(func() {
+				// 滑块先画、压在 tab 下面：位置关系连续，眼睛跟着一枚东西走。
+				slider(c, "sync-tab", box, selected, syncTabH, theme.RadiusFull, theme.Accent)
+				ui.Row(c).Fill().ZIndex(1).Gap(syncTabGap).Children(func() {
+					for i, t := range tabs {
+						a.syncTab(c, t, box.w[i], i == selected)
+					}
+				})
 			})
+		})
 	})
 }
 
-// syncTab 是一枚页签。切换时清掉上一页的反馈，免得旧提示跟着串页。
-func (a *App) syncTab(c *ui.Context, id string, ico *ui.SVG, label string) {
-	active := a.SyncTab == id
-	if a.SyncTab == "" && id == "export" {
-		active = true
-	}
-
-	tab := ui.Row(c).Height(syncTabH).Padding(0, 14, 0, 14).Gap(5).
-		Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).Label(label)
-	if active {
-		tab.Background(theme.Accent)
-	}
+// syncTab 是一枚页签。切换时清掉上一页的反馈和待确认的导入，免得旧提示
+// 或旧预览跟着串页。
+func (a *App) syncTab(c *ui.Context, t syncTabItem, w float32, active bool) {
+	tab := ui.Box(c).Width(w).Height(syncTabH).Radius(theme.RadiusFull).
+		Center().Cursor(ui.CursorPointer).Label(t.label)
 	if tab.Clicked() && !active {
-		a.SyncTab = id
+		a.SyncTab = t.id
 		a.SyncNotice = ""
 		a.SyncError = ""
+		a.SyncPlan = nil
+		if t.id == "diag" {
+			a.DiagSummary = diagnosticSummary()
+		}
 	}
 
 	tab.Children(func() {
@@ -131,43 +177,124 @@ func (a *App) syncTab(c *ui.Context, id string, ico *ui.SVG, label string) {
 		} else if tab.Hovered() {
 			col = theme.TextPrimary
 		}
-		ui.Icon(c, ico).FontSize(14).TextColor(col)
-		txt := ui.Text(c, label).FontSize(theme.TextXS).TextColor(col)
-		if active {
-			txt.FontWeight(600)
-		} else {
-			txt.FontWeight(500)
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
+			ico := ui.Icon(c, t.ico).FontSize(syncTabIcoW)
+			ico.TextColor(ico.AnimateColor("sync-tab-ico-"+t.id, col, theme.Slide()))
+			txt := ui.Text(c, t.label).FontSize(theme.TextXS)
+			txt.TextColor(txt.AnimateColor("sync-tab-ink-"+t.id, col, theme.Slide()))
+			if active {
+				txt.FontWeight(600)
+			} else {
+				txt.FontWeight(500)
+			}
+		})
+	})
+}
+
+// syncExportBody 是导出页签：本机条目数 + 保存文件。
+func (a *App) syncExportBody(c *ui.Context) {
+	ui.Column(c).Padding(theme.Space3, theme.Space4, theme.Space4, theme.Space4).
+		Gap(theme.Space3).Children(func() {
+		a.syncSnapshot(c)
+		a.syncFeedback(c)
+		ui.Row(c).Justify(ui.End).Children(func() {
+			a.syncButton(c, iconUpload, "保存到文件…", true, a.exportConfig)
+		})
+	})
+}
+
+// syncImportBody 是导入页签：没选文件时只有一个入口；选完先列改动，
+// 确认才写进本机。
+func (a *App) syncImportBody(c *ui.Context) {
+	ui.Column(c).Padding(theme.Space3, theme.Space4, theme.Space4, theme.Space4).
+		Gap(theme.Space3).Children(func() {
+		plan := a.SyncPlan
+		if plan == nil {
+			a.syncFeedback(c)
+			// 没有待导入的文件时，页面只有一个入口。刚做完一次导入时不再
+			// 顶一句「尚未选择文件」——结果提示已经说明了状态。
+			ui.Column(c).Center().Gap(theme.Space3).Padding(theme.Space2, 0, theme.Space1, 0).
+				Children(func() {
+					if a.SyncNotice == "" && a.SyncError == "" {
+						ui.Box(c).Size(40, 40).Radius(theme.RadiusFull).Center().
+							Background(theme.FillQuaternary).Children(func() {
+							ui.Icon(c, iconDownload).FontSize(19).TextColor(theme.TextTertiary)
+						})
+						ui.Text(c, "尚未选择文件").FontSize(theme.TextXS).TextColor(theme.TextTertiary)
+					}
+					a.syncButton(c, iconDownload, "选择文件…", true, a.pickImportFile)
+				})
+			return
+		}
+
+		a.syncPlanCard(c, plan)
+		ui.Row(c).Gap(theme.Space2).Justify(ui.End).Children(func() {
+			a.syncButton(c, iconDownload, "重新选择…", false, a.pickImportFile)
+			a.syncButton(c, iconX, "取消", false, a.cancelImport)
+			if !plan.empty() {
+				a.syncButton(c, iconCheck, "确认导入", true, a.confirmImport)
+			}
+		})
+	})
+}
+
+// syncSnapshot 是导出页上的本机条目数：用户要知道这份文件里有多少东西。
+func (a *App) syncSnapshot(c *ui.Context) {
+	items := []struct {
+		n     int
+		label string
+	}{
+		{a.SyncCounts.Follows, "关注"},
+		{a.SyncCounts.Subs, "订阅"},
+		{a.SyncCounts.Watch, "观测墙"},
+		{a.SyncCounts.Filters, "屏蔽词"},
+	}
+	ui.Row(c).Height(64).Radius(theme.RadiusMD).Background(theme.FillQuaternary).
+		AlignItems(ui.Center).Children(func() {
+		for i, it := range items {
+			if i > 0 {
+				ui.Box(c).Width(1).Height(28).Background(theme.Separator)
+			}
+			ui.Column(c).Grow(1).Center().Gap(2).Children(func() {
+				ui.Text(c, strconv.Itoa(it.n)).FontSize(theme.TextLG).FontWeight(600).
+					TextColor(theme.TextPrimary)
+				ui.Text(c, it.label).FontSize(theme.Text2XS).TextColor(theme.TextMeta)
+			})
 		}
 	})
 }
 
-// syncExportBody 是导出页签：说明 + 导出 JSON。
-func (a *App) syncExportBody(c *ui.Context) {
-	ui.Column(c).Padding(12, 16, 16, 16).Gap(10).Children(func() {
-		a.syncHint(c, "导出一份 JSON 快照：关注、订阅、观测墙、主题配色、清晰度与弹幕设置。")
+// syncPlanCard 是待确认导入的改动清单：文件名、新增概要、逐条覆盖项。
+func (a *App) syncPlanCard(c *ui.Context, p *importPlan) {
+	ui.Column(c).Gap(theme.Space2).Padding(theme.Space3).Radius(theme.RadiusMD).
+		Background(theme.FillQuaternary).Children(func() {
+		ui.Text(c, p.FileName).FontSize(theme.TextSM).FontWeight(600).
+			TextColor(theme.TextPrimary).SingleLine()
 
-		ui.Row(c).Gap(8).Children(func() {
-			a.syncButton(c, iconDownload, "导出 JSON", true, a.exportConfig)
-		})
-
-		a.syncFeedback(c)
+		if p.empty() {
+			ui.Text(c, "没有可导入的内容：这些数据本机已经有了").
+				FontSize(theme.TextXS).TextColor(theme.TextTertiary)
+			return
+		}
+		if p.Adds != "" {
+			syncChangeLine(c, "新增", p.Adds, theme.SuccessInk)
+		}
+		for _, line := range p.Overwrites {
+			syncChangeLine(c, "覆盖", line, theme.DangerInk)
+		}
 	})
 }
 
-// syncImportBody 是导入页签：说明 + 导入 JSON。
-func (a *App) syncImportBody(c *ui.Context) {
-	ui.Column(c).Padding(12, 16, 16, 16).Gap(10).Children(func() {
-		ui.Row(c).Gap(8).Children(func() {
-			a.syncButton(c, iconDownload, "导入 JSON", true, a.importConfig)
-		})
-
-		a.syncFeedback(c)
-
-		a.syncHint(c, "关注、订阅、观测墙和屏蔽词按增量合并，不会删掉本机已有的；主题、清晰度、音量与弹幕设置以文件为准。")
+// syncChangeLine 是清单里的一行：左侧一枚短标签，右侧具体内容。
+func syncChangeLine(c *ui.Context, tag, text string, tint ui.Color) {
+	ui.Row(c).Gap(theme.Space2).AlignItems(ui.Start).Children(func() {
+		ui.Text(c, tag).FontSize(theme.Text2XS).FontWeight(600).TextColor(tint).
+			Width(24).SingleLine()
+		ui.Text(c, text).FontSize(theme.TextXS).TextColor(theme.TextSecondary).Grow(1)
 	})
 }
 
-// syncFeedback 画上一次导出 / 导入的结果。两页共用，切换页签时会清掉。
+// syncFeedback 画上一次动作的结果。导出、导入两页共用，切换页签时清掉。
 func (a *App) syncFeedback(c *ui.Context) {
 	if a.SyncError != "" {
 		ui.Row(c).Gap(6).AlignItems(ui.Start).Children(func() {
@@ -187,7 +314,7 @@ func (a *App) syncFeedback(c *ui.Context) {
 	})
 }
 
-// syncHint 是内容区的一行灰色说明。
+// syncHint 是诊断页签的一行灰色说明。
 func (a *App) syncHint(c *ui.Context, text string) {
 	ui.Text(c, text).FontSize(theme.Text2XS).TextColor(theme.TextMeta)
 }

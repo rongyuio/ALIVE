@@ -41,7 +41,7 @@ func TestWatchFailReleasesFocus(t *testing.T) {
 		name string
 		kill func(a *App, s *roomSession)
 	}{
-		{"取流失败", func(a *App, s *roomSession) { a.watchFail(s, "取流失败") }},
+		{"取流失败", func(a *App, s *roomSession) { a.watchFail(s, "fetch", "取流失败", nil) }},
 		{"下播", func(a *App, s *roomSession) { a.watchOffline(s) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

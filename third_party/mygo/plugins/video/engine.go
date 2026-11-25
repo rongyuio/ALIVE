@@ -58,6 +58,7 @@ type event struct {
 	reply       uint64
 	err         error
 	name        string
+	prefix      string
 	text        string
 	number      float64
 	ival        int64
@@ -280,15 +281,26 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 		return fail(err)
 	}
 	// 订阅 mpv 自己的日志。不订阅就一条都收不到——mpv 默认不向客户端推。
-	// warn 起步：info 级别的 hls / 解复用消息正常播放时也在刷，会把日志淹掉。
-	_ = e.requestLog(n.handle, "warn")
+	// 默认 warn：info 级别的 hls / 解复用消息正常播放时也在刷，会把日志淹掉。
+	// 排障时由 playback.Options.MPVLog 提高到 info / v。
+	logLevel := opts.LogLevel
+	if logLevel == "" {
+		logLevel = "warn"
+	}
+	if err := e.err(e.requestLog(n.handle, logLevel)); err != nil {
+		slog.Warn("video: mpv 日志订阅失败", "level", logLevel, "err", err)
+	}
 	// 优先 D3D11 零拷贝：mpv 直接渲进共享纹理，帧不经内存。
 	// 没有渲染器 device（headless / Tester / GPU 不可用）时退回 SW。
 	if t := newGPUTarget(opts.GPU); t != nil {
 		if err := t.createRenderer(e, n.handle); err == nil {
 			n.gpu = t
-			slog.Info("video: 零拷贝路径", "device", fmt.Sprintf("%#x", t.device))
+			slog.Debug("video: 零拷贝路径", "device", fmt.Sprintf("%#x", t.device))
 		} else {
+			// 零拷贝建不出来时不能静默退回：那一路会出现「GPU=true 但
+			// GPUFrames=0」的黑格，日志必须留下原因。
+			slog.Info("video: 零拷贝不可用，退回软件渲染",
+				"event", "engine.gpu_fallback", "cause", "create_renderer", "err", err)
 			t.release()
 		}
 	}
@@ -366,6 +378,7 @@ func (n *native) next() (event, bool) {
 		if raw.data != nil {
 			m := *(*logMessage)(raw.data)
 			ev.name = contentlib.CString(m.level)
+			ev.prefix = contentlib.CString(m.prefix)
 			ev.text = contentlib.CString(m.text)
 		}
 	case 6:

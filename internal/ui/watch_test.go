@@ -89,8 +89,8 @@ func listenOnWall(t *testing.T, tt *ui.Tester, room Streamer) {
 
 func TestWatchEmptyState(t *testing.T) {
 	app, tt := newWatchMock(t, nil)
-	if !tt.HasText("观测盒是空的") {
-		t.Fatalf("空盒没有空态，texts=%q", tt.Texts())
+	if !tt.HasText("观测墙是空的") {
+		t.Fatalf("空墙没有空态，texts=%q", tt.Texts())
 	}
 	if _, ok := tt.Find("去关注列表"); !ok {
 		t.Fatal("空态没有「去关注列表」")
@@ -175,7 +175,7 @@ func TestWatchListenKeySwitchesSoundOnWall(t *testing.T) {
 	listenOnWall(t, tt, rooms[0])
 
 	if app.Router.Path() != routeFollows {
-		t.Fatalf("在墙上听不该离开观测盒，route=%q", app.Router.Path())
+		t.Fatalf("在墙上听不该离开观测墙，route=%q", app.Router.Path())
 	}
 	if app.wallActiveKey() != watchKey(rooms[0]) {
 		t.Fatalf("active=%q，期望 %q", app.wallActiveKey(), watchKey(rooms[0]))
@@ -371,7 +371,7 @@ func TestWatchAddCapAndDedupe(t *testing.T) {
 		}
 	}
 	if len(app.WatchRooms) != watch.MaxRooms {
-		t.Fatalf("盒里 %d 间，期望 %d", len(app.WatchRooms), watch.MaxRooms)
+		t.Fatalf("墙上 %d 间，期望 %d", len(app.WatchRooms), watch.MaxRooms)
 	}
 	if app.watchAdd(rooms[0]) {
 		t.Fatal("重复房间被加进去了")
@@ -468,7 +468,7 @@ func TestCardAddsToWatchBox(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !added {
-		t.Fatal("卡片右键没有走收进观测盒")
+		t.Fatal("卡片右键没有走收进观测墙")
 	}
 }
 
@@ -910,12 +910,12 @@ func TestWatchPlaceholderMatchesCoverArt(t *testing.T) {
 
 // 进观测墙不能把收在岛里的那一间关掉。
 //
-// 后台收听的那一间不在盒里，但媒体层正握着它。watchShow 收尾时对
-// 「不在盒里」的会话一律 watchCloseSession——它还会先让媒体层放手，
+// 后台收听的那一间不在墙上，但媒体层正握着它。watchShow 收尾时对
+// 「不在墙上」的会话一律 watchCloseSession——它还会先让媒体层放手，
 // 于是点一下「悲鸣观测」，声音、会话、岛上的主播条一起消失。
 func TestWallKeepsTheRoomCollapsedIntoTheIsland(t *testing.T) {
 	app, tt := newWatchMock(t, watchTestRooms(1))
-	room := Streamer{Platform: "bilibili", RoomID: "9999", Name: "盒外的主播"}
+	room := Streamer{Platform: "bilibili", RoomID: "9999", Name: "墙外的主播"}
 	key := watchKey(room)
 	p := gifPlayer(t)
 	s := focusSessionForTest(app, &roomSession{key: key, room: room, player: p})

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"testing"
 )
@@ -35,6 +37,10 @@ func TestMain(m *testing.M) {
 			panic("alive/internal/ui: 隔离 " + kv[0] + " 失败: " + err.Error())
 		}
 	}
+
+	// 默认丢弃日志：新加的诊断事件会让测试输出变成几千行，真正的失败
+	// 反而找不到。需要检查日志的测试自己 slog.SetDefault 一个 capture。
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	code := m.Run()
 	_ = os.RemoveAll(dir)

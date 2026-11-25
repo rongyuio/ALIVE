@@ -143,6 +143,8 @@ var (
 	iconUpload   = iconSVG(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>`)
 	iconDownload = iconSVG(`<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>`)
 	iconOkCircle = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="m8.5 12 2.5 2.5 4.5-5"/>`)
+	// Activity：诊断面板的页签与「性能剖析」按钮
+	iconActivity = iconSVG(`<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>`)
 	// AlertCircle：toast 的 info 色调
 	iconAlert = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="M12 7v6"/><path d="M12 16.5v.5"/>`)
 	// TriangleAlert：toast 的 error 色调

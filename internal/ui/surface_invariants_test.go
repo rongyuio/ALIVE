@@ -167,7 +167,7 @@ func TestInvariantOneEnginePerRoom(t *testing.T) {
 	}
 }
 
-// 不变量 4：从墙放大进播放页，按 X 结束焦点，但房间还在盒里 → 会话存活。
+// 不变量 4：从墙放大进播放页，按 X 结束焦点，但房间还在墙上 → 会话存活。
 //
 // 对应缺陷 2：回到墙上这一格黑了，要重新取流。
 func TestInvariantCloseKeepsSessionInBox(t *testing.T) {
@@ -193,7 +193,7 @@ func TestInvariantCloseKeepsSessionInBox(t *testing.T) {
 	app.closeFocus()
 
 	if !app.watchHas(key) {
-		t.Fatal("房间还在盒里，watchHas 却是假")
+		t.Fatal("房间还在墙上，watchHas 却是假")
 	}
 	if app.watchPlayer(key) == nil {
 		t.Fatal("按 X 之后墙上这一格没有任何画面：会话被关掉了")
@@ -219,7 +219,7 @@ func TestInvariantFocusSwitchKeepsPrevious(t *testing.T) {
 	listenOnWall(t, tt, rooms[1])
 
 	if app.watchPlayer(watchKey(rooms[0])) != first.player {
-		t.Fatal("换焦点之后上一间的播放器不见了：它还在盒里")
+		t.Fatal("换焦点之后上一间的播放器不见了：它还在墙上")
 	}
 	if app.watchPlayer(watchKey(rooms[1])) != second.player {
 		t.Fatal("新的焦点没有拿到第二间的播放器")
@@ -229,30 +229,32 @@ func TestInvariantFocusSwitchKeepsPrevious(t *testing.T) {
 	}
 }
 
-// 不变量 6：墙不可见后，会话在防抖窗口内不关闭。
+// 不变量 6：墙上的预览由导航决定停不停。
 //
-// 对应缺陷 4：去首页看一眼再回来，整面墙重新 buffering。
-func TestInvariantWallHideKeepsSessionsWithinWindow(t *testing.T) {
+// 进播放页（背后还是这面墙）不停；去首页才是离开墙，非焦点会话停掉，
+// 焦点留着出声（它就是后台收听）。
+func TestInvariantWallPreviewsFollowNavigation(t *testing.T) {
 	rooms := watchTestRooms(3)
 	app, tt := newWatchMock(t, rooms)
 	for _, r := range rooms {
 		fakeSession(t, app, r)
 	}
 	tt.Frame()
-
-	// 离开墙：去首页。
-	app.Router.Push(routeHome)
-	app.watchHide()
+	app.setFocus(app.watch.sessions[watchKey(rooms[0])])
 	tt.Frame()
 
-	kept := 0
-	for _, room := range rooms {
-		if app.watchPlayer(watchKey(room)) != nil {
-			kept++
-		}
+	openTile(t, tt, rooms[0])
+	if n := len(app.watch.sessions); n != len(rooms) {
+		t.Fatalf("进播放页把墙上的预览停了：只剩 %d/%d", n, len(rooms))
 	}
-	if kept != len(rooms) {
-		t.Fatalf("离开墙之后只剩 %d/%d 路会话：防抖窗口内不该关闭", kept, len(rooms))
+
+	app.pushPage(routeHome)
+	tt.Frame()
+	if n := len(app.watch.sessions); n != 1 {
+		t.Fatalf("离开墙之后还剩 %d 路会话，期望只留焦点那一路", n)
+	}
+	if app.watch.sessions[watchKey(rooms[0])] == nil {
+		t.Fatal("离开墙把焦点那一间也停了：它还要出声")
 	}
 }
 
@@ -292,8 +294,8 @@ func TestInvariantIslandMatchesFocus(t *testing.T) {
 	fakeSession(t, app, rooms[0])
 	tt.Frame()
 
-	// 焦点是另一间（不在盒里），在后台出声。
-	focusWithPlayer(t, app, Streamer{Platform: "bilibili", RoomID: "9999", Name: "盒子外的主播"})
+	// 焦点是另一间（不在墙上），在后台出声。
+	focusWithPlayer(t, app, Streamer{Platform: "bilibili", RoomID: "9999", Name: "墙外的主播"})
 	app.setFocusPlaying(true)
 	app.setVolume(0.6)
 
@@ -318,11 +320,10 @@ func TestInvariantIslandMatchesFocus(t *testing.T) {
 // 第二套机制一旦回潮，墙 → 播放页就会重新停在格子分辨率（bf2a98a 那次）。
 func TestNoSecondPresentMechanism(t *testing.T) {
 	assertOnlyIn(t, "SetPresentSize", map[string][]string{
-		"player_media.go": {"presentSizeFor", "applyPresent", "applyPresentForce", "applyPresentTo"},
-		// 墙上的每一格自己开流、自己设渲染目标，和播放页那条 presentSizeFor
-		// 是两套按设计分开的机制。acceptWallEngine 是 watchOpenSession 里
-		// 那段接纳逻辑的搬移，不是第二个入口。
-		"watch_media.go": {"watchShow", "watchOpenSession", "acceptWallEngine"},
+		// setPresent 是唯一写者：它在写之前从 presentSizeForSession 求值，
+		// 并按档位记一条 present.change。其它函数只能调 setPresent，不能
+		// 自己推引擎。
+		"player_media.go": {"setPresent"},
 	})
 }
 
@@ -574,7 +575,7 @@ func TestIslandReturnsToTheRoomEvenWhenItIsInBox(t *testing.T) {
 	}
 	tt.Frame()
 
-	// 离开墙，去首页。焦点还在那一间，它仍在盒里。
+	// 离开墙，去首页。焦点还在那一间，它仍在墙上。
 	app.Router.Push(routeHome)
 	tt.Frame()
 	if got := app.islandFormOf(); got != islandOpen {
@@ -596,10 +597,10 @@ func TestIslandReturnsToTheRoomEvenWhenItIsInBox(t *testing.T) {
 	}
 }
 
-// 焦点不在盒里时点岛仍然回播放页：它没有别的容身处。
+// 焦点不在墙上时点岛仍然回播放页：它没有别的容身处。
 func TestIslandReturnsToPlayerWhenFocusOutsideBox(t *testing.T) {
 	app := NewMockApp()
-	focusWithPlayer(t, app, Streamer{Platform: "douyu", RoomID: "777", Name: "盒子外"})
+	focusWithPlayer(t, app, Streamer{Platform: "douyu", RoomID: "777", Name: "墙外"})
 	app.setFocusPlaying(true)
 	app.setVolume(0.6)
 	app.Router.Push(routeHome)
@@ -617,11 +618,11 @@ func TestIslandReturnsToPlayerWhenFocusOutsideBox(t *testing.T) {
 	}
 }
 
-// 防抖窗口到期之后才回收。
+// 最小化不算离开墙：会话不拆，只停渲染。
 //
-// 这条是"资源策略与可见性分离"的另一半：窗口内不关，窗口外必须关，
-// 否则 12 路解码会一直挂着。
-func TestWatchReapsAfterRetentionWhenSavingData(t *testing.T) {
+// 离开墙（去首页 / 别的分区）才停，那条路由 watchPark 管。这里守的是
+// watchHide 本身不做关闭——它只是标一个不可见时刻。
+func TestWatchHiddenKeepsSessions(t *testing.T) {
 	rooms := watchTestRooms(3)
 	app, tt := newWatchMock(t, rooms)
 	for _, r := range rooms {
@@ -629,64 +630,10 @@ func TestWatchReapsAfterRetentionWhenSavingData(t *testing.T) {
 	}
 	tt.Frame()
 
-	app.WatchSaveData = true
-	app.Router.Push(routeHome)
-	app.watchHide()
-
-	// 防抖窗口内：一拍都不该关。一个来回不到两秒，不该把整面墙拆了重建。
-	app.watchReap(time.Now())
-	kept := 0
-	for _, r := range rooms {
-		if app.watchPlayer(watchKey(r)) != nil {
-			kept++
-		}
-	}
-	if kept != len(rooms) {
-		t.Fatalf("防抖窗口内就回收了：只剩 %d/%d", kept, len(rooms))
-	}
-
-	// 窗口外：非焦点全部关掉。
-	app.watchReap(time.Now().Add(watchReapGrace + time.Second))
-	if n := len(app.watch.sessions); n != 0 {
-		t.Fatalf("窗口到期之后还剩 %d 路会话", n)
-	}
-}
-
-// 默认：暂离不拆会话。这是"回来无缝"的全部前提。
-//
-// 看不见只意味着不渲染（见插件的渲染门控），不意味着关掉。拆掉再建就把
-// "暂离"变成了"离开"。
-func TestWatchHiddenKeepsSessionsByDefault(t *testing.T) {
-	rooms := watchTestRooms(3)
-	app, tt := newWatchMock(t, rooms)
-	for _, r := range rooms {
-		fakeSession(t, app, r)
-	}
+	app.WatchHidden()
 	tt.Frame()
-
-	app.Router.Push(routeHome)
-	app.watchHide()
-	app.watchReap(time.Now().Add(time.Hour))
 	if n := len(app.watch.sessions); n != len(rooms) {
-		t.Fatalf("默认策略把墙拆了：只剩 %d/%d", n, len(rooms))
-	}
-}
-
-// 用户开了「暂离时省流量」：离开就关，回来重连。省的是带宽，付的是一次加载。
-func TestWatchSaveDataReapsHidden(t *testing.T) {
-	rooms := watchTestRooms(3)
-	app, tt := newWatchMock(t, rooms)
-	for _, r := range rooms {
-		fakeSession(t, app, r)
-	}
-	tt.Frame()
-
-	app.WatchSaveData = true
-	app.Router.Push(routeHome)
-	app.watchHide()
-	app.watchReap(time.Now().Add(time.Hour))
-	if n := len(app.watch.sessions); n != 0 {
-		t.Fatalf("开了省流量还剩 %d 路会话", n)
+		t.Fatalf("最小化把会话拆了：只剩 %d/%d", n, len(rooms))
 	}
 }
 
@@ -694,7 +641,7 @@ func TestWatchSaveDataReapsHidden(t *testing.T) {
 //
 // 这条覆盖的是"取流还没回来"那一刻：墙上的会话在，引擎还没有。结束焦点
 // 必须把这一轮取流一起作废；只清焦点、留着会话，下一帧墙的同步仍会把它
-// 当成"在盒里的预览"，焦点也可能被重新装回来——声音永远停不掉。
+// 当成"在墙上的预览"，焦点也可能被重新装回来——声音永远停不掉。
 func TestDeactivateStopsSoundWhileLoading(t *testing.T) {
 	rooms := watchTestRooms(1)
 	app, tt := newWatchMock(t, rooms)

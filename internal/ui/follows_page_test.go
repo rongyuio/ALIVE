@@ -210,8 +210,8 @@ func TestFollowsRowContextMenuUnfollows(t *testing.T) {
 	}
 	tt.Frame()
 
-	if app.ToastText != "已取消关注 "+targetName {
-		t.Fatalf("取关没有反馈: %q", app.ToastText)
+	if !tt.HasText("已取消关注 " + targetName) {
+		t.Fatalf("取关没有反馈: texts=%q", tt.Texts())
 	}
 	if _, ok := tt.Find(targetLabel); ok {
 		t.Fatal("取关后卡片还在")

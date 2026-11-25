@@ -428,7 +428,7 @@ func TestAttachDanmakuDropsStaleStream(t *testing.T) {
 	stale := &fakeDanmaku{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a.attachDanmaku(ctx, nil, 2, stale)
+	a.attachDanmaku(ctx, nil, 2, stale, nil)
 	stubs.pump(t)
 	waitFor(t, func() bool { return stale.closes() == 1 })
 	if a.media.danmaku != nil {
@@ -436,7 +436,7 @@ func TestAttachDanmakuDropsStaleStream(t *testing.T) {
 	}
 
 	fresh := &fakeDanmaku{}
-	a.attachDanmaku(ctx, nil, 3, fresh)
+	a.attachDanmaku(ctx, nil, 3, fresh, nil)
 	stubs.pump(t)
 	if a.media.danmaku != fresh {
 		t.Fatal("当前代号的连接没挂上")
@@ -897,7 +897,9 @@ func TestEnsureMediaKeepsPlayerItAlreadyHolds(t *testing.T) {
 	p := gifPlayer(t)
 	s := &roomSession{key: key, room: room, player: p}
 	app.watch.sessions[key] = s
-	app.Router = ui.NewRouter(routeHome)
+	// 从观测墙出发：首页上墙是「已离开」状态，第一条 Frame 就会把会话停掉。
+	app.Router = ui.NewRouter(routeFollows)
+	app.FollowsSection = followsSectionWatch
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
 	focusForTest(app, room)

@@ -321,11 +321,11 @@ func TestWatchRemoveKeepsWallSnapshot(t *testing.T) {
 	if len(app.WatchRooms) != 2 ||
 		watchKey(app.WatchRooms[0]) != watchKey(rooms[0]) ||
 		watchKey(app.WatchRooms[1]) != watchKey(rooms[2]) {
-		t.Fatalf("移出后的盒子不对：%+v", app.WatchRooms)
+		t.Fatalf("移出后的墙不对：%+v", app.WatchRooms)
 	}
 }
 
-// 缺陷 #40：观测盒满 12 间时用 notifyPlayback 提示，而它只画在播放页。
+// 缺陷 #40：观测墙满 12 间时用 notifyPlayback 提示，而它只画在播放页。
 // 两个入口（首页卡片右键、关注页行菜单）都不在播放页，加入被静默拒绝。
 func TestWatchAddOverCapToasts(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
@@ -336,11 +336,45 @@ func TestWatchAddOverCapToasts(t *testing.T) {
 	if app.watchAdd(rooms[watch.MaxRooms]) {
 		t.Fatal("超过上限还加进去了")
 	}
-	want := fmt.Sprintf("观测盒最多 %d 间", watch.MaxRooms)
-	if app.ToastText != want {
-		t.Fatalf("满额提示没有落到常驻外壳的 toast：ToastText=%q，期望 %q", app.ToastText, want)
+	want := fmt.Sprintf("观测墙最多 %d 间", watch.MaxRooms)
+	// 提示要真的出现在常驻外壳上，而不只是写进某个字段。
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	if !tt.HasText(want) {
+		t.Fatalf("满额提示没有落到常驻外壳的 toast：texts=%q，期望 %q", tt.Texts(), want)
 	}
-	if app.ToastTone != toastInfo {
-		t.Fatalf("提示色调是 %q，期望 %q", app.ToastTone, toastInfo)
+}
+
+// 加入观测墙的两个入口（首页卡片右键、关注页行菜单）都不在墙上，
+// 成功与否必须在常驻外壳上给回音，否则用户不知道到底加没加进去。
+func TestWatchAddNotifies(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	app := NewMockApp()
+	rooms := watchTestRooms(2)
+
+	if !app.watchAdd(rooms[0]) {
+		t.Fatal("没加入观测墙")
+	}
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	if want := "已加入观测墙：" + rooms[0].Name; !tt.HasText(want) {
+		t.Fatalf("加入后没有提示：texts=%q，期望 %q", tt.Texts(), want)
+	}
+}
+
+// 重复加入不报错，但也不能点了毫无反应。
+func TestWatchAddDuplicateNotifies(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	app := NewMockApp()
+	rooms := watchTestRooms(1)
+	app.WatchRooms = []Streamer{rooms[0]}
+
+	if app.watchAdd(rooms[0]) {
+		t.Fatal("重复的房间又加了一次")
+	}
+	tt := ui.NewTester(app.Shell, 1440, 900)
+	tt.Frame()
+	if !tt.HasText("该直播间已在观测墙里") {
+		t.Fatalf("重复加入没有提示：texts=%q", tt.Texts())
 	}
 }

@@ -108,6 +108,11 @@ var (
 	MediaTrackFill  = ui.RGBA(255, 255, 255, 0.26)
 	MediaHairStrong = ui.RGBA(255, 255, 255, 0.24)
 	MediaScrimSoft  = ui.RGBA(0, 0, 0, 0.22)
+	// 墨底上的状态色：SuccessInk / DangerInk 是对卡片底推导的，浅色主题
+	// 里被压深到接近黑，放到通知的深墨底上就没了对比。通知跨表面，图标
+	// 色取深色主题那两支，固定不跟配色走。
+	MediaSuccessInk = ui.RGB(0x61, 0xbd, 0x67)
+	MediaDangerInk  = ui.RGB(0xdd, 0x52, 0x30)
 	// MediaFlightScrim 是表面过渡时压在目标舞台上的暗罩起点：飞行开始
 	// 0.55，落地随进度退到 0。颜色住在这里，飞行代码只调 Alpha。
 	MediaFlightScrim = ui.RGBA(0, 0, 0, 0.55)

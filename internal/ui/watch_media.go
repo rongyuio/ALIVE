@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"alive/internal/diag"
 	"alive/internal/live"
 	"alive/internal/playback"
 	"alive/internal/watch"
@@ -62,6 +63,19 @@ type roomSession struct {
 	// 不动 loading/err。墙上不能因为一次探测就闪出加载态或刷新提示。
 	probing bool
 
+	// log 是这一格的诊断 logger：room 固定，session 随每次重开（watch#N）变化。
+	// restarts 单调递增，只在用户手动 reload 时清零——它是「这一格到底重开了
+	// 几次」的唯一可信计数，failures 会被首帧清零，不能拿来数循环。
+	log          *slog.Logger
+	restarts     int
+	firstFrameAt time.Time
+	createdAt    time.Time
+	probeResult  string
+	// 非焦点墙格的 mpv 错误转发游标。焦点那一路走 playerMedia 的完整转发。
+	mpvFor   *ui.VideoPlayer
+	mpvSeq   uint64
+	mpvCount int
+
 	// openedAt 是这一路当前阶段的起点：取流阶段是开始取流，引擎开出之后
 	// 重置为引擎打开的时刻——首帧预算从后者算，取流慢不该吃掉出图的预算。
 	openedAt   time.Time
@@ -93,7 +107,7 @@ type wallMedia struct {
 	// rects 是上一帧墙上的布局，presentSizeForSession 用它给格子设呈现尺寸。
 	rects map[string]watch.Rect
 	// volumes 是会话不在时每格的音量冷存（0–1），按 platform|roomID 记。
-	// 建会话时移交给 roomSession.volume，关会话时（还在盒里的）写回来；
+	// 建会话时移交给 roomSession.volume，关会话时（还在墙上的）写回来；
 	// 同一时刻只有一个家。
 	volumes map[string]float32
 	// resume 是关掉引擎时留下的签名地址与档位表，按 platform|roomID 记。
@@ -105,9 +119,14 @@ type wallMedia struct {
 	// lastProbe 是上一次离线探测的时刻。一排离线格同时到点时错开，别让
 	// 一次 tick 把整个平台问一遍。
 	lastProbe time.Time
-	// hiddenSince 是墙变成不可见的时刻；零值表示墙可见。只有用户开了
-	// 「暂离时省流量」才在 watchReapGrace 之后回收。
+	// hiddenSince 是墙变成不可见的时刻；零值表示墙可见。只用来判断
+	// 「刚回到墙上」：清掉离线格的退避、补一条隐藏/显示的日志。
+	// 它不驱动任何回收——停不停由导航决定（见 watchPark）。
 	hiddenSince time.Time
+	// parked 表示墙上的预览已经停掉：用户真的离开了观测墙（去首页、别的
+	// 分区），不是「点进某一间看」——从墙上点进播放页，背后还是这面墙，
+	// 其余格子继续播。停掉的会话关引擎、留签名地址，回墙时 watchShow 重建。
+	parked bool
 }
 
 // wallResume 是一格关掉引擎之后留下的"重启凭据"。
@@ -176,7 +195,7 @@ func (s *roomSession) attachPlayer(p *ui.VideoPlayer) {
 //
 // 会话存在时以会话为准；会话还没建（重启后还没上墙）时读冷存；都没有就
 // 继承新房间的默认音量。冷存只在"会话不在"时存在，建会话时移交过去，
-// 关会话时（还在盒里的）写回来——同一时刻只有一个家。
+// 关会话时（还在墙上的）写回来——同一时刻只有一个家。
 func (a *App) watchVolume(key string) float32 {
 	if s := a.watch.sessions[key]; s != nil {
 		return s.volume
@@ -227,8 +246,8 @@ func (a *App) setTileVolume(room Streamer, v float32) {
 
 func watchKey(s Streamer) string { return s.Platform + "|" + s.RoomID }
 
-// watchRecord 是观测盒落盘的一条。只存身份和展示用的元数据、以及这一格自己的
-// 音量，不存签名地址、会话状态或播放进度——重启后重新取流，盒子顺序和置顶关系保留。
+// watchRecord 是观测墙落盘的一条。只存身份和展示用的元数据、以及这一格自己的
+// 音量，不存签名地址、会话状态或播放进度——重启后重新取流，墙顺序和置顶关系保留。
 type watchRecord struct {
 	Platform  string  `json:"platform"`
 	RoomID    string  `json:"roomId"`
@@ -330,10 +349,12 @@ func (a *App) sessionFor(key string, room Streamer) *roomSession {
 		return s
 	}
 	s := &roomSession{
-		key:     key,
-		room:    room,
-		volume:  a.watchVolume(key),
-		playing: true,
+		key:       key,
+		room:      room,
+		volume:    a.watchVolume(key),
+		playing:   true,
+		createdAt: time.Now(),
+		log:       wallLog(key, ""),
 	}
 	// 冷存的音量移交给会话：之后同一时刻只有一个家。
 	delete(a.watch.volumes, key)
@@ -387,13 +408,16 @@ func (a *App) watchPlayer(key string) *ui.VideoPlayer {
 	return nil
 }
 
-// watchShow 是墙可见时的每帧同步：补齐会话、更新渲染尺寸、关掉已经不在盒里的。
+// watchShow 是墙可见时的每帧同步：补齐会话、更新渲染尺寸、关掉已经不在墙上的。
 func (a *App) watchShow(rects map[string]watch.Rect) {
 	a.watch.init()
 	wasHidden := !a.watch.hiddenSince.IsZero()
+	opened, closed := 0, 0
 	a.watch.rects = rects
-	// 墙又可见了：保留窗口从头计。
+	// 墙又可见了：保留窗口从头计，停掉的预览在这里重建（缺会话的格子
+	// 走 watchOpenSession，签名地址还在有效期就跳过平台往返）。
 	a.watch.hiddenSince = time.Time{}
+	a.watch.parked = false
 	seen := make(map[string]bool, len(a.WatchRooms))
 	for _, room := range a.WatchRooms {
 		key := watchKey(room)
@@ -420,15 +444,17 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 		}
 		s := a.sessionFor(key, room)
 		a.watchOpenSession(s)
+		opened++
 	}
 	for key, s := range a.watch.sessions {
 		if !seen[key] {
-			// 焦点那一间可能不在盒里（从列表打开的、收在岛里的）：
-			// 它不在盒里不等于不要了，墙只画盒里的格子。
+			// 焦点那一间可能不在墙上（从列表打开的、收在岛里的）：
+			// 它不在墙上不等于不要了，墙只画墙上的格子。
 			if a.focus == s {
 				continue
 			}
-			a.closeSession(s)
+			a.closeSession(s, "off-wall")
+			closed++
 			continue
 		}
 		if wasHidden && s.offline {
@@ -436,72 +462,68 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 			s.retryAt = time.Time{}
 		}
 	}
+	if wasHidden || opened > 0 || closed > 0 {
+		diag.Ref{Sub: "wall"}.Logger().Info("墙显示", "event", diag.EvWallShow,
+			diag.Rooms, len(rects), "opened", opened, "closed", closed)
+	}
 }
 
-// watchReapGrace 是"墙看不见"到"真的回收"之间的防抖窗口。
+// watchHide 在墙不可见时调用：只记一个时刻。
 //
-// 它不是一个策略性保留期：策略已经交给用户（WatchKeepPlaying）。这里只挡
-// 一种情况——点进直播间、马上又退回来，一个来回不到两秒；为此把 11 路全拆
-// 掉再重建纯属浪费。
-//
-// 以前这里是 30 秒，担的是"去首页瞄一眼就回来"这个场景。那条路现在由
-// "离开后继续播放"开关和保留签名地址承担，不需要用解码时长去换。
-const watchReapGrace = 2 * time.Second
-
-// watchHide 在墙不可见时调用：标记不可见，回收交给保留窗口。
-//
-// 不在这里关会话：可见性不是资源策略。焦点那一路本来就该继续出声，其余
-// 的在窗口内保持解码，窗口到期由 watchReap 收掉。
+// 不在这里关会话，也没有「看不见多久就回收」的窗口：离开墙由 watchPark
+// 单独判断（播放页不算离开）。隐藏时只停渲染，解码、连接、签名地址都留着。
 func (a *App) watchHide() {
 	a.watch.init()
 	if a.watch.hiddenSince.IsZero() {
 		a.watch.hiddenSince = time.Now()
+		diag.Ref{Sub: "wall"}.Logger().Info("墙隐藏", "event", diag.EvWallHide)
 	}
 }
 
 // WatchHidden 是"窗口整体看不见"的入口：最小化、或者主窗口被小窗换下去。
 //
 // 和 watchHide 的区别只在调用者：Shell 每帧按路由判断"墙在不在屏上"，
-// 而最小化时 Shell 根本不重建，所以那条路走不到它。没有这个入口，用户
-// 开着「暂离时省流量」把窗口最小化，墙上的会话就永远不会被回收。
-func (a *App) WatchHidden() { a.watchHide() }
+// 而最小化时 Shell 根本不重建，所以那条路走不到它。没有这个入口，
+// hiddenSince 会停在最小化之前，回来时「刚回到墙上」的收尾就落错地方。
+//
+// 它同时是 App.windowHidden 的唯一写者之一（另一个是 WatchShown）：
+// 窗口可见性是一个事实，写入口只有这两个函数。
+func (a *App) WatchHidden() {
+	a.windowHidden = true
+	a.watchHide()
+}
 
-// WatchShown 是它的反向：窗口回来了，保留窗口从头计。
+// WatchShown 是它的反向：窗口回来了，标记清掉。
 // 墙真的重建时会由 watchShow 再清一次，这里只是让"最小化 → 恢复"这段
-// 不留下一个已经到期的 hiddenSince。
+// 不留下一个过期的 hiddenSince。
 func (a *App) WatchShown() {
+	a.windowHidden = false
 	a.watch.init()
 	a.watch.hiddenSince = time.Time{}
 }
 
-// watchReap 回收墙上已经看不见的会话——只在用户要求省流量时。
+// watchPark 在真正离开观测墙时停掉墙上的预览。
 //
-// 默认什么都不做：看不见的会话留着，只是不再渲染（见插件的渲染门控）。
-// "暂离"的全部意义就是还会回来，拆掉再建就是把它变成"离开"。
+// 「真正离开」是去首页 / 关注主播 / 订阅分区这些地方。进播放页不算：
+// 从墙上点进某一间，背后还是这面墙，退出就回来了，其余格子继续播——
+// 那一段保留解码的代价是用户认下的。
 //
-// 用户开了「暂离时省流量」才回收：离开墙 watchReapGrace（2 秒防抖）之后
-// 关掉非焦点会话，回来重新取流。这时省的是带宽，付的是回来的一次加载。
-//
-// 每拍调用，幂等：条件没到什么都不做，收完把标记清掉，下次隐藏重新计时。
-func (a *App) watchReap(now time.Time) {
+// 停掉的是非焦点会话：焦点那一间离开墙之后就是后台收听，声音不能断。
+// 会话关掉时签名地址留在 wall.resume，回墙时 watchShow 重建，没过期就
+// 跳过平台往返。
+func (a *App) watchPark() {
 	a.watch.init()
-	if a.watch.hiddenSince.IsZero() {
+	if a.watch.parked {
 		return
 	}
-	if !a.WatchSaveData {
-		return
-	}
-	if now.Sub(a.watch.hiddenSince) < watchReapGrace {
-		return
-	}
+	a.watch.parked = true
 	focus := a.focusKey()
 	for _, s := range a.watch.sessions {
 		if s.key == focus {
 			continue
 		}
-		a.closeSession(s)
+		a.closeSession(s, "wall-left")
 	}
-	a.watch.hiddenSince = time.Time{}
 }
 
 // takeResume 取走这一格保留的签名地址（一次性），过期了就丢掉。
@@ -535,11 +557,25 @@ func (a *App) rememberResume(s *roomSession) {
 }
 
 // closeSession 是会话唯一的销毁入口：留下重连凭据，把音量交回冷存（还在
-// 盒里时），关引擎、删表项。焦点指向它时一并清掉——焦点不能指向已删的会话。
-func (a *App) closeSession(s *roomSession) {
+// 墙上时），关引擎、删表项。焦点指向它时一并清掉——焦点不能指向已删的会话。
+// closeSession 是会话唯一的销毁入口。cause 只用于日志：” 表示调用方没有
+// 特别原因（测试、兜底路径），其余调用点应给出 reap / off-wall / removed /
+// focus-ended / media-close 之一。
+func (a *App) closeSession(s *roomSession, cause ...string) {
 	if s == nil {
 		return
 	}
+	why := ""
+	if len(cause) > 0 {
+		why = cause[0]
+	}
+	aliveMS := int64(0)
+	if !s.createdAt.IsZero() {
+		aliveMS = time.Since(s.createdAt).Milliseconds()
+	}
+	s.event(slog.LevelInfo, diag.EvWallClose, "墙格关闭",
+		diag.Cause, why, diag.AgeMS, aliveMS,
+		"restarts", s.restarts, "first_frame", s.firstFrame)
 	// 关引擎之前把签名地址留下来：下次重连能省掉一次平台往返。
 	a.rememberResume(s)
 	if a.watchHas(s.key) {
@@ -578,6 +614,8 @@ func (a *App) watchOpenSession(s *roomSession) {
 	prov, ok := providerFor(live.Platform(s.room.Platform))
 	if !ok {
 		s.err = "该平台还不支持取流"
+		s.log.Warn("墙格取流失败", "event", diag.EvWallFail,
+			"stage", "provider", "cause", "unsupported")
 		return
 	}
 	// 记下来给 watchEnded 用：判死后要先问平台是不是真下播，没填的话
@@ -588,6 +626,7 @@ func (a *App) watchOpenSession(s *roomSession) {
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.seq++
+	s.log = wallLog(s.key, fmt.Sprintf("watch#%d", s.seq))
 	s.loading = true
 	s.err = ""
 	s.offline = false
@@ -600,11 +639,14 @@ func (a *App) watchOpenSession(s *roomSession) {
 	room := s.room
 	// 保留的凭据必须在主线程取走：那张表只属于主线程。
 	resume, fromResume := a.takeResume(s.key)
+	s.log.Info("墙格开始取流", "event", diag.EvWallOpen,
+		"attempt", s.restarts, "resume", fromResume,
+		diag.Quality, quality, diag.Line, line)
 	go func() {
 		// 先试保留的签名地址：重连最贵的一段不是网络，是重新问平台要地址。
 		// 打不开（过期 / 房间没了）就退回完整取流，不额外退避。
 		if fromResume {
-			if e, err := openNative(context.Background(), resume.up.URL, wallPlaybackOptions(resume.up)); err == nil {
+			if e, err := openNative(context.Background(), resume.up.URL, wallPlaybackOptions(resume.up, s.key, fmt.Sprintf("watch#%d", seq))); err == nil {
 				a.acceptWallEngine(s, ctx, seq, win, e, resume.stream, resume.up)
 				return
 			}
@@ -616,7 +658,7 @@ func (a *App) watchOpenSession(s *roomSession) {
 			if ctx.Err() == nil {
 				runOnMain(win, func() {
 					if a.watch.sessions[s.key] == s && s.seq == seq {
-						a.watchFail(s, "取流失败")
+						a.watchFail(s, "fetch", "取流失败", err)
 					}
 				})
 			}
@@ -633,18 +675,18 @@ func (a *App) watchOpenSession(s *roomSession) {
 		if v.URL == "" {
 			runOnMain(win, func() {
 				if a.watch.sessions[s.key] == s && s.seq == seq {
-					a.watchFail(s, "没有拿到可播放的地址")
+					a.watchFail(s, "variant", "没有拿到可播放的地址", nil)
 				}
 			})
 			return
 		}
 		// 引擎不挂取流 ctx：同一路可能被交接给播放页 / 墙上的另一格。
-		e, err := openNative(context.Background(), v.URL, wallPlaybackOptions(v))
+		e, err := openNative(context.Background(), v.URL, wallPlaybackOptions(v, s.key, fmt.Sprintf("watch#%d", seq)))
 		if err != nil {
 			if ctx.Err() == nil {
 				runOnMain(win, func() {
 					if a.watch.sessions[s.key] == s && s.seq == seq {
-						a.watchFail(s, "播放组件打不开这个流")
+						a.watchFail(s, "native", "播放组件打不开这个流", err)
 					}
 				})
 			}
@@ -658,7 +700,7 @@ func (a *App) watchOpenSession(s *roomSession) {
 //
 // 和播放页唯一的差别是 NoBackBuffer：直播不能回退，回退缓存永远不会被读到，
 // 一屏 12 路各留一份是纯浪费。前向缓存不动，抗抖动靠的是它。
-func wallPlaybackOptions(v live.Variant) playback.Options {
+func wallPlaybackOptions(v live.Variant, key, session string) playback.Options {
 	return playback.Options{
 		Headers:       v.Headers,
 		Width:         v.Width,
@@ -668,6 +710,10 @@ func wallPlaybackOptions(v live.Variant) playback.Options {
 		SkipAudioGate: true,
 		NoBackBuffer:  true,
 		GPU:           true,
+		Key:           key,
+		Session:       session,
+		Role:          "wall",
+		MPVLog:        mpvLogLevel(),
 	}
 }
 
@@ -681,6 +727,10 @@ func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win
 		p := ui.NewEngineVideoPlayer(e)
 		// 呈现尺寸不在这里推：applyPresent 每帧从 presentSizeFor 求一次，
 		// 值变了才推给引擎。这一格上墙时就是格子物理像素。
+		openMS := int64(0)
+		if !s.openedAt.IsZero() {
+			openMS = time.Since(s.openedAt).Milliseconds()
+		}
 		s.attachPlayer(p)
 		s.track = e
 		// 音量按「是不是焦点」求：非焦点预览一律 0，焦点落它自己的值。
@@ -690,7 +740,11 @@ func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win
 		a.applySessionVolume(s)
 		// 引擎已经开出来了：首帧预算从这里重新计时，播放器迟迟不出图
 		// 时由 watchTick 接手，不能让取流阶段的耗时提前吃掉这段预算。
+		line := a.lineIDFor(s.key, info)
 		s.openedAt = time.Now()
+		s.event(slog.LevelInfo, diag.EvWallReady, "墙格引擎就绪",
+			diag.OpenMS, openMS, diag.Quality, v.Label,
+			diag.Line, line, diag.URLHost, diag.Host(v.URL), diag.GPU, e.GPU())
 		s.stream, s.up = info, v
 		// 平台确认的档位写回这一格自己的记录：激活 / 进播放页时读的就是它。
 		a.learnRoomChoice(s.key, info, v)
@@ -723,7 +777,7 @@ func (a *App) focusFailed(s *roomSession) {
 	a.closeFocus()
 }
 
-func (a *App) watchFail(s *roomSession, msg string) {
+func (a *App) watchFail(s *roomSession, stage, msg string, err error) {
 	if s == nil {
 		return
 	}
@@ -733,6 +787,12 @@ func (a *App) watchFail(s *roomSession, msg string) {
 	s.firstFrame = false
 	s.failures++
 	s.retryAt = time.Now().Add(watchBackoff(s.failures))
+	// 这一条以前完全不存在：用户在格子上看到「取流失败」，日志里零痕迹。
+	// stage 说明败在哪一步，err 保留可安全记录的原因。
+	s.event(slog.LevelWarn, diag.EvWallFail, "墙格失败",
+		diag.Stage, stage, diag.Cause, msg, diag.Err(err),
+		"failures", s.failures, "restarts", s.restarts,
+		diag.RetryMS, time.Until(s.retryAt).Milliseconds())
 	// 焦点是「谁在出声」。引擎已经关了还留着绿点，岛却按「没有引擎」
 	// 回时钟，两个地方各说各话。收掉焦点：绿点消失、岛回时钟。
 	a.focusFailed(s)
@@ -757,6 +817,9 @@ func (a *App) watchOffline(s *roomSession) {
 	// 没开播的房间不该每 30 秒问一次平台。
 	s.failures++
 	s.retryAt = time.Now().Add(offlineProbeBackoff(s.failures, s.key))
+	s.event(slog.LevelInfo, diag.EvWallOffline, "墙格未开播",
+		diag.Cause, "offline", "failures", s.failures, "restarts", s.restarts,
+		diag.RetryMS, time.Until(s.retryAt).Milliseconds())
 	// 下播就是没有声音：焦点跟着收掉，绿点和岛一起消失。
 	a.focusFailed(s)
 	a.invalidateWindows()
@@ -846,6 +909,18 @@ func (a *App) watchProbe(s *roomSession, now time.Time) {
 				return
 			}
 			s.probing = false
+			result := "offline"
+			if err != nil {
+				result = "error"
+			} else if room.Live {
+				result = "live"
+			}
+			if result != s.probeResult || result == "error" {
+				s.event(slog.LevelInfo, diag.EvWallProbe, "平台探测",
+					diag.Stage, "offline-probe", diag.Result, result,
+					"probes", s.failures, diag.Err(err))
+				s.probeResult = result
+			}
 			if err != nil || !room.Live {
 				// 还是没开播：什么都不变，格子不闪。
 				return
@@ -868,9 +943,19 @@ func (a *App) watchFirstFrame(s *roomSession) {
 	if s == nil || s.firstFrame {
 		return
 	}
+	openMS := int64(0)
+	if !s.openedAt.IsZero() {
+		openMS = time.Since(s.openedAt).Milliseconds()
+	}
+	failures := s.failures
 	s.firstFrame = true
+	s.firstFrameAt = time.Now()
 	s.failures = 0
 	s.retryAt = time.Time{}
+	// 成功线以前完全没有。没有它，日志只能证明「坏过」，不能证明「好过」；
+	// 重连循环和正常刷新在日志上长得一模一样。
+	s.event(slog.LevelInfo, diag.EvWallFirstFrame, "墙格首帧可用",
+		diag.OpenMS, openMS, "failures_before", failures, "restarts", s.restarts)
 }
 
 // watchFirstFrameLost 处理"引擎开着、过了首帧预算还没画面"。
@@ -930,7 +1015,9 @@ func (a *App) watchReload(room Streamer) {
 		a.retryStream()
 		return
 	}
-	a.watchRestart(s, "")
+	s.event(slog.LevelInfo, diag.EvWallReload, "用户重新加载")
+	s.restarts = 0
+	a.watchRestart(s, "user-reload")
 	s.offline = false
 	s.err = ""
 	s.failures = 0
@@ -991,7 +1078,6 @@ func wallStalled(ready, playing bool, since, now time.Time) bool {
 //
 // active 若由 a.media 持有，不在这里驱动——playerMedia 自己的心跳管它。
 func (a *App) watchTick(now time.Time) {
-	a.watchReap(now)
 	if len(a.watch.sessions) == 0 {
 		return
 	}
@@ -1002,10 +1088,11 @@ func (a *App) watchTick(now time.Time) {
 		if s == a.focus {
 			continue
 		}
+		a.forwardWallMpv(s)
 		if s.player == nil {
 			if s.loading {
 				if !s.openedAt.IsZero() && now.Sub(s.openedAt) > firstFrameBudget {
-					a.watchFail(s, "首帧超时")
+					a.watchFail(s, "first-frame", "首帧超时", nil)
 				}
 				continue
 			}
@@ -1061,6 +1148,46 @@ func (a *App) watchTick(now time.Time) {
 	}
 }
 
+// forwardWallMpv 把非焦点墙格的 mpv error/fatal 转进日志。
+//
+// 焦点那一路由 playerMedia.trackContinuity 完整转发；墙上其余十几路以前
+// 一条都不进——「这一格花屏/黑」最需要的第一手信息恰好全丢了。
+// 只转 error/fatal，且每条引擎最多 50 条，避免一次故障把日志刷满。
+func (a *App) forwardWallMpv(s *roomSession) {
+	if s == nil || s.player == nil {
+		return
+	}
+	e, _ := s.player.Engine().(*playback.Engine)
+	if e == nil {
+		return
+	}
+	if s.mpvFor != s.player {
+		s.mpvFor = s.player
+		s.mpvSeq = 0
+		s.mpvCount = 0
+	}
+	d := e.Debug()
+	if n := len(d.Log); n == 0 || d.Log[n-1].Seq <= s.mpvSeq {
+		return
+	}
+	for _, l := range d.Log {
+		if l.Seq <= s.mpvSeq {
+			continue
+		}
+		s.mpvSeq = l.Seq
+		if l.Level != "error" && l.Level != "fatal" {
+			continue
+		}
+		if s.mpvCount >= 50 {
+			continue
+		}
+		s.mpvCount++
+		s.event(slog.LevelError, diag.EvMpv, "墙格 mpv 日志",
+			diag.Module, l.Prefix, "mpv_level", l.Level, diag.Text, l.Text,
+			"mpv_at", l.At.Format(time.RFC3339Nano))
+	}
+}
+
 // watchEnded 先问平台：真下播就落未开播，仍 live 才重取。
 //
 // why 是这一路的实际死因（时间轴停住 / 播放器结束 / 报错），只用于日志和
@@ -1079,12 +1206,21 @@ func (a *App) watchEnded(s *roomSession, why string) {
 	roomID, win := s.room.RoomID, a.Win
 	go func() {
 		liveNow := true
+		result := "unknown"
+		var probeErr error
 		if ri, ok := prov.(live.RoomInfoer); ok {
+			result = "live"
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			room, err := ri.RoomInfo(ctx, roomID)
 			cancel()
-			if err == nil {
+			probeErr = err
+			if err != nil {
+				result = "error"
+			} else {
 				liveNow = room.Live
+				if !room.Live {
+					result = "offline"
+				}
 			}
 		}
 		runOnMain(win, func() {
@@ -1092,6 +1228,10 @@ func (a *App) watchEnded(s *roomSession, why string) {
 				return
 			}
 			s.checking = false
+			// 平台确认是判死链的一步；以前 err 被吞掉，查询失败会被当成
+			// 「还在播」，日志里却没有任何痕迹。
+			s.event(slog.LevelInfo, diag.EvWallProbe, "平台确认",
+				diag.Stage, "ended", diag.Result, result, diag.Err(probeErr))
 			if !liveNow {
 				a.watchOffline(s)
 				return
@@ -1112,10 +1252,18 @@ func (a *App) watchRestart(s *roomSession, reason string) {
 	s.loading = false
 	s.firstFrame = false
 	s.failures++
+	s.restarts++
 	s.retryAt = time.Now().Add(watchBackoff(s.failures))
 	s.err = reason
-	slog.Info("观测墙重连", "key", s.key, "name", s.room.Name,
-		"reason", reason, "failures", s.failures)
+	args := []any{
+		diag.Cause, reason, "name", s.room.Name,
+		"attempt", s.restarts, "failures", s.failures,
+		diag.RetryMS, time.Until(s.retryAt).Milliseconds(),
+	}
+	if !s.firstFrameAt.IsZero() {
+		args = append(args, diag.SinceFrameMS, time.Since(s.firstFrameAt).Milliseconds())
+	}
+	s.event(slog.LevelInfo, diag.EvWallRestart, "墙格重连", args...)
 	a.invalidateWindows()
 }
 
@@ -1178,7 +1326,7 @@ func (a *App) watchOpenPlayer(room Streamer) {
 	a.openRoom(room)
 }
 
-// watchAdd 收一间进观测盒；上限 watch.MaxRooms，重复不收。
+// watchAdd 收一间进观测墙；上限 watch.MaxRooms，重复不收。
 func (a *App) watchAdd(room Streamer) bool {
 	if room.Platform == "" || room.RoomID == "" {
 		return false
@@ -1187,16 +1335,21 @@ func (a *App) watchAdd(room Streamer) bool {
 		// 这里的调用方是首页卡片右键与关注页行菜单，都不在播放页；提示
 		// 必须走常驻外壳的 toast。notifyPlayback 只画在播放页的 noticePill
 		// 上，用在这里等于什么都没发生。
-		a.toastTone(fmt.Sprintf("观测盒最多 %d 间", watch.MaxRooms), toastInfo)
+		a.toastTone(fmt.Sprintf("观测墙最多 %d 间", watch.MaxRooms), toastInfo)
 		return false
 	}
 	key := watchKey(room)
 	for _, s := range a.WatchRooms {
 		if watchKey(s) == key {
+			// 重复加入不报错，但要说一声——否则右键菜单点了没反应。
+			a.toastTone("该直播间已在观测墙里", toastInfo)
 			return false
 		}
 	}
 	a.WatchRooms = append(a.WatchRooms, room)
+	// 两个入口（首页卡片右键、关注页行菜单）都不在墙上，墙出现不了；
+	// 不加这条提示，用户不知道到底加没加进去。
+	a.toastTone(fmt.Sprintf("已加入观测墙：%s", room.Name), toastSuccess)
 	a.markDirty()
 	a.invalidateWindows()
 	return true
@@ -1225,7 +1378,7 @@ func (a *App) watchSwap(dragKey, targetKey string) {
 	a.invalidateWindows()
 }
 
-// watchRemove 移出一间；如果它是焦点，声音一起停。盒子不再显示它，会话也不该留。
+// watchRemove 移出一间；如果它是焦点，声音一起停。墙不再显示它，会话也不该留。
 func (a *App) watchRemove(room Streamer) {
 	key := watchKey(room)
 	// 必须新分配：点「移出观测」是在 watchWall 构建这一格时同步跑的，而
@@ -1240,12 +1393,12 @@ func (a *App) watchRemove(room Streamer) {
 	}
 	a.WatchRooms = out
 	if a.focusKey() == key {
-		// 移出盒子之后 endSessionFocus 会按"不在盒里"关掉它；closeFocus 同时
+		// 移出墙之后 endSessionFocus 会按"不在墙上"关掉它；closeFocus 同时
 		// 清焦点、让岛回时钟。
 		a.closeFocus()
 	}
 	if s := a.watch.sessions[key]; s != nil {
-		a.closeSession(s)
+		a.closeSession(s, "removed")
 	}
 	a.markDirty()
 	a.invalidateWindows()

@@ -125,7 +125,7 @@ func TestRealRoomSurvivesWallPlayerRoundTrip(t *testing.T) {
 	app.watchActivate(room)
 	pump(10)
 	if app.media.eng() == nil {
-		t.Fatal("进播放页后媒体层没有引擎：这就是「盒子里不是同一个直播间」")
+		t.Fatal("进播放页后媒体层没有引擎：这就是「墙里不是同一个直播间」")
 	}
 	if app.media.eng() != engineBefore {
 		t.Fatal("进播放页换了播放器：等于重开了这一路")

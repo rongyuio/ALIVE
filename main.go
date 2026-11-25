@@ -5,15 +5,22 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"runtime/trace"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/applog"
+	"alive/internal/buildinfo"
+	"alive/internal/diag"
+	"alive/internal/hang"
 	"alive/internal/media"
 	appui "alive/internal/ui"
 
@@ -23,11 +30,55 @@ import (
 )
 
 func main() {
-	// 日志落盘：%LOCALAPPDATA%\alive\logs\alive.log。
+	started := time.Now()
+
+	// 日志落盘：%LOCALAPPDATA%\alive\logs\alive-<run>.log。
 	//
 	// 必须排在所有 slog 调用之前。双击 exe 的进程没有 stderr，不落盘就等于
 	// 不留日志——之前排「直播卡」时正因为这一点，拿不到 mpv 自己说的话。
-	applog.Setup()
+	//
+	// Setup 失败不能静默：退到 %TEMP% 留一份错误，并继续用 stderr。日志本身
+	// 坏掉时，至少要能知道它坏在哪。
+	logPath, logErr := applog.Setup()
+	if logErr != nil {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		fallbackLogError(logErr)
+		slog.Error("日志落盘失败", diag.Err(logErr))
+	}
+
+	// 崩溃时打印所有 goroutine 的栈；配合 applog 的 crash-<run>.log。
+	debug.SetTraceback("all")
+
+	// 按需执行跟踪：ALIVE_DIAG_TRACE=1 时把整段运行写进 trace-<run>.out，
+	// 用 `go tool trace` 看 goroutine/GC/阻塞。默认关闭，不增加日常开销。
+	var traceFile *os.File
+	if os.Getenv("ALIVE_DIAG_TRACE") == "1" && applog.Dir() != "" {
+		p := filepath.Join(applog.Dir(), "trace-"+applog.RunID()+".out")
+		if f, err := os.Create(p); err == nil {
+			if err := trace.Start(f); err == nil {
+				traceFile = f
+				slog.Info("执行跟踪已开始", "event", diag.EvTraceStart, diag.Path, p)
+			} else {
+				_ = f.Close()
+				slog.Warn("执行跟踪启动失败", diag.Err(err))
+			}
+		}
+	}
+
+	commit, modified := buildinfo.Commit()
+	slog.Info("进程启动",
+		"event", diag.EvRunStart,
+		"pid", os.Getpid(),
+		"version", appVersion(),
+		"commit", commit,
+		"modified", modified,
+		"go", runtime.Version(),
+		"os", runtime.GOOS+"/"+runtime.GOARCH,
+		"log", logPath,
+		"level", applog.Level().String(),
+		"mpv_log", envOr("ALIVE_MPV_LOG_LEVEL", "warn"),
+		"frame_stats", envOr("MYGO_FRAME_STATS", ""),
+	)
 
 	// 头像的磁盘缓存放 %LOCALAPPDATA%\alive\images。
 	//
@@ -40,6 +91,11 @@ func main() {
 	app := appui.NewApp()
 
 	var win *mygo.Window
+	var watcher *hang.Watcher
+	var followsPulse *time.Ticker
+	// pulseStop 关闭心跳 goroutine：Run 返回后不关就是一条泄漏到进程结束。
+	pulseStop := make(chan struct{})
+	var minimized atomic.Bool
 	mygo.App.WhenReady(func() {
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:     "ALIVE",
@@ -66,10 +122,17 @@ func main() {
 		// 最小化时 Shell 不再重建，墙的"看不见"判据就走不到了。
 		// 挂在这里让「暂离时省流量」在最小化时也成立；恢复时清掉标记。
 		win.OnMinimize(func() {
+			minimized.Store(true)
 			win.Update(func() { app.WatchHidden() })
 		})
 		win.OnRestore(func() {
-			win.Update(func() { app.WatchShown() })
+			minimized.Store(false)
+			win.Update(func() {
+				app.WatchShown()
+				// 挂机回来：关注面的绿点很可能已经停在离开那一刻。
+				// 距上一轮超过 60s 才真刷，切来切去不会变成连环请求。
+				app.FollowsRestored()
+			})
 		})
 		win.OnClose(func(e *mygo.CloseEvent) {
 			// 关窗时立即取消起播和弹幕任务，避免结果回到已销毁的窗口。
@@ -78,6 +141,10 @@ func main() {
 				win.SetFullScreen(false)
 			}
 		})
+		// 主线程卡死时，只有独立的观察者还能报案。它不依赖帧循环，
+		// 最小化时暂停，避免把系统挂起误判成卡死。
+		watcher = hang.Start(win, applog.Dir(), applog.RunID(), &minimized)
+
 		// 图片解码必须回到主线程，缓存拿窗口来触发重绘
 		media.Default.SetWindow(win)
 		// 窗口一就绪就开始拉数据，不等首页第一帧：
@@ -89,9 +156,75 @@ func main() {
 		time.AfterFunc(1200*time.Millisecond, func() {
 			win.Update(func() { app.RefreshFollows() })
 		})
+
+		// 关注页的心跳：每 20s 问一次「该不该刷」，真刷的间隔由
+		// ui.followsHeartbeatFresh（90s）决定。只在关注页的关注主播
+		// 那一屏生效，最小化时自动跳过（App.windowHidden）。
+		//
+		// 它是「关注的状态没人管」的收口：以前只有启动那一轮和手动按钮，
+		// 开着一下午绿点就停在早上。live 包的 limiter 仍然在下面兜底。
+		followsPulse = time.NewTicker(appui.FollowsPulseEvery)
+		go func() {
+			for {
+				select {
+				case <-followsPulse.C:
+					win.Update(func() { app.FollowsHeartbeat() })
+				case <-pulseStop:
+					return
+				}
+			}
+		}()
 	})
 
-	if err := mygo.App.Run(); err != nil {
-		log.Fatal(err)
+	runErr := mygo.App.Run()
+	if followsPulse != nil {
+		followsPulse.Stop()
 	}
+	close(pulseStop)
+	if watcher != nil {
+		watcher.Stop()
+	}
+	if traceFile != nil {
+		trace.Stop()
+		_ = traceFile.Close()
+		slog.Info("执行跟踪已结束", "event", diag.EvTraceStop)
+	}
+	if runErr != nil {
+		slog.Error("进程异常退出", "event", diag.EvRunStop,
+			"reason", "error", diag.Err(runErr))
+	} else {
+		slog.Info("进程退出", "event", diag.EvRunStop,
+			"reason", "quit",
+			"uptime_ms", time.Since(started).Milliseconds())
+	}
+	applog.Close()
+	if runErr != nil {
+		os.Exit(1)
+	}
+}
+
+// fallbackLogError 在日志系统自身失败时留一份独立痕迹。
+//
+// 双击启动的进程没有 stderr；如果连日志文件都建不出来，唯一还能写的地方
+// 就是 %TEMP%。这份文件不进正式链路，只用于回答「为什么没有日志」。
+func fallbackLogError(err error) {
+	path := filepath.Join(os.TempDir(), "alive-log-error.txt")
+	line := time.Now().Format(time.RFC3339) + " " + err.Error() + "\n"
+	_ = os.WriteFile(path, []byte(line), 0o644)
+}
+
+// appVersion 在未打包的构建（go run / go build）里是空串；日志里写 unknown，
+// 不要留一个看起来像字段缺失的 version=。
+func appVersion() string {
+	if v := mygo.App.Version(); v != "" {
+		return v
+	}
+	return "unknown"
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

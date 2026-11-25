@@ -29,7 +29,7 @@ const (
 	watchVolumeW   float32 = 64
 )
 
-// watchWall 是「悲鸣观测」的内容层：把观测盒里的房间按 1–12 间铺满这一屏。
+// watchWall 是「悲鸣观测」的内容层：把观测墙里的房间按 1–12 间铺满这一屏。
 //
 // 它不滚动，也不显示弹幕。每一格都是一个无弹幕的单直播间缩小版：全档取流、
 // 静音、按格子物理像素呈现；单击切音频焦点，双击或点岛进播放页。
@@ -364,7 +364,7 @@ func (a *App) watchControlBar(c *ui.Context, room Streamer, active bool, w float
 
 		ui.Box(c).Grow(1)
 
-		// 右：放大 / 移出。放大就是进播放页，移出就是离开观测盒。
+		// 右：放大 / 移出。放大就是进播放页，移出就是离开观测墙。
 		ui.Row(c).Gap(m.rightGap).AlignItems(ui.Center).Children(func() {
 			a.iconBtnSized(c, iconFullscreen, m.iconSize, m.iconHit, false, "放大观测 "+room.Name, func() {
 				a.watchOpenPlayer(room)
@@ -546,11 +546,11 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player
 	})
 }
 
-// watchEmpty 是空盒：不放示例房间，只给两条去路。
+// watchEmpty 是空墙：不放示例房间，只给两条去路。
 func (a *App) watchEmpty(c *ui.Context) {
 	ui.Box(c).Grow(1).Center().Children(func() {
 		ui.Column(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "观测盒是空的").FontSize(theme.TextLG).FontWeight(600).
+			ui.Text(c, "观测墙是空的").FontSize(theme.TextLG).FontWeight(600).
 				TextColor(theme.TextPrimary)
 			ui.Text(c, "从关注列表或首页把直播间收进来，这里会同时显示它们的实时画面。").
 				FontSize(theme.TextXS).TextColor(theme.TextTertiary)

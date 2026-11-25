@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"alive/internal/diag"
 	"alive/internal/live"
 )
 
@@ -165,21 +167,157 @@ func sortFollowStreamers(list []Streamer, platformOrder []string) {
 // 既明显快，又不会把上游惹毛（各平台自己的 limiter 还在下面兜着）。
 const refreshWorkers = 6
 
+// 关注状态的自动刷新时机。
+//
+// 三条路径各一个门槛，值不是拍脑袋：
+//
+//   - 进入关注页 30s：用户从首页过来。上一次刷还不到半分钟就没必要再打
+//     一轮；超过半分钟，屏幕上的绿点已经可能过时（开播、下播都在这量级）。
+//   - 窗口恢复 60s：挂机回来比切页更晚，可以更宽容。
+//   - 可见时心跳 90s：54 位关注跨 4 平台，实测一轮 2.4~5.6s（2026-11-25，
+//     见 reference/measurements.md）。检查粒度 20s，所以实际间隔落在
+//     90~110s，稳态不到 1 req/s，各平台限流器还能兜住。
+//
+// 这三个数连同「失败不灭绿点」写进 doc/decisions/0014-follows-freshness.md。
+const (
+	followsEnterFresh     = 30 * time.Second
+	followsRestoreFresh   = 60 * time.Second
+	followsHeartbeatFresh = 90 * time.Second
+	// FollowsPulseEvery 是心跳的检查间隔：它只决定「多久看一次该不该刷」，
+	// 不等于刷新周期——下一次真刷要等 followsHeartbeatFresh。
+	FollowsPulseEvery = 20 * time.Second
+)
+
+// followsBackoff 是连续失败 streak 轮之后，自动刷新该等多久再试。
+//
+// 手动刷新不走这里：用户点了就是立刻要结果，退避只拦自动路径。
+func followsBackoff(streak int) time.Duration {
+	switch {
+	case streak <= 1:
+		return 30 * time.Second
+	case streak == 2:
+		return 2 * time.Minute
+	case streak == 3:
+		return 5 * time.Minute
+	default:
+		return 10 * time.Minute
+	}
+}
+
+// followsDue 报告此刻该不该自动刷。
+//
+// last 是上一轮刷完的时刻（零值表示从没刷过），retryAt 是失败退避的截止
+// 时刻，minGap 是这一条触发路径要的新鲜度。退避优先于门槛：整轮都一样
+// 失败的时候，按 90s 心跳反复撞墙没有意义。
+func followsDue(now, last, retryAt time.Time, minGap time.Duration) bool {
+	if now.Before(retryAt) {
+		return false
+	}
+	if last.IsZero() {
+		return true
+	}
+	return now.Sub(last) >= minGap
+}
+
+// followsLog 是关注刷新这条链路的 logger。
+//
+// 只带 sub 和 reason：一次刷新横跨所有关注的主播，没有单一房间或会话
+// 可以挂——这也是它不属于任何 roomSession 的原因。
+func followsLog(reason string) *slog.Logger {
+	return diag.Ref{Sub: "follows"}.Logger().With(diag.Reason, reason)
+}
+
+// followsRetryAfterMS 是退避还剩多少毫秒，0 表示不退避。
+//
+// 不能直接 time.Until(零值)：那是极大的负数，日志里会写出
+// retry_ms=-9223372036854 这种读不懂的数。
+func (a *App) followsRetryAfterMS() int64 {
+	if a.followsRetryAt.IsZero() {
+		return 0
+	}
+	return max(time.Until(a.followsRetryAt).Milliseconds(), 0)
+}
+
+// followSettle 结算一轮刷新的结果：给出下一次退避的截止时刻和新的失败轮数。
+//
+// 只有「整轮一条都没查到」才算失败一轮。部分成功不退避——数据确实新了，
+// 没查到的那几位下一轮再试。
+func followSettle(now time.Time, updated, failed, streak int) (time.Time, int) {
+	if updated == 0 && failed > 0 {
+		n := streak + 1
+		return now.Add(followsBackoff(n)), n
+	}
+	return time.Time{}, 0
+}
+
+// 自动刷新与手动刷新共用的触发原因，只进日志（diag.Reason）：
+// 排查「为什么绿点是旧的」时，第一件事就是看这一轮是谁发起的。
+const (
+	followsBoot      = "boot"      // 启动后的那一轮
+	followsEnter     = "enter"     // 进入关注页
+	followsRestore   = "restore"   // 窗口从最小化回来
+	followsHeartbeat = "heartbeat" // 关注页可见时的心跳
+	followsManual    = "manual"    // 面板上的刷新按钮
+)
+
 // RefreshFollows 刷新关注主播的实时状态，用于启动后的自动刷新。
-func (a *App) RefreshFollows() { a.refreshFollows(false) }
+//
+// 启动这一轮不走门槛：落盘的在线状态可能是几天前的，越快修正越好。
+func (a *App) RefreshFollows() { a.refreshFollows(false, followsBoot) }
+
+// FollowsEntered 在进入关注页那一帧调一次（Shell 求路由边沿）。
+func (a *App) FollowsEntered() { a.maybeRefreshFollows(followsEnterFresh, followsEnter) }
+
+// FollowsRestored 在窗口从最小化回来时调一次。
+func (a *App) FollowsRestored() { a.maybeRefreshFollows(followsRestoreFresh, followsRestore) }
+
+// FollowsHeartbeat 由 main.go 的定时器驱动。
+//
+// 只在关注页的「关注主播」那一屏上真的刷：订阅分区有自己的列表缓存、
+// 观测墙有自己的生命周期，两边的节奏都不归这里管。
+func (a *App) FollowsHeartbeat() {
+	if a.Router == nil || a.Router.Path() != routeFollows {
+		return
+	}
+	if a.FollowsSection != followsSectionStreamers {
+		return
+	}
+	a.maybeRefreshFollows(followsHeartbeatFresh, followsHeartbeat)
+}
+
+// maybeRefreshFollows 是自动路径的唯一入口：门槛、退避、窗口可见性
+// 都在这里判，判过了才真发一轮。
+func (a *App) maybeRefreshFollows(minGap time.Duration, reason string) bool {
+	// 窗口不在跟前：界面不重建，刷了没人看，还白占带宽
+	if a.followsBusy || a.Win == nil || a.windowHidden {
+		return false
+	}
+	if !followsDue(time.Now(), a.followsRefreshedAt, a.followsRetryAt, minGap) {
+		return false
+	}
+	a.refreshFollows(false, reason)
+	return true
+}
 
 // refreshFollowsManual 是关注面板刷新按钮的动作。
 //
 // 和自动刷新同一条流程，区别只在刷完要给一条 toast：
 // 启动时那次刷新不该打扰用户，手动点了就必须有结果。
-func (a *App) refreshFollowsManual() { a.refreshFollows(true) }
+func (a *App) refreshFollowsManual() {
+	if a.followsBusy {
+		// 一轮全量刷新可能跑十几秒。这时候点按钮不能像坏了一样没反应。
+		a.toastTone("正在刷新，这一轮结束再试", toastInfo)
+		return
+	}
+	a.refreshFollows(true, followsManual)
+}
 
 // refreshFollows 刷新关注主播的实时状态。
 //
 // 刷新靠一条队列加若干 worker 摊开：谁拿到谁去查，
 // 每回来一条就立刻写回，不等整批结束——面板上的绿灯是逐个变化的，
 // 刷新按钮上的圆环也一格一格往前走。
-func (a *App) refreshFollows(report bool) {
+func (a *App) refreshFollows(report bool, reason string) {
 	if a.followsBusy || a.Win == nil {
 		return
 	}
@@ -196,6 +334,11 @@ func (a *App) refreshFollows(report bool) {
 	a.followRefreshTotal = len(a.Follows)
 	snapshot := append([]FollowRecord(nil), a.Follows...)
 	win := a.Win
+	// 一轮的开始和结束要成对落在日志里：绿点是旧的时，先看这一轮是谁发起、
+	// 什么时候发起、最后查到几条。
+	followsLog(reason).Info("开始刷新关注状态",
+		"event", diag.EvFollowsRefresh,
+		diag.Rooms, len(snapshot))
 
 	go func() {
 		var updated, failed atomic.Int32
@@ -223,6 +366,17 @@ func (a *App) refreshFollows(report bool) {
 		wg.Wait()
 		win.Update(func() {
 			a.followsBusy = false
+			// 新鲜度和退避都在这一处结算：一次刷新只有这一个收尾。
+			now := time.Now()
+			a.followsRefreshedAt = now
+			a.followsRetryAt, a.followsFailStreak = followSettle(now,
+				int(updated.Load()), int(failed.Load()), a.followsFailStreak)
+			followsLog(reason).Info("关注状态刷新完成",
+				"event", diag.EvFollowsRefreshDone,
+				diag.Rooms, len(snapshot),
+				"updated", int(updated.Load()),
+				"failed", int(failed.Load()),
+				diag.RetryMS, a.followsRetryAfterMS())
 			// 刷新结果也要落盘：下次冷启动直接显示上次的在线状态
 			a.markDirty()
 			if report {
@@ -308,21 +462,31 @@ func (a *App) refreshOne(win *mygo.Window, r FollowRecord) bool {
 	}
 
 	win.Update(func() {
-		for i := range a.Follows {
-			f := &a.Follows[i]
-			if f.Platform != r.Platform || f.RoomID != r.RoomID {
-				continue
-			}
-			if patch == nil {
-				// 两跳都失败：不能继续挂着「直播中」，不能让没开播的一直亮着
-				f.Live = false
-				return
-			}
-			patch(f)
-			return
-		}
+		a.writeFollowStatus(r.Platform, r.RoomID, patch)
 	})
 	return patch != nil
+}
+
+// writeFollowStatus 把一次查询结果写回关注记录；必须在主线程调用。
+//
+// Live 的写入口收在这一个函数里（另一处是 toggleFollow 新建记录时的
+// 快照，那不是「更新状态」）。
+//
+// patch 为 nil 表示这一轮没查到。这时什么都不写：查不到不等于下播，
+// 把绿点灭掉会让一次网络抖动变成「所有关注的主播都下播了」，而且那一轮
+// 之后没有任何东西会把它点亮回来。下一轮刷新本来就会给出答案。
+func (a *App) writeFollowStatus(platform, roomID string, patch func(*FollowRecord)) bool {
+	for i := range a.Follows {
+		f := &a.Follows[i]
+		if f.Platform != platform || f.RoomID != roomID {
+			continue
+		}
+		if patch != nil {
+			patch(f)
+		}
+		return true
+	}
+	return false
 }
 
 // applyRoomInfo 用房间信息覆盖关注记录；上游没给的字段保留原值。

@@ -36,7 +36,7 @@ var (
 func (a *App) PlayerPage(c *ui.Context) {
 	a.ensureDanmuLoop()
 	// 焦点就是播放页要画的那一间。setFocus 已经在换焦点时收好旧的一路：
-	// 在盒里静音留着，不在盒里连引擎一起关；墙上已经活着的引擎不会重取。
+	// 在墙上静音留着，不在墙上连引擎一起关；墙上已经活着的引擎不会重取。
 	a.ensureFocusMedia()
 	// 弹幕只属于播放页：不管画面是刚起的还是从墙上接过来的，进页面就连一条新的。
 	a.ensureDanmaku()
@@ -367,16 +367,22 @@ func (a *App) stageFrame(c *ui.Context, stage ui.Element) {
 //   - 模糊会把元素边缘之外的透明吸进来，四周出现一圈发白的渐变。H5 用
 //     transform: scale(1.2) 把图放大 20% 盖住它。这里同样让底图过扫。
 func (a *App) stageBackdrop(c *ui.Context, p *ui.VideoPlayer, cover *ui.Bitmap) {
-	bmp := cover
-	if url := a.currentBackdrop(); url != "" {
-		if w, _ := c.Size(); w > 0 {
-			bmp = backdropBitmap(url, w*(1+theme.MediaBackdropOverscan))
-		}
+	bmp := a.backdropFor(c, a.current())
+	if bmp == nil {
+		bmp = cover
 	}
 	if bmp == nil {
 		return
 	}
-	// 过扫：底图铺得比舞台大一圈，模糊把边缘吃掉之后四边仍然是满的。
+	backdropLayers(c, bmp)
+}
+
+// backdropLayers 在当前元素里铺黑边模糊底：过扫的底图 + 模糊 + 压暗。
+//
+// 舞台和表面过渡的飞行块必须共用这一处。两边各写一套的话，收起的第一帧
+// 会从「糊」跳到「实」——那是用户报的「闪一下」里最容易漏掉的一种。
+func backdropLayers(c *ui.Context, bmp *ui.Bitmap) {
+	// 过扫：底图铺得比元素大一圈，模糊把边缘吃掉之后四边仍然是满的。
 	// 这是 H5 的 scale(1.2)：元素本身仍占舞台那么大，只是内容被放大了。
 	pad := theme.MediaBackdropOverscan
 	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().Children(func() {
@@ -387,21 +393,28 @@ func (a *App) stageBackdrop(c *ui.Context, p *ui.VideoPlayer, cover *ui.Bitmap) 
 		Background(theme.MediaBackdropScrim)
 }
 
+// backdropFor 取这一间该铺的黑边底图：主播设的背景图优先，没有就用封面。
+//
+// 宽度按**窗口**算，不按元素算：舞台和飞行块都从这一处取，同一个 URL +
+// 同一个宽度才是同一个缓存键，收起的第一帧才和舞台那一帧是同一张图。
+func (a *App) backdropFor(c *ui.Context, room Streamer) *ui.Bitmap {
+	url := room.BackdropURL
+	if url == "" {
+		url = room.CoverURL
+	}
+	if url == "" {
+		return nil
+	}
+	w, _ := c.Size()
+	if w <= 0 {
+		return nil
+	}
+	return backdropBitmap(url, w*(1+theme.MediaBackdropOverscan))
+}
+
 // backdropBitmap 取一张背景图。测试里换成直接给图，不联网。
 var backdropBitmap = func(url string, width float32) *ui.Bitmap {
 	return media.Default.Bitmap(url, width)
-}
-
-// currentBackdrop 是这一间该铺的背景图：主播设的优先，没有就用封面。
-//
-// B 站 H5 的顺序就是这样（room_info.app_background → cover → 兜底图），
-// 它把背景图当房间身份的一部分，封面只是退路。
-func (a *App) currentBackdrop() string {
-	s := a.current()
-	if s.BackdropURL != "" {
-		return s.BackdropURL
-	}
-	return s.CoverURL
 }
 
 // stageSourceSize 是背景层要用的那一帧的尺寸：有画面就是视频帧，起播前是封面。

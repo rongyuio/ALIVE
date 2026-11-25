@@ -171,7 +171,7 @@ func (a *App) Island(c *ui.Context) {
 
 		body.Children(func() {
 			if open {
-				a.playerIsland(c, w, openW, !player)
+				a.playerIsland(c, w, openW)
 			} else {
 				a.islandPill(c)
 			}
@@ -307,14 +307,17 @@ func islandPlayerMeta(s Streamer) string {
 //     那一页；
 //   - 别的页面 → 回到这一间的播放页。
 //
-// 不再按「在不在观测盒里」分叉：在盒里就改道去墙，会让点岛的人落在一面
+// 不再按「在不在观测墙里」分叉：在墙上就改道去墙，会让点岛的人落在一面
 // 没有这间的墙上——那读起来就是"收起的直播间没了"。
 //
 // 换路由之后 tickSurface / watchShow 各自把呈现尺寸求对。
 //
-// onWall 只决定那颗 X 的文案：播放页上是「退出直播间」，墙上「取消观测
-// 发声」，别的页面「关闭直播间」。动作只有一个——closeFocus。
-func (a *App) playerIsland(c *ui.Context, w, openW float32, onWall bool) {
+// 那颗 X 的文案跟着墙到底在不在用来：播放页上是「退出直播间」；在观测墙上，
+// 焦点那一格正在出声时是「取消观测发声」（只收声、留静音预览），否则是
+// 「关闭直播间」；已经离开墙（首页 / 别的分区）也一律「关闭直播间」——
+// 墙上的预览在那里是停掉的，说「取消发声」会承诺一个不存在的预览。
+// 动作只有一个——closeFocus。
+func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	s := a.current()
 
 	// 头像锚在**内容框左边**。位置和直径都取整到整数 DIP：亚像素坐标在
@@ -379,14 +382,16 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32, onWall bool) {
 	//	后台收听    结束这一路，岛回到时钟
 	// 文案按表面走；动作不再按表面分叉（以前非播放页走 watchDeactivate，
 	// 它对 WatchActive 为空的焦点直接 return，收起的直播间点 X 没反应）。
-	cancelLabel := "退出直播间"
-	if onWall {
-		cancelLabel = "关闭直播间"
-		// 只有「墙上那一格正在出声」才是取消 active（收声、留静音预览）；
-		// 焦点不在盒里时这一下就是关闭整路，文案不能骗人。
-		if a.wallActiveKey() != "" {
-			cancelLabel = "取消观测发声"
-		}
+	// 播放页上这一下是退出这一路；别的地方都是「关闭直播间」——已经离开
+	// 墙时预览是停掉的，说「取消发声」会承诺一个不存在的东西。
+	cancelLabel := "关闭直播间"
+	if a.Router != nil && a.Router.Path() == routePlayer {
+		cancelLabel = "退出直播间"
+	}
+	// 只有「墙上那一格正在出声」才是取消 active（收声、留静音预览）；
+	// 焦点不在墙上时这一下就是关闭整路，文案不能骗人。
+	if a.onWatchWall() && a.wallActiveKey() != "" {
+		cancelLabel = "取消观测发声"
 	}
 	cancel := ui.Box(c).Absolute().Left(cancelX).Top((islandContentH-islandPlayerFollowW)/2).
 		Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).

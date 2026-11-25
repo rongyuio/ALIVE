@@ -4,6 +4,7 @@ package live
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -349,5 +350,25 @@ func TestMockRoomsFromPartial(t *testing.T) {
 	}
 	if len(seen) != mockFeedTotal {
 		t.Errorf("应见到 %d 个不同 RoomID，实际 %d 个", mockFeedTotal, len(seen))
+	}
+}
+
+// blocked / timeout 两个模式必须走真实的错误类型，上层才能用
+// errors.Is 分类，日志里才会出现 err.class=blocked/timeout。
+func TestMockFailureModes(t *testing.T) {
+	ctx := context.Background()
+	blocked := newMockProvider(Douyu, MockBlocked)
+	if _, err := blocked.Stream(ctx, "x", ""); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("blocked Stream: %v", err)
+	}
+	if _, err := blocked.Danmaku(ctx, "x", nil); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("blocked Danmaku: %v", err)
+	}
+	timeout := newMockProvider(Douyu, MockTimeout)
+	if _, err := timeout.Stream(ctx, "x", ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout Stream: %v", err)
+	}
+	if _, err := timeout.Danmaku(ctx, "x", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout Danmaku: %v", err)
 	}
 }
