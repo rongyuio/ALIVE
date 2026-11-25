@@ -2,9 +2,10 @@ package ui
 
 import (
 	_ "embed"
-	"log/slog"
 
 	"github.com/egoist/mygo/ui"
+
+	"alive/internal/diag"
 )
 
 // 等宽数字字体：灵动岛那枚时钟用。
@@ -37,8 +38,11 @@ func init() {
 		if err := ui.RegisterFont(face.data, FontClock); err != nil {
 			// 注册失败不该让应用起不来：调用处写的族名找不到时会回落到
 			// 系统字体，时钟只是字宽会抖，功能不受影响。
-			slog.Warn("时钟字体注册失败，回落到系统字体",
-				"face", face.sub, "error", err)
+			//
+			// 错误也走 err 那个键：.Err(err) 会把字符串塞进 "error"，和全局
+			// 契约里的 err{class,text} 不是一个形状。
+			diag.L().Warn().Str("face", face.sub).Dict(diag.ErrField, diag.Err(err)).
+				Msg("时钟字体注册失败，回落到系统字体")
 		}
 	}
 }

@@ -8,13 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"log/slog"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"alive/internal/diag"
 )
 
 // 斗鱼取流。
@@ -318,7 +319,7 @@ func douyuPickRate(rates []douyuRate, quality string) douyuRate {
 		// 菜单里的档位理论上都来自同一份列表；走到这里说明请求的标签
 		// 和服务端当前档位对不上了（多半是菜单过期）。记录下来，
 		// 上层还会用“点选 vs 实际”的对比给用户提示。
-		slog.Info("斗鱼请求的清晰度不在当前档位表里，改用默认档", "requested", want, "fallback", douyuRateLabel(rates[0]))
+		diag.L().Info().Str("requested", want).Str("fallback", douyuRateLabel(rates[0])).Msg("斗鱼请求的清晰度不在当前档位表里，改用默认档")
 	}
 	if len(rates) > 0 {
 		return rates[0]
@@ -573,9 +574,9 @@ func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate i
 
 	renewed := ticketSwapped()
 	if renewed {
-		slog.Info("斗鱼取流被旧票拒绝，票据已经换新，按登录态重试", "room", roomID, "rate", rate, "cdn", cdn)
+		diag.L().Info().Str("room", roomID).Int("rate", rate).Str("cdn", cdn).Msg("斗鱼取流被旧票拒绝，票据已经换新，按登录态重试")
 	} else {
-		slog.Info("斗鱼取流被登录态拒绝，尝试刷新票据", "room", roomID, "rate", rate, "cdn", cdn)
+		diag.L().Info().Str("room", roomID).Int("rate", rate).Str("cdn", cdn).Msg("斗鱼取流被登录态拒绝，尝试刷新票据")
 		if rerr := p.douyuRenewAuth(ctx); rerr == nil {
 			renewed = true
 		} else if errors.Is(rerr, errDouyuRenewCooling) && ticketSwapped() {
@@ -598,7 +599,7 @@ func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate i
 	guest, gerr := p.douyuPlayAttempts(ctx, roomID, rate, cdn, false)
 	if gerr != nil {
 		// 游客也过不去，说明是真空控或网络问题，把登录态那次的原因报上去。
-		slog.Info("斗鱼游客兜底也失败", "room", roomID, "rate", rate, "cdn", cdn, "error", gerr)
+		diag.L().Info().Str("room", roomID).Int("rate", rate).Str("cdn", cdn).Dict(diag.ErrField, diag.Err(gerr)).Msg("斗鱼游客兜底也失败")
 		return nil, err
 	}
 	// 只有当前这张登录票真的被 403 拒过，才有证据说它失效。票在窗口里被
@@ -666,7 +667,7 @@ func (p *douyuProvider) douyuMarkGuest() {
 	p.guestUntil = time.Now().Add(douyuGuestFallback)
 	until := p.guestUntil
 	p.stateMu.Unlock()
-	slog.Info("斗鱼登录票据不可用，先按游客取流", "until", until.Format("15:04"))
+	diag.L().Info().Str("until", until.Format("15:04")).Msg("斗鱼登录票据不可用，先按游客取流")
 }
 
 // douyuRenewAuth 强制续期一次票据。
@@ -894,8 +895,8 @@ func douyuParsePlayURL(data *douyuPlayData) (string, error) {
 		}
 	}
 	// 只记格式，不记地址（地址带签名）。
-	slog.Debug("斗鱼取流地址", "candidates", len(candidates), "flv", douyuIsFLVURL(best),
-		"hls", strings.Contains(strings.ToLower(best), ".m3u8"))
+	diag.L().Debug().Int("candidates", len(candidates)).Bool("flv", douyuIsFLVURL(best)).
+		Bool("hls", strings.Contains(strings.ToLower(best), ".m3u8")).Msg("斗鱼取流地址")
 	return best, nil
 }
 

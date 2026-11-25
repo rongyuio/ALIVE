@@ -3,13 +3,14 @@ package live
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 
 	biblib "github.com/rongyuio/bilibili"
 	bilibiliLive "github.com/rongyuio/bilibili/live"
+
+	"alive/internal/diag"
 )
 
 // B 站取流。
@@ -158,7 +159,7 @@ func (p *bilibiliProvider) StreamForPlayback(ctx context.Context, roomID, line, 
 		return out, Variant{}, err
 	}
 	if picked.QN != target.QN {
-		slog.Info("B 站取流降级", "room", out.RoomID, "want_qn", target.QN, "got_qn", picked.QN)
+		diag.L().Info().Str("room", out.RoomID).Int64("want_qn", target.QN).Int64("got_qn", picked.QN).Msg("B 站取流降级")
 	}
 
 	selected := biliTierVariant(out.RoomID, *picked, info.QNDesc, pickedURL)
@@ -423,7 +424,7 @@ func (p *bilibiliProvider) biliFetchPlayInfo(ctx context.Context, realID int64) 
 			}
 			return master, nil
 		}
-		slog.Debug("B 站 master 播放列表不可用，回退档位表", "stream", name, "error", err)
+		diag.L().Debug().Str("stream", name).Dict(diag.ErrField, diag.Err(err)).Msg("B 站 master 播放列表不可用，回退档位表")
 	}
 
 	// 兜底：从 accept_qn 拼出档位骨架，没有地址也没有分辨率。
@@ -509,7 +510,7 @@ func (p *bilibiliProvider) biliTierURLs(ctx context.Context, realID, qn int64) (
 					// 明确声明的档位，会把原画唯一合法的地址删掉，整档变成
 					// 「没有可播放的地址」。地址里有签名 token，不进日志。
 					if suffix := biliStreamSuffixQN(full); suffix > 0 && suffix != qn {
-						slog.Debug("B 站流名后缀与档位不符，以服务端声明为准", "qn", qn, "suffix_qn", suffix)
+						diag.L().Debug().Int64("qn", qn).Int64("suffix_qn", suffix).Msg("B 站流名后缀与档位不符，以服务端声明为准")
 					}
 					if expected := biliExpectedQN(full); expected > 0 && expected != qn {
 						continue

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,15 +72,16 @@ func statePath() string {
 func loadState() (persisted, bool) {
 	path := statePath()
 	if path == "" {
-		slog.Warn("拿不到配置目录，状态不会落盘",
-			"event", diag.EvStateSaveFail, diag.Stage, "path")
+		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
+			Str(diag.Stage, "path").Msg("拿不到配置目录，状态不会落盘")
 		return persisted{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			slog.Warn("读取状态失败", "event", diag.EvStateLoadFail,
-				diag.Stage, "read", "path", filepath.Base(path), diag.Err(err))
+			diag.L().Warn().Str(diag.Event, diag.EvStateLoadFail).
+				Str(diag.Stage, "read").Str("path", filepath.Base(path)).
+				Dict(diag.ErrField, diag.Err(err)).Msg("读取状态失败")
 		}
 		return persisted{}, false
 	}
@@ -89,8 +89,9 @@ func loadState() (persisted, bool) {
 	if err := json.Unmarshal(data, &p); err != nil {
 		// 坏文件会在下一次保存时被默认值覆盖。至少先留下「坏过」的证据，
 		// 否则用户报「设置全没了」时日志里什么都没有。
-		slog.Warn("状态文件损坏", "event", diag.EvStateLoadFail,
-			diag.Stage, "parse", "path", filepath.Base(path), diag.Err(err))
+		diag.L().Warn().Str(diag.Event, diag.EvStateLoadFail).
+			Str(diag.Stage, "parse").Str("path", filepath.Base(path)).
+			Dict(diag.ErrField, diag.Err(err)).Msg("状态文件损坏")
 		return persisted{}, false
 	}
 	return p, true
@@ -107,22 +108,25 @@ func (a *App) writeState(data []byte) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		slog.Warn("建状态目录失败", "event", diag.EvStateSaveFail,
-			diag.Stage, "mkdir", "path", filepath.Base(path), diag.Err(err))
+		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
+			Str(diag.Stage, "mkdir").Str("path", filepath.Base(path)).
+			Dict(diag.ErrField, diag.Err(err)).Msg("建状态目录失败")
 		a.warnStateSave()
 		return
 	}
 	// 先写临时文件再 rename：写到一半退出也不会留下半个 JSON。
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		slog.Warn("写状态失败", "event", diag.EvStateSaveFail,
-			diag.Stage, "write", "path", filepath.Base(path), diag.Err(err))
+		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
+			Str(diag.Stage, "write").Str("path", filepath.Base(path)).
+			Dict(diag.ErrField, diag.Err(err)).Msg("写状态失败")
 		a.warnStateSave()
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		slog.Warn("状态落盘失败", "event", diag.EvStateSaveFail,
-			diag.Stage, "rename", "path", filepath.Base(path), diag.Err(err))
+		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
+			Str(diag.Stage, "rename").Str("path", filepath.Base(path)).
+			Dict(diag.ErrField, diag.Err(err)).Msg("状态落盘失败")
 		a.warnStateSave()
 	}
 }

@@ -4,83 +4,106 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
+	"io/fs"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
-	"alive/internal/live"
+	"github.com/rs/zerolog"
 )
 
-// Err 把错误拆成可安全落盘的字段。
+// Err 把错误拆成 zerolog 的嵌套对象，挂在 err 键上：
+//
+//	e.Dict(diag.ErrField, diag.Err(err))
 //
 // 只留一个 class 等于没记：同一个 upstream 可能是 403 风控、412 签名失效、
 // 429 限流或 5xx。class 用来分组，op/status/host/text 才是定位用的证据。
-//
-// 返回的是一个 slog.Group("err", ...)。调用点必须把它作为独立 attr 传入：
-//
-//	slog.Warn("...", diag.Err(err))
-//
-// 不要写成 "err", diag.Err(err)——slog 的 argsToAttr 会把 Attr 当普通值包进
-// KindAny，group 结构和脱敏都会失效。
-func Err(err error) slog.Attr {
+func Err(err error) *zerolog.Event {
+	d := zerolog.Dict()
 	if err == nil {
-		return slog.Attr{}
+		return d
 	}
-	attrs := []any{
-		slog.String(ErrClassField, ErrClass(err)),
-		slog.String(ErrTypeField, fmt.Sprintf("%T", err)),
-	}
-	if up, ok := errors.AsType[*live.UpstreamError](err); ok {
-		attrs = append(attrs,
-			slog.String(ErrPlatformField, string(up.Platform)),
-			slog.String(ErrOpField, up.Op),
-			slog.Int(ErrStatusField, up.Status),
-			slog.String(ErrTextField, Sanitize(up.Message)),
-		)
+	d.Str(ErrClassField, ErrClass(err))
+	d.Str(ErrTypeField, fmt.Sprintf("%T", err))
+	// 业务错误自己交出证据，diag 不认识任何平台的类型。
+	//
+	// 它给的 text 是**权威**：那通常是平台原话（"forbidden"），比包了一层的
+	// err.Error() 干净。下面只在它没给的时候才回落到整条消息。
+	hasText := false
+	if det, ok := errors.AsType[detailed](err); ok {
+		platform, op, status, text := det.DiagError()
+		if platform != "" {
+			d = d.Str(ErrPlatformField, platform)
+		}
+		if op != "" {
+			d = d.Str(ErrOpField, op)
+		}
+		if status != 0 {
+			d = d.Int(ErrStatusField, status)
+		}
+		if text != "" {
+			d = d.Str(ErrTextField, Sanitize(text))
+			hasText = true
+		}
 	}
 	if ue, ok := errors.AsType[*url.Error](err); ok {
-		attrs = append(attrs,
-			slog.String(ErrOpField, ue.Op),
-			slog.String(ErrHostField, Host(ue.URL)),
-		)
+		d = d.Str(ErrOpField, ue.Op).Str(ErrHostField, Host(ue.URL))
 	}
 	if ne, ok := errors.AsType[net.Error](err); ok {
-		attrs = append(attrs, slog.Bool(ErrTimeoutField, ne.Timeout()))
+		d = d.Bool(ErrTimeoutField, ne.Timeout())
 	}
-	if text := Sanitize(err.Error()); text != "" {
-		attrs = append(attrs, slog.String(ErrTextField, text))
+	if !hasText {
+		if text := Sanitize(err.Error()); text != "" {
+			d = d.Str(ErrTextField, text)
+		}
 	}
-	return slog.Group(ErrField, attrs...)
+	return d
 }
 
-// classed 让错误自带分组标签，避免 diag 反向 import 业务包（会造成 import cycle）。
+// classed 让错误自带分组标签。业务包给自己的哨兵实现它，diag 只认接口——
+// 这样 diag 不必反向 import 业务包（那会造成 import cycle，也会让「日志语言」
+// 反过来依赖某个平台的具体错误类型）。
 type classed interface {
 	error
 	DiagClass() string
 }
 
+// detailed 让错误能交出结构化的证据：平台、操作、状态码、原文。
+//
+// 这些字段以前是靠 diag 认识 live.UpstreamError 才拿得到的。现在由错误自己
+// 给出，diag 只负责脱敏和落盘。
+type detailed interface {
+	error
+	DiagError() (platform, op string, status int, text string)
+}
+
 // ErrClass 是错误的分组标签。它只用于聚合，不替代 Err 的细节。
 func ErrClass(err error) string {
-	switch {
-	case err == nil:
+	if err == nil {
 		return ""
+	}
+	// 标准库的哨兵先认：它们最确定。
+	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
-	case errors.Is(err, live.ErrBlocked):
-		return "blocked"
-	case errors.Is(err, live.ErrUnsupported):
-		return "unsupported"
 	}
-	// 业务包可以给自己的哨兵实现 DiagClass()，diag 不必反向 import 它们。
+	// 业务包自带标签的走自己的（blocked / unsupported / upstream …）。
 	if c, ok := errors.AsType[classed](err); ok {
 		return c.DiagClass()
 	}
-	if _, ok := errors.AsType[*live.UpstreamError](err); ok {
-		return "upstream"
+	// 文件系统错误必须排在 net.Error 前面：syscall.Errno 实现了 net.Error
+	// （它有 Timeout()/Temporary()），而 *fs.PathError 会解包到 Errno。
+	// 于是「Access is denied」「文件找不到」全被归成 network，排障时人会
+	// 顺着网络查一整圈，而问题在磁盘或权限上。
+	if _, ok := errors.AsType[*fs.PathError](err); ok {
+		return "fs"
+	}
+	if _, ok := errors.AsType[*os.LinkError](err); ok {
+		return "fs"
 	}
 	if _, ok := errors.AsType[net.Error](err); ok {
 		return "network"
@@ -97,14 +120,20 @@ func ErrText(err error) string {
 }
 
 var (
-	urlRe    = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
-	secretRe = regexp.MustCompile(`(?i)\b(token|sign|sig|auth|secret|session|cookie|sessdata|qrcode_key|wssecret|wstime|txsecret|did|key)=([^&\s"']+)`)
-	userRe   = regexp.MustCompile(`(?i)([A-Z]:\\Users\\)[^\\\s"']+`)
+	// 直播地址不只 http：弹幕走 wss，部分平台拉流是 rtmp。只认 http(s)
+	// 会让带签名的 rtmp URL 整条原样落盘。
+	urlRe    = regexp.MustCompile(`(?i)(?:https?|rtmps?|wss?)://[^\s"'<>]+`)
+	secretRe = regexp.MustCompile(`(?i)\b(token|sign|sig|auth|secret|session|cookie|sessdata|qrcode_key|wssecret|wstime|txsecret|did|key|access_key|bili_jct|buvid3|buvid4|csrf|password|passwd|pwd)=([^&\s"';,]+)`)
+	// Windows 用户名目录两种写法：反斜杠来自 os 错误，正斜杠来自 Go 源码里
+	// 拼出来的路径和日志里的 source。
+	userRe = regexp.MustCompile(`(?i)([A-Z]:[\\/]Users[\\/])[^\\/\s"']+`)
+	// 头部的凭据不走 `key=` 形式。Bearer/Basic 后面跟的是完整的凭据本体。
+	bearerRe = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`)
 	ctrlRe   = regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`)
 )
 
-// Sanitize 是日志的唯一脱敏出口：URL 去 query/fragment、敏感参数打码、
-// Windows 用户名目录换成 ***、换行压平、超长截断。
+// Sanitize 是日志的唯一脱敏出口：URL 去 query/fragment/userinfo、敏感参数
+// 和头部凭据打码、Windows 用户名目录换成 ***、换行压平、超长截断。
 //
 // 它不追求「看起来一样」，只追求「不会把 cookie/token/签名带出去」。
 // 所有写进日志的字符串属性都经过它——不是只在错误路径上。
@@ -118,6 +147,7 @@ func Sanitize(s string) string {
 	s = ctrlRe.ReplaceAllString(s, " ")
 	s = userRe.ReplaceAllString(s, "${1}***")
 	s = urlRe.ReplaceAllStringFunc(s, stripQuery)
+	s = bearerRe.ReplaceAllString(s, "${1} ***")
 	s = secretRe.ReplaceAllString(s, "${1}=***")
 	s = strings.Join(strings.Fields(s), " ")
 	const max = 240
@@ -138,6 +168,8 @@ func stripQuery(raw string) string {
 	}
 	u.RawQuery = ""
 	u.Fragment = ""
+	// userinfo 和 query 一样是凭据：推流/拉流地址里常带用户名密码，只清 query 会把密码原样带出去。
+	u.User = nil
 	return u.String()
 }
 

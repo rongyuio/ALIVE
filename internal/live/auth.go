@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"alive/internal/diag"
 )
 
 // 扫码登录。
@@ -330,7 +331,7 @@ func (a *qrAuth) verifyAt(seq int) {
 		// 「续不上就下次再试，绝不删会话」的约定相反。验证不上就先保留，
 		// 状态标成「稍后重试」。
 		if !errors.Is(err, errSessionInvalid) {
-			slog.Info("登录态校验失败，保留本地会话", "platform", a.platform, "error", err)
+			diag.L().Info().Str("platform", string(a.platform)).Dict(diag.ErrField, diag.Err(err)).Msg("登录态校验失败，保留本地会话")
 			a.update(seq, func(s *AuthState) {
 				s.Status = "登录态校验失败，稍后重试"
 			})
@@ -341,7 +342,7 @@ func (a *qrAuth) verifyAt(seq int) {
 		if !a.isCurrent(seq) {
 			return
 		}
-		slog.Info("登录态已失效", "platform", a.platform, "error", err)
+		diag.L().Info().Str("platform", string(a.platform)).Dict(diag.ErrField, diag.Err(err)).Msg("登录态已失效")
 		a.drv.logoutQR()
 		removeAuthSession(a.platform)
 		a.stopRenew()
@@ -443,17 +444,17 @@ func (a *qrAuth) renewOnce(ctx context.Context) {
 			return
 		}
 		// 续期失败只记日志：续不上就下次再试，绝不删存下来的会话。
-		slog.Info("cookie 续期失败", "platform", a.platform, "error", err)
+		diag.L().Info().Str("platform", string(a.platform)).Dict(diag.ErrField, diag.Err(err)).Msg("cookie 续期失败")
 		return
 	}
 	if !changed {
 		return
 	}
 	if !a.commitRenew(seq, cookies, token, sess) {
-		slog.Info("续期期间登录态已变化，丢弃结果", "platform", a.platform)
+		diag.L().Info().Str("platform", string(a.platform)).Msg("续期期间登录态已变化，丢弃结果")
 		return
 	}
-	slog.Info("cookie 已续期", "platform", a.platform)
+	diag.L().Info().Str("platform", string(a.platform)).Msg("cookie 已续期")
 }
 
 // commitRenew 在登录代次未变时把续期结果写回驱动并落盘。
@@ -516,7 +517,7 @@ func (a *qrAuth) RenewNow(ctx context.Context) error {
 	if !a.commitRenew(seq, cookies, token, sess) {
 		return errNoRenewNeeded{"续期期间登录态已变化"}
 	}
-	slog.Info("cookie 已强制续期", "platform", a.platform)
+	diag.L().Info().Str("platform", string(a.platform)).Msg("cookie 已强制续期")
 	return nil
 }
 
@@ -535,7 +536,7 @@ func writeAuthSession(p Platform, sess authSession) {
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		slog.Warn("保存登录态失败", "platform", p, "error", err)
+		diag.L().Warn().Str("platform", string(p)).Dict(diag.ErrField, diag.Err(err)).Msg("保存登录态失败")
 		return
 	}
 	_ = os.Rename(tmp, path)
@@ -653,14 +654,14 @@ func (a *qrAuth) saveSession(user authUser) {
 	// 先写临时文件再 rename：写到一半退出也不会留下半个 JSON。
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		slog.Warn("保存登录态失败", "platform", a.platform, "error", err)
+		diag.L().Warn().Str("platform", string(a.platform)).Dict(diag.ErrField, diag.Err(err)).Msg("保存登录态失败")
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		slog.Warn("登录态落盘失败", "platform", a.platform, "error", err)
+		diag.L().Warn().Str("platform", string(a.platform)).Dict(diag.ErrField, diag.Err(err)).Msg("登录态落盘失败")
 		return
 	}
-	slog.Info("登录态已落盘", "platform", a.platform, "path", path)
+	diag.L().Info().Str("platform", string(a.platform)).Str("path", path).Msg("登录态已落盘")
 }
 
 func removeAuthSession(p Platform) {
@@ -669,7 +670,7 @@ func removeAuthSession(p Platform) {
 		return
 	}
 	if err := os.Remove(path); err == nil {
-		slog.Info("登录态已删除", "platform", p, "path", path)
+		diag.L().Info().Str("platform", string(p)).Str("path", path).Msg("登录态已删除")
 	}
 }
 

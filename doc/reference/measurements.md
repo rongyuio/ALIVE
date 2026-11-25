@@ -11,7 +11,7 @@
 
 - Windows 11 Pro x64，Ryzen 7 9700X（8C/16T），Radeon RX 9070 XT
 - FFmpeg 固定 BtbN `n9.0.2-45-g1e65c6cd5d-20261102`（见 [decisions/0002](../decisions/0002-ffmpeg-provisioning.md)）
-- MyGo v0.9.1
+- MyGo v0.10.0（2026-11-18 冷启动那轮是 v0.9.1，本文件里带日期的数字按当时版本读）
 - 除特别说明，耗时均**从取流开始累计**
 
 ## 冷启动（2026-11-18）
@@ -131,7 +131,7 @@ MYGO_FRAME_STATS=1 MYGO_UNCAPPED=1 build/e2e/alive-e2e.exe 2> frame.log
 | 中位 | 2.22 |
 | 最高 | 2.32 |
 
-离屏 Tester 的 A/B（带环 2.38ms / 把 `islandRing` 短路 2.47ms）本来就在噪声
+离屏 Tester 的 A/B（带环 2.38ms / 把环短路 2.47ms）本来就在噪声
 里；真窗口这个数同样远低于 16.7ms。**结论：两层 mask 不值得优化，但 `Blur`
 不值得用**——同一台机器上余晖改成 `.Blur()` 后离屏均值 44.7ms/帧，那是另一个
 量级，见 [decisions/0006](../decisions/0006-palette-ladder.md)。
@@ -163,7 +163,8 @@ MYGO_FRAME_STATS=1 MYGO_UNCAPPED=1 build/e2e/alive-e2e.exe 2> frame.log
 
 ### 跨平台矩阵
 
-2026-11-16，`go test ./internal/playback -run TestMatrix`，4 平台 × 2 分区 × 2 房间 × 3 档，
+2026-11-16，`go test ./internal/playback -run TestMatrix`（当时的探针，已不在仓库），
+4 平台 × 2 分区 × 2 房间 × 3 档，
 每档静置 2 秒后采样 8 秒。上屏 fps 与解码 fps 完全一致，说明我们这一层不再丢帧
 （libav 版同一测试里虎牙 12 档有 9 档卡）。
 
@@ -192,7 +193,8 @@ MYGO_FRAME_STATS=1 MYGO_UNCAPPED=1 build/e2e/alive-e2e.exe 2> frame.log
 | 虎牙 423876 标清 500K `loading failed (-13)` | 地址不可用（403），回退 relay 也无解 |
 
 第一条是这一轮最重要的实测：**同一条流，ffmpeg 命令行也慢**，所以不是播放层的问题。
-这就是 `TestFfmpegControl` 存在的原因——没有这个对照，很容易把上游的问题算到自己头上。
+这就是当时要做 ffmpeg 命令行对照的原因——没有这个对照，很容易把上游的问题算到自己头上。
+仓库里现在没有对应的自动化测试，这是一次手工对照。
 
 ### time-pos 的采样节拍（2026-11-21）
 
@@ -232,7 +234,7 @@ Ryzen 7 9700X。
 重新起播（现在采用）：`startStream` 整路重建，首帧与冷启动同量级——B 站
 413ms、虎牙约 600ms，其中平台取流是大头。
 
-早先 `TestVideoResume`（斗鱼 9999，2026-11-16）测到中位数 1.67 秒，那只是那个
+早先的探针（斗鱼 9999，2026-11-16）测到中位数 1.67 秒，那只是那个
 房间当时的读头位置，不能推广。
 
 三条前提仍然成立：画面关掉之后 `time-pos` 继续前进；三分钟后台推进 179.94 秒；
@@ -286,13 +288,14 @@ GPU 采样不看 alpha 所以窗口正常；CPU 光栅化按预乘 alpha 混合�
 截图里播放区纯黑、UI 其余部分正常。同一份帧，两条路径两种结果。
 
 定位方式：把 `Picture.RGBA` 的产物按像素统计——修之前「非黑 0 / 2073600」，修之后
-「非黑 2073337 / 2073600，不透明 2073600 / 2073600」。这个断言现在留在 `TestLiveEngine` 里。
+「非黑 2073337 / 2073600，不透明 2073600 / 2073600」。这个断言现在由
+`TestRGBAOpaque` 和 `TestGPUFramesConvertForCPU` 看住。
 
 ### 4K60 与 CPU 敏感度（2026-11-16）
 
 平台的 4K 档位可遇不可求，而且会换编码、会下播，拿来当基准不可重复。改用本地推流：
 ffmpeg 以 `-re` 把一段 4K60 片源按实时速度循环推成 MPEG-TS，播放器拉
-`http://127.0.0.1:8888/live.ts`，解码负载固定。`TestLocalStream` 采样 10 秒。
+`http://127.0.0.1:8888/live.ts`，解码负载固定。采样 10 秒（当时的探针，已不在仓库）。
 
 | 片源 | 首帧 | 上屏 | 丢帧 | 断供 | 进程 CPU |
 |---|---:|---:|---:|---:|---:|
@@ -411,8 +414,8 @@ expire=300   fcdn=hw
 第二路，出图后再切过去——画面连续，只有声音有一次几百毫秒的接缝。到期没换成功、
 或者这一路先停了（`ended` / 时间轴 6 秒不动），走同一条路兜底。
 
-实测（斗鱼 475252，全程 380 秒）：`swap-start` 在 241.5 秒，1.7 秒后 `swap-done`，
-全程没有出现 `stream-dead`。
+实测（斗鱼 475252，全程 380 秒）：`session.swap_start` 在 241.5 秒，1.7 秒后
+`session.swap_done`，全程没有出现 `stream-dead`。
 
 ### 内存基线（2026-11-16）
 
@@ -940,7 +943,7 @@ Go heap 50.5MB。浸泡后立刻查 `RoomInfo`，该房间 `live=false`（主播
   已截图确认错误态与重试入口，但不计入播放通过。
 ## 表面模型的四条门禁探针（2026-11-22）
 
-探针在 `internal/ui/surface_probe_test.go`，进 `make check`。目的只有一个：
+探针在 `internal/ui/surface_gates_test.go`，进 `make check`。目的只有一个：
 决定"墙格 → 播放页的连续放大"能不能做。Windows 11，Ryzen 7 9700X，
 `ui.NewTester`（软件渲染），GIF 解码的纯 Go 播放器，不碰 libmpv。
 
@@ -958,7 +961,7 @@ P4 的比值 4.2 看着高，但基数是 194µs 的整树重建——绝对增�
 占 60fps 预算的 3.6%。Tester 是软件渲染，绝对值不能外推到真窗口；
 这条只用来挡住"量级失控"，不作为性能承诺。
 
-## 表面模型修复的三条路径（2026-11-22）
+## 表面模型修复的几条路径（2026-11-22）
 
 `internal/ui/surface_invariants_test.go`。每条都先在改动前的代码上跑红，
 再改，再绿；回滚验证记录如下。
@@ -1063,7 +1066,7 @@ P4 的比值 4.2 看着高，但基数是 194µs 的整树重建——绝对增�
   immediate context——共用 device 会让 mpv 和渲染器在两个线程上抢同一个
   context，实测表现为整格纯黑。
 - 共享纹理带 `SHARED_NTHANDLE | SHARED_KEYEDMUTEX`；mpv 渲染时持 key 0，
-  MyGo 的渲染器（`internal/gpu/d3d11/video.go`）读时也持 key 0。
+  MyGo 的渲染器（`third_party/mygo/internal/gpu/d3d11/video.go`）读时也持 key 0。
 - `render_d3d11.h` 已随包放进 `third_party/mpv/include/mpv/`。结构体只有
   一个字段（`void *device` / `void *tex`），之前照记忆多写了字段——不影响
   偏移 0，但不是黑屏的原因，原因是上面那条 context 竞争。

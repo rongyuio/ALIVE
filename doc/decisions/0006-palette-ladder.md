@@ -42,7 +42,8 @@
 `internal/theme/contrast_test.go` 五条，都在改动前跑红：
 
 - `TestPaletteContrast`：主/次文字在每个表面 ≥4.5，三级/元数据在平静表面
-  ≥4.5，`AccentInk`/`AccentText` ≥4.5，`AccentLine` 作为图形 ≥3.0。
+  ≥4.5，`AccentInk`/`AccentText` 普通模式 ≥3.0、高对比 ≥4.5（规则已移到
+  `accent_test.go`），`AccentLine` 作为图形 ≥3.0。
   改动前 19 对失败，现在 0。
 - `TestPaletteLadderIsMonotonic`：地 < 卡片 < 三级填充（深色），文字四档反向。
 - `TestSurfaceFamilySharesHue`：地、卡片、三级填充的 Oklab 色相差 ≤20°。
@@ -84,7 +85,8 @@
 
 **画面上的墨收进令牌。** `ui.RGBA(255,255,255,0.05/0.08/0.12/0.15/…)` 这类在
 播放器和弹幕面板里散着写的白色，收成 `MediaRow / MediaRowLine / MediaHair /
-MediaTrack / MediaText / MediaTextDim / MediaPanel / MediaScrim`。它们**不跟配色走**：
+MediaTrack / MediaText / MediaTextDim / MediaPanel / MediaScrimSoft / MediaScrimTile`。
+它们**不跟配色走**：
 浅色主题里把面板刷白，压在视频上的字就没了。33 处替换，视觉零变化。
 
 ## 材质：只给一处真玻璃
@@ -129,7 +131,8 @@ MediaTrack / MediaText / MediaTextDim / MediaPanel / MediaScrim`。它们**不�
 视频上，是第二类"下面真有内容"的地方。tint 用 0.72 而不是实色的 0.88——0.88
 会把模糊全遮掉，玻璃就只是贵一点的实色。
 
-`internal/ui` 的字面量从 96 降到 26。剩下的分两类：视频上的遮罩/阴影（每个位置
+`internal/ui` 的字面量从 96 降到 26（2026-11-25 复核：当前约 37 处，规则没变，
+只是后来又加了几处）。剩下的分两类：视频上的遮罩/阴影（每个位置
 本来就该不一样），和弹幕颜色（用户选的，不该进主题）。
 
 **帧成本**：用 MyGo 自带的 `MYGO_FRAME_STATS=1 MYGO_UNCAPPED=1` 量了，
@@ -147,7 +150,7 @@ MediaTrack / MediaText / MediaTextDim / MediaPanel / MediaScrim`。它们**不�
 `#eaebed`、卡片才是白的，于是轨道比地亮、和右边的容器对不上。
 
 轨道和窗口按钮本来就是同一类容器（装一排可点的东西），现在都用
-`FillQuaternary + Border(1, Border)`。浅色主题里白色只留给卡片。
+`SurfaceChrome`、不描边。浅色主题里白色只留给卡片。
 
 ## 阴影阶梯
 
@@ -213,7 +216,7 @@ MediaTrack / MediaText / MediaTextDim / MediaPanel / MediaScrim`。它们**不�
   是近白灰，关注键的白星压上去就没了。岛上统一用 `Media*` 那一族
   （「压在图上的墨」），关注键改成 `MediaRow` + `MediaRowLine`。
 - **强调色要多一支 `AccentOnInk`。** `AccentInk` / `AccentLine` 都是对
-  `BgPrimary` 推导的：浅色主题里它们被压深去当字/当线，压到 `#060709`
+  `FillSecondary` 推导的：浅色主题里它们被压深去当字/当线，压到 `#060709`
   上等于消失。`AccentOnInk` 对墨底推导，阈值 `islandRingMin = 4.5`。
   为什么不是 §1.4.11 的 3:1：那条是按静止边界写的，而这是一道 2 DIP 宽、
   一直在动的弧，移动与细都会压低可感知对比，所以取正文那一档。
@@ -288,6 +291,6 @@ reduced motion 下不转，热段停在固定角度——光还在，只是不�
 
 **唯一的量级变化来自 `Blur`**：余晖换成模糊后离屏均值 44.7ms/帧。所以这里
 宁可多画几条停靠点，也不用每帧重建的离屏层。
-**没做**：功能性描边还没有 3:1 的版本。未订阅的「订阅分区」只有一圈 1.27:1 的线，
-按 WCAG 2.2 §1.4.11 它不能单独承担「这里可点」。这是下一件事，不和装饰边混在一起做。
+**已做**：功能性描边 `BorderFunctional` 对卡片 ≥3:1（高对比 4），用在未订阅的
+「订阅分区」；公共 `Border` 保持分隔语义，不整体提亮。
 

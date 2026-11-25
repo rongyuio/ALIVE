@@ -133,9 +133,12 @@ mock-partial: check-mpv
 diag:
 	$(GO) build -o $(BUILD_DIR)/alive-diag.exe ./cmd/alive-diag
 
+# -H windowsgui：不加这一行，产物是 console 子系统，双击或者从别处启动都会
+# 弹一个控制台黑框——正式构建走 mygo build 自带这个标志，e2e 构建以前漏了。
+# 重定向 stdout/stderr 仍然有效（句柄由父进程给），只是不再分配控制台。
 e2e: check-mpv
 	@$(SH) 'mkdir -p "$(BUILD_DIR)/e2e"'
-	$(GO) build -tags e2e -o $(BUILD_DIR)/e2e/alive-e2e.exe .
+	$(GO) build -tags e2e -ldflags "-H windowsgui" -o $(BUILD_DIR)/e2e/alive-e2e.exe .
 	@$(SH) 'cp third_party/mpv/bin/libmpv-2.dll "$(BUILD_DIR)/e2e/"'
 
 tools:

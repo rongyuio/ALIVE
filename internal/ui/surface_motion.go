@@ -61,8 +61,9 @@ func (a *App) setFocus(s *roomSession) {
 	}
 	// 焦点是「谁在出声」。它变了却没有日志，所有「点一下就黑了/没声了」
 	// 都只能从别的行的缝里猜。
-	diag.Ref{Sub: "focus"}.Logger().Info("焦点切换",
-		"event", diag.EvFocusChange, diag.From, from, diag.To, to)
+	diag.Ref{Sub: "focus"}.Logger().Info().
+		Str(diag.Event, diag.EvFocusChange).Str(diag.From, from).
+		Str(diag.To, to).Msg("焦点切换")
 	if old != nil {
 		a.endSessionFocus(old)
 	}
@@ -144,8 +145,9 @@ func (a *App) noteRoute(from, to string) {
 	if a.Router == nil || from == to || to == "" {
 		return
 	}
-	diag.Ref{Sub: "nav"}.Logger().Info("页面切换",
-		"event", diag.EvRouteChange, diag.From, from, diag.To, to)
+	diag.Ref{Sub: "nav"}.Logger().Info().
+		Str(diag.Event, diag.EvRouteChange).Str(diag.From, from).
+		Str(diag.To, to).Msg("页面切换")
 }
 
 // openRoom 是「看这一间」的唯一入口：首页卡片、关注行、搜索结果、墙格、

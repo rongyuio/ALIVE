@@ -1,7 +1,7 @@
 # 0001 播放器后端
 
 - **状态**：已决定，已落地（2026-11-16 接入播放页）
-- **实现方式已取代**：两个 ffmpeg 子进程 → cgo 进程内 libav，见 [0003](0003-libav-in-process.md)。方向不变，本文的取舍与上游调研仍然有效
+- **实现方式已取代**：两个 ffmpeg 子进程 → cgo 进程内 libav（[0003](0003-libav-in-process.md)）→ libmpv（[0004](0004-libmpv.md)）。方向不变，本文的取舍与上游调研仍然有效
 - **日期**：2026-11-16
 - **影响**：`internal/ui/player_media.go`、`internal/playback`、`internal/relay`（兜底路径，已于 2026-11-16 删除）
 
@@ -59,8 +59,10 @@ URL → libavformat 解封装 → libavcodec 硬解 → D3D11 纹理直出
 | `egoist/mygo#105` | 路线图 | 第 16 条「Specialized content plugins… Native-view hosting」未勾选 |
 | `docs/ui/video.md` | 文档 | App 自解码直播流走 `Bitmap.UpdateYUV` |
 
-另外：Windows 没有原生视图嵌入，`platform.ViewSurface.EmbedView` 只有 darwin 实现；
-`ui.NewEngineVideoPlayer` 依赖内部包 `internal/media.Engine`，应用无法实现；
+另外：Windows 没有原生视图嵌入，`platform.ViewSurface.EmbedView` 只有 darwin / mobile 实现；
+`ui.NewEngineVideoPlayer` 依赖内部包 `internal/media.Engine`，本文写作时应用还无法自己
+实现引擎——后来上游用 `media/`、`scene/` 别名包和 `ui/engine_export.go` 把这层打开了
+（见 [0004](0004-libmpv.md)）；
 `ui.VideoDecoder` 只覆盖画面帧，不含声音与时钟。
 
 ## 决策

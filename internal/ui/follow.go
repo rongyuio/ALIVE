@@ -3,13 +3,13 @@ package ui
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/rs/zerolog"
 
 	"alive/internal/diag"
 	"alive/internal/live"
@@ -223,8 +223,9 @@ func followsDue(now, last, retryAt time.Time, minGap time.Duration) bool {
 //
 // 只带 sub 和 reason：一次刷新横跨所有关注的主播，没有单一房间或会话
 // 可以挂——这也是它不属于任何 roomSession 的原因。
-func followsLog(reason string) *slog.Logger {
-	return diag.Ref{Sub: "follows"}.Logger().With(diag.Reason, reason)
+func followsLog(reason string) *zerolog.Logger {
+	l := diag.Ref{Sub: "follows"}.Logger().With().Str(diag.Reason, reason).Logger()
+	return &l
 }
 
 // followsRetryAfterMS 是退避还剩多少毫秒，0 表示不退避。
@@ -336,9 +337,8 @@ func (a *App) refreshFollows(report bool, reason string) {
 	win := a.Win
 	// 一轮的开始和结束要成对落在日志里：绿点是旧的时，先看这一轮是谁发起、
 	// 什么时候发起、最后查到几条。
-	followsLog(reason).Info("开始刷新关注状态",
-		"event", diag.EvFollowsRefresh,
-		diag.Rooms, len(snapshot))
+	followsLog(reason).Info().Str(diag.Event, diag.EvFollowsRefresh).
+		Int(diag.Rooms, len(snapshot)).Msg("开始刷新关注状态")
 
 	go func() {
 		var updated, failed atomic.Int32
@@ -371,12 +371,13 @@ func (a *App) refreshFollows(report bool, reason string) {
 			a.followsRefreshedAt = now
 			a.followsRetryAt, a.followsFailStreak = followSettle(now,
 				int(updated.Load()), int(failed.Load()), a.followsFailStreak)
-			followsLog(reason).Info("关注状态刷新完成",
-				"event", diag.EvFollowsRefreshDone,
-				diag.Rooms, len(snapshot),
-				"updated", int(updated.Load()),
-				"failed", int(failed.Load()),
-				diag.RetryMS, a.followsRetryAfterMS())
+			followsLog(reason).Info().
+				Str(diag.Event, diag.EvFollowsRefreshDone).
+				Int(diag.Rooms, len(snapshot)).
+				Int("updated", int(updated.Load())).
+				Int("failed", int(failed.Load())).
+				Int64(diag.RetryMS, a.followsRetryAfterMS()).
+				Msg("关注状态刷新完成")
 			// 刷新结果也要落盘：下次冷启动直接显示上次的在线状态
 			a.markDirty()
 			if report {

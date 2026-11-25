@@ -5,12 +5,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"alive/internal/diag"
 )
 
 // 斗鱼弹幕：裸 TCP + STT 私有协议。
@@ -137,7 +138,7 @@ func (s *douyuDanmaku) run() {
 			return
 		}
 		if err != nil {
-			slog.Debug("斗鱼弹幕断开", "room", s.roomID, "error", err, "retry", backoff)
+			diag.L().Debug().Str("room", s.roomID).Dict(diag.ErrField, diag.Err(err)).Dur("retry", backoff).Msg("斗鱼弹幕断开")
 		}
 		// 稳过 10s 再断说明只是抖动，下一次从 1s 重新开始
 		if time.Since(started) >= 10*time.Second {

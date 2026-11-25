@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"alive/internal/diag"
 )
 
 // 虎牙弹幕：一条 WebSocket 连接 + TARS(JCE) 二进制消息。
@@ -217,7 +218,7 @@ func (s *huyaDanmaku) run() {
 			return
 		}
 		if err != nil {
-			slog.Debug("虎牙弹幕断开", "room", s.roomID, "error", err, "retry", backoff)
+			diag.L().Debug().Str("room", s.roomID).Dict(diag.ErrField, diag.Err(err)).Dur("retry", backoff).Msg("虎牙弹幕断开")
 		}
 		if time.Since(started) >= huyaDanmuStable {
 			backoff = time.Second
@@ -328,7 +329,7 @@ func (s *huyaDanmaku) readLoop(conn *websocket.Conn, payload []byte) error {
 		// 坏帧只丢这一帧：WS 本身有消息边界，丢一条不影响后续帧，
 		// 重连反而会因为服务端持续下发同一类帧而空转。
 		if err := s.handleMessage(data); err != nil {
-			slog.Debug("虎牙弹幕帧解析失败", "room", s.roomID, "error", err)
+			diag.L().Debug().Str("room", s.roomID).Dict(diag.ErrField, diag.Err(err)).Msg("虎牙弹幕帧解析失败")
 		}
 	}
 }

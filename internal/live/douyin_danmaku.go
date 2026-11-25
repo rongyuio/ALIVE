@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -22,6 +21,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/dop251/goja"
+
+	"alive/internal/diag"
 )
 
 // 抖音弹幕：一条 WebSocket 连接 + protobuf 帧，payload 是 gzip 压缩的 Response。
@@ -277,7 +278,7 @@ func (s *douyinDanmaku) run() {
 			return
 		}
 		if err != nil {
-			slog.Debug("抖音弹幕断开", "room", s.webRID, "error", err, "retry", backoff)
+			diag.L().Debug().Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Dur("retry", backoff).Msg("抖音弹幕断开")
 		}
 		if time.Since(started) >= douyinDanmuStable {
 			backoff = time.Second
@@ -322,7 +323,7 @@ func (s *douyinDanmaku) connectOnce() error {
 		cancel()
 		if err != nil {
 			lastErr = fmt.Errorf("连接 %s 失败: %w", host, err)
-			slog.Debug("抖音弹幕握手失败", "host", host, "room", s.webRID, "error", err)
+			diag.L().Debug().Str("host", host).Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Msg("抖音弹幕握手失败")
 			continue
 		}
 		conn.SetReadLimit(douyinDanmuMaxFrame)
@@ -403,7 +404,7 @@ func (s *douyinDanmaku) readLoop(conn *websocket.Conn) error {
 func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 	frame, err := douyinDecodePushFrame(data)
 	if err != nil {
-		slog.Debug("抖音弹幕帧解析失败", "room", s.webRID, "error", err)
+		diag.L().Debug().Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Msg("抖音弹幕帧解析失败")
 		return
 	}
 	if frame.PayloadType != "msg" || len(frame.Payload) == 0 {
@@ -413,7 +414,7 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 	// payload 是 gzip 压缩的 Response（query 里 compress=gzip）。
 	zr, err := gzip.NewReader(bytes.NewReader(frame.Payload))
 	if err != nil {
-		slog.Debug("抖音弹幕 gzip 打开失败", "room", s.webRID, "error", err)
+		diag.L().Debug().Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Msg("抖音弹幕 gzip 打开失败")
 		return
 	}
 	// WS 的 SetReadLimit 只约束压缩后的 4MB；deflate 最大压缩比上千倍，
@@ -422,17 +423,17 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 	plain, err := io.ReadAll(io.LimitReader(zr, httpMaxBody+1))
 	_ = zr.Close()
 	if err != nil {
-		slog.Debug("抖音弹幕 gzip 解压失败", "room", s.webRID, "error", err)
+		diag.L().Debug().Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Msg("抖音弹幕 gzip 解压失败")
 		return
 	}
 	if len(plain) > httpMaxBody {
-		slog.Warn("抖音弹幕解压后超过上限，整帧丢弃", "room", s.webRID, "bytes", len(plain))
+		diag.L().Warn().Str("room", s.webRID).Int("bytes", len(plain)).Msg("抖音弹幕解压后超过上限，整帧丢弃")
 		return
 	}
 
 	resp, err := douyinDecodeResponse(plain)
 	if err != nil {
-		slog.Debug("抖音弹幕 Response 解析失败", "room", s.webRID, "error", err)
+		diag.L().Debug().Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Msg("抖音弹幕 Response 解析失败")
 		return
 	}
 
@@ -445,7 +446,7 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 			Payload:     []byte(resp.InternalExt),
 		}
 		if err := conn.Write(s.ctx, websocket.MessageBinary, ack.encode()); err != nil {
-			slog.Debug("抖音弹幕发送 ACK 失败", "room", s.webRID, "error", err)
+			diag.L().Debug().Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Msg("抖音弹幕发送 ACK 失败")
 		}
 	}
 
@@ -460,7 +461,7 @@ func (s *douyinDanmaku) handleFrame(conn *websocket.Conn, data []byte) {
 		}
 		chat, err := douyinDecodeChatMessage(msg.Payload)
 		if err != nil {
-			slog.Debug("抖音聊天消息解析失败", "room", s.webRID, "error", err)
+			diag.L().Debug().Str("room", s.webRID).Dict(diag.ErrField, diag.Err(err)).Msg("抖音聊天消息解析失败")
 			continue
 		}
 		content := strings.TrimSpace(chat.Content)

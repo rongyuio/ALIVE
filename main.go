@@ -5,7 +5,6 @@
 package main
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/rs/zerolog"
 
 	"alive/internal/applog"
 	"alive/internal/buildinfo"
@@ -41,9 +41,17 @@ func main() {
 	// 坏掉时，至少要能知道它坏在哪。
 	logPath, logErr := applog.Setup()
 	if logErr != nil {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		// 日志落盘失败时退到 stderr：双击启动的进程看不见它，但命令行启动
+		// 和 go run 时这一行就是唯一的出路——不能因为文件建不出来而全静默。
+		//
+		// Timestamp 不能省：这一行是「为什么没有日志」的唯一线索，没有时间
+		// 就分不清是哪次启动。原来 slog 的 TextHandler 默认带 time=。
+		stderrLog := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
+			Level(diag.LevelInfo).
+			With().Timestamp().Logger()
+		diag.SetLogger(&stderrLog)
 		fallbackLogError(logErr)
-		slog.Error("日志落盘失败", diag.Err(logErr))
+		diag.L().Error().Dict(diag.ErrField, diag.Err(logErr)).Msg("日志落盘失败")
 	}
 
 	// 崩溃时打印所有 goroutine 的栈；配合 applog 的 crash-<run>.log。
@@ -57,28 +65,28 @@ func main() {
 		if f, err := os.Create(p); err == nil {
 			if err := trace.Start(f); err == nil {
 				traceFile = f
-				slog.Info("执行跟踪已开始", "event", diag.EvTraceStart, diag.Path, p)
+				diag.L().Info().Str(diag.Event, diag.EvTraceStart).Str(diag.Path, p).Msg("执行跟踪已开始")
 			} else {
 				_ = f.Close()
-				slog.Warn("执行跟踪启动失败", diag.Err(err))
+				diag.L().Warn().Dict(diag.ErrField, diag.Err(err)).Msg("执行跟踪启动失败")
 			}
 		}
 	}
 
 	commit, modified := buildinfo.Commit()
-	slog.Info("进程启动",
-		"event", diag.EvRunStart,
-		"pid", os.Getpid(),
-		"version", appVersion(),
-		"commit", commit,
-		"modified", modified,
-		"go", runtime.Version(),
-		"os", runtime.GOOS+"/"+runtime.GOARCH,
-		"log", logPath,
-		"level", applog.Level().String(),
-		"mpv_log", envOr("ALIVE_MPV_LOG_LEVEL", "warn"),
-		"frame_stats", envOr("MYGO_FRAME_STATS", ""),
-	)
+	diag.L().Info().
+		Str(diag.Event, diag.EvRunStart).
+		Int("pid", os.Getpid()).
+		Str("version", appVersion()).
+		Str("commit", commit).
+		Bool("modified", modified).
+		Str("go", runtime.Version()).
+		Str("os", runtime.GOOS+"/"+runtime.GOARCH).
+		Str("log", logPath).
+		Str("level", applog.Level().String()).
+		Str("mpv_log", envOr("ALIVE_MPV_LOG_LEVEL", "warn")).
+		Str("frame_stats", envOr("MYGO_FRAME_STATS", "")).
+		Msg("进程启动")
 
 	// 头像的磁盘缓存放 %LOCALAPPDATA%\alive\images。
 	//
@@ -187,15 +195,20 @@ func main() {
 	if traceFile != nil {
 		trace.Stop()
 		_ = traceFile.Close()
-		slog.Info("执行跟踪已结束", "event", diag.EvTraceStop)
+		diag.L().Info().Str(diag.Event, diag.EvTraceStop).Msg("执行跟踪已结束")
 	}
 	if runErr != nil {
-		slog.Error("进程异常退出", "event", diag.EvRunStop,
-			"reason", "error", diag.Err(runErr))
+		diag.L().Error().
+			Str(diag.Event, diag.EvRunStop).
+			Str(diag.Reason, "error").
+			Dict(diag.ErrField, diag.Err(runErr)).
+			Msg("进程异常退出")
 	} else {
-		slog.Info("进程退出", "event", diag.EvRunStop,
-			"reason", "quit",
-			"uptime_ms", time.Since(started).Milliseconds())
+		diag.L().Info().
+			Str(diag.Event, diag.EvRunStop).
+			Str(diag.Reason, "quit").
+			Int64(diag.UptimeMS, time.Since(started).Milliseconds()).
+			Msg("进程退出")
 	}
 	applog.Close()
 	if runErr != nil {

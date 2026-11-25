@@ -18,6 +18,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"alive/internal/applog"
+	"alive/internal/diag"
 	"alive/internal/metrics"
 	"alive/internal/support"
 )
@@ -138,4 +139,14 @@ func (w *Watcher) dump(reason string) {
 	if err := support.Minidump(base + ".dmp"); err != nil {
 		fmt.Fprintf(os.Stderr, "alive: 写 minidump 失败: %v\n", err)
 	}
+	// 独立文件是现场；主日志这一行是入口——没有它，timeline 和
+	// alive-diag answer freeze 不知道这次卡死发生过。applog 的入队是非阻塞的，
+	// 队列满就丢，不会把卡死检测 goroutine 拖在这里。
+	//
+	// 不写 run：handler 给每一行都注入，这里再写一次会落成两个 run=。
+	diag.L().Warn().
+		Str(diag.Event, diag.EvHang).
+		Str("reason", reason).
+		Str("file", logPath).
+		Msg("卡死现场已落盘")
 }

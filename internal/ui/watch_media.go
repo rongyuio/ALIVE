@@ -3,12 +3,12 @@ package ui
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/rs/zerolog"
 
 	"alive/internal/diag"
 	"alive/internal/live"
@@ -66,7 +66,7 @@ type roomSession struct {
 	// log 是这一格的诊断 logger：room 固定，session 随每次重开（watch#N）变化。
 	// restarts 单调递增，只在用户手动 reload 时清零——它是「这一格到底重开了
 	// 几次」的唯一可信计数，failures 会被首帧清零，不能拿来数循环。
-	log          *slog.Logger
+	log          *zerolog.Logger
 	restarts     int
 	firstFrameAt time.Time
 	createdAt    time.Time
@@ -463,8 +463,9 @@ func (a *App) watchShow(rects map[string]watch.Rect) {
 		}
 	}
 	if wasHidden || opened > 0 || closed > 0 {
-		diag.Ref{Sub: "wall"}.Logger().Info("墙显示", "event", diag.EvWallShow,
-			diag.Rooms, len(rects), "opened", opened, "closed", closed)
+		diag.Ref{Sub: "wall"}.Logger().Info().
+			Str(diag.Event, diag.EvWallShow).Int(diag.Rooms, len(rects)).
+			Int("opened", opened).Int("closed", closed).Msg("墙显示")
 	}
 }
 
@@ -476,7 +477,8 @@ func (a *App) watchHide() {
 	a.watch.init()
 	if a.watch.hiddenSince.IsZero() {
 		a.watch.hiddenSince = time.Now()
-		diag.Ref{Sub: "wall"}.Logger().Info("墙隐藏", "event", diag.EvWallHide)
+		diag.Ref{Sub: "wall"}.Logger().Info().
+			Str(diag.Event, diag.EvWallHide).Msg("墙隐藏")
 	}
 }
 
@@ -573,9 +575,9 @@ func (a *App) closeSession(s *roomSession, cause ...string) {
 	if !s.createdAt.IsZero() {
 		aliveMS = time.Since(s.createdAt).Milliseconds()
 	}
-	s.event(slog.LevelInfo, diag.EvWallClose, "墙格关闭",
-		diag.Cause, why, diag.AgeMS, aliveMS,
-		"restarts", s.restarts, "first_frame", s.firstFrame)
+	s.event().Str(diag.Event, diag.EvWallClose).Str(diag.Cause, why).
+		Int64(diag.AgeMS, aliveMS).Int("restarts", s.restarts).
+		Bool("first_frame", s.firstFrame).Msg("墙格关闭")
 	// 关引擎之前把签名地址留下来：下次重连能省掉一次平台往返。
 	a.rememberResume(s)
 	if a.watchHas(s.key) {
@@ -614,8 +616,9 @@ func (a *App) watchOpenSession(s *roomSession) {
 	prov, ok := providerFor(live.Platform(s.room.Platform))
 	if !ok {
 		s.err = "该平台还不支持取流"
-		s.log.Warn("墙格取流失败", "event", diag.EvWallFail,
-			"stage", "provider", "cause", "unsupported")
+		s.log.Warn().Str(diag.Event, diag.EvWallFail).
+			Str("stage", "provider").Str("cause", "unsupported").
+			Msg("墙格取流失败")
 		return
 	}
 	// 记下来给 watchEnded 用：判死后要先问平台是不是真下播，没填的话
@@ -639,9 +642,9 @@ func (a *App) watchOpenSession(s *roomSession) {
 	room := s.room
 	// 保留的凭据必须在主线程取走：那张表只属于主线程。
 	resume, fromResume := a.takeResume(s.key)
-	s.log.Info("墙格开始取流", "event", diag.EvWallOpen,
-		"attempt", s.restarts, "resume", fromResume,
-		diag.Quality, quality, diag.Line, line)
+	s.log.Info().Str(diag.Event, diag.EvWallOpen).
+		Int("attempt", s.restarts).Bool("resume", fromResume).
+		Str(diag.Quality, quality).Str(diag.Line, line).Msg("墙格开始取流")
 	go func() {
 		// 先试保留的签名地址：重连最贵的一段不是网络，是重新问平台要地址。
 		// 打不开（过期 / 房间没了）就退回完整取流，不额外退避。
@@ -742,9 +745,10 @@ func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win
 		// 时由 watchTick 接手，不能让取流阶段的耗时提前吃掉这段预算。
 		line := a.lineIDFor(s.key, info)
 		s.openedAt = time.Now()
-		s.event(slog.LevelInfo, diag.EvWallReady, "墙格引擎就绪",
-			diag.OpenMS, openMS, diag.Quality, v.Label,
-			diag.Line, line, diag.URLHost, diag.Host(v.URL), diag.GPU, e.GPU())
+		s.event().Str(diag.Event, diag.EvWallReady).Int64(diag.OpenMS, openMS).
+			Str(diag.Quality, v.Label).Str(diag.Line, line).
+			Str(diag.URLHost, diag.Host(v.URL)).Bool(diag.GPU, e.GPU()).
+			Msg("墙格引擎就绪")
 		s.stream, s.up = info, v
 		// 平台确认的档位写回这一格自己的记录：激活 / 进播放页时读的就是它。
 		a.learnRoomChoice(s.key, info, v)
@@ -789,10 +793,11 @@ func (a *App) watchFail(s *roomSession, stage, msg string, err error) {
 	s.retryAt = time.Now().Add(watchBackoff(s.failures))
 	// 这一条以前完全不存在：用户在格子上看到「取流失败」，日志里零痕迹。
 	// stage 说明败在哪一步，err 保留可安全记录的原因。
-	s.event(slog.LevelWarn, diag.EvWallFail, "墙格失败",
-		diag.Stage, stage, diag.Cause, msg, diag.Err(err),
-		"failures", s.failures, "restarts", s.restarts,
-		diag.RetryMS, time.Until(s.retryAt).Milliseconds())
+	s.eventWarn().Str(diag.Event, diag.EvWallFail).Str(diag.Stage, stage).
+		Str(diag.Cause, msg).Dict(diag.ErrField, diag.Err(err)).
+		Int("failures", s.failures).Int("restarts", s.restarts).
+		Int64(diag.RetryMS, time.Until(s.retryAt).Milliseconds()).
+		Msg("墙格失败")
 	// 焦点是「谁在出声」。引擎已经关了还留着绿点，岛却按「没有引擎」
 	// 回时钟，两个地方各说各话。收掉焦点：绿点消失、岛回时钟。
 	a.focusFailed(s)
@@ -817,9 +822,10 @@ func (a *App) watchOffline(s *roomSession) {
 	// 没开播的房间不该每 30 秒问一次平台。
 	s.failures++
 	s.retryAt = time.Now().Add(offlineProbeBackoff(s.failures, s.key))
-	s.event(slog.LevelInfo, diag.EvWallOffline, "墙格未开播",
-		diag.Cause, "offline", "failures", s.failures, "restarts", s.restarts,
-		diag.RetryMS, time.Until(s.retryAt).Milliseconds())
+	s.event().Str(diag.Event, diag.EvWallOffline).Str(diag.Cause, "offline").
+		Int("failures", s.failures).Int("restarts", s.restarts).
+		Int64(diag.RetryMS, time.Until(s.retryAt).Milliseconds()).
+		Msg("墙格未开播")
 	// 下播就是没有声音：焦点跟着收掉，绿点和岛一起消失。
 	a.focusFailed(s)
 	a.invalidateWindows()
@@ -916,9 +922,10 @@ func (a *App) watchProbe(s *roomSession, now time.Time) {
 				result = "live"
 			}
 			if result != s.probeResult || result == "error" {
-				s.event(slog.LevelInfo, diag.EvWallProbe, "平台探测",
-					diag.Stage, "offline-probe", diag.Result, result,
-					"probes", s.failures, diag.Err(err))
+				s.event().Str(diag.Event, diag.EvWallProbe).
+					Str(diag.Stage, "offline-probe").Str(diag.Result, result).
+					Int("probes", s.failures).Dict(diag.ErrField, diag.Err(err)).
+					Msg("平台探测")
 				s.probeResult = result
 			}
 			if err != nil || !room.Live {
@@ -954,8 +961,9 @@ func (a *App) watchFirstFrame(s *roomSession) {
 	s.retryAt = time.Time{}
 	// 成功线以前完全没有。没有它，日志只能证明「坏过」，不能证明「好过」；
 	// 重连循环和正常刷新在日志上长得一模一样。
-	s.event(slog.LevelInfo, diag.EvWallFirstFrame, "墙格首帧可用",
-		diag.OpenMS, openMS, "failures_before", failures, "restarts", s.restarts)
+	s.event().Str(diag.Event, diag.EvWallFirstFrame).
+		Int64(diag.OpenMS, openMS).Int("failures_before", failures).
+		Int("restarts", s.restarts).Msg("墙格首帧可用")
 }
 
 // watchFirstFrameLost 处理"引擎开着、过了首帧预算还没画面"。
@@ -1015,7 +1023,7 @@ func (a *App) watchReload(room Streamer) {
 		a.retryStream()
 		return
 	}
-	s.event(slog.LevelInfo, diag.EvWallReload, "用户重新加载")
+	s.event().Str(diag.Event, diag.EvWallReload).Msg("用户重新加载")
 	s.restarts = 0
 	a.watchRestart(s, "user-reload")
 	s.offline = false
@@ -1182,17 +1190,28 @@ func (a *App) forwardWallMpv(s *roomSession) {
 			continue
 		}
 		s.mpvCount++
-		s.event(slog.LevelError, diag.EvMpv, "墙格 mpv 日志",
-			diag.Module, l.Prefix, "mpv_level", l.Level, diag.Text, l.Text,
-			"mpv_at", l.At.Format(time.RFC3339Nano))
+		s.eventError().Str(diag.Event, diag.EvMpv).Str(diag.Module, l.Prefix).
+			Str("mpv_level", l.Level).Str(diag.Text, l.Text).
+			Str("mpv_at", l.At.Format(time.RFC3339Nano)).
+			Msg("墙格 mpv 日志")
 	}
 }
 
-// watchEnded 先问平台：真下播就落未开播，仍 live 才重取。
+// watchEnded 是墙的「这一路自己停了」：先问平台，还在播就整路重建。
 //
 // why 是这一路的实际死因（时间轴停住 / 播放器结束 / 报错），只用于日志和
 // 重连原因——平台确认还在播时，用户看到的仍是「正在重连」，而不是故障。
 func (a *App) watchEnded(s *roomSession, why string) {
+	a.confirmEnded(s, why, a.watchRestart)
+}
+
+// confirmEnded 先问平台：真下播就落未开播，还在播才交给 onLive。
+//
+// 墙和播放页共用这一段。判据只有一份——「判死之后先去问平台」这件事不能
+// 各写一遍：墙上写了、播放页忘了，就是下播的房间在播放页里被无休止重取。
+// 两边的差别只在「还在播怎么办」：墙整路重建（引擎也丢了），播放页热切换
+// （换一份地址，画面不断）。
+func (a *App) confirmEnded(s *roomSession, why string, onLive func(*roomSession, string)) {
 	if s == nil || s.checking || s.player == nil {
 		return
 	}
@@ -1230,8 +1249,9 @@ func (a *App) watchEnded(s *roomSession, why string) {
 			s.checking = false
 			// 平台确认是判死链的一步；以前 err 被吞掉，查询失败会被当成
 			// 「还在播」，日志里却没有任何痕迹。
-			s.event(slog.LevelInfo, diag.EvWallProbe, "平台确认",
-				diag.Stage, "ended", diag.Result, result, diag.Err(probeErr))
+			s.event().Str(diag.Event, diag.EvWallProbe).
+				Str(diag.Stage, "ended").Str(diag.Result, result).
+				Dict(diag.ErrField, diag.Err(probeErr)).Msg("平台确认")
 			if !liveNow {
 				a.watchOffline(s)
 				return
@@ -1239,7 +1259,7 @@ func (a *App) watchEnded(s *roomSession, why string) {
 			// 真断了就用房间记录里的线路重开，退避由 watchRestart 管。
 			// 不在这里轮换线路：换线等于整路重建，一次抖动会被放大成
 			// 一次完整重开——播放页同一条回路已经在 c4d6b93 删掉。
-			a.watchRestart(s, why)
+			onLive(s, why)
 		})
 	}()
 }
@@ -1255,15 +1275,16 @@ func (a *App) watchRestart(s *roomSession, reason string) {
 	s.restarts++
 	s.retryAt = time.Now().Add(watchBackoff(s.failures))
 	s.err = reason
-	args := []any{
-		diag.Cause, reason, "name", s.room.Name,
-		"attempt", s.restarts, "failures", s.failures,
-		diag.RetryMS, time.Until(s.retryAt).Milliseconds(),
-	}
+	// 首发帧时刻是可选字段：没出过首帧的那一轮不写 since_frame_ms，
+	// 和原来的 args 拼接同一个条件。
+	e := s.event().Str(diag.Event, diag.EvWallRestart).Str(diag.Cause, reason).
+		Str("name", s.room.Name).Int("attempt", s.restarts).
+		Int("failures", s.failures).
+		Int64(diag.RetryMS, time.Until(s.retryAt).Milliseconds())
 	if !s.firstFrameAt.IsZero() {
-		args = append(args, diag.SinceFrameMS, time.Since(s.firstFrameAt).Milliseconds())
+		e = e.Int64(diag.SinceFrameMS, time.Since(s.firstFrameAt).Milliseconds())
 	}
-	s.event(slog.LevelInfo, diag.EvWallRestart, "墙格重连", args...)
+	e.Msg("墙格重连")
 	a.invalidateWindows()
 }
 

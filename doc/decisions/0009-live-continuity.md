@@ -159,7 +159,8 @@ hls: Disabling http_multiple due to custom io_open.
 - `internal/live/bilibili_master.go`：`master/url` 返回的地址有两种形态，一种直接
   是媒体 playlist，一种还是 master（要再跳一层，且常换域名）。后者交给 mpv 起播要
   多跳一跳，7.7 秒里 playlist 就滚过去了。现在在取流层展开成媒体地址，和网页端
-  对齐。实测 263605 的 1080P 原画从「90 秒里缓冲 23 秒」降到 4 秒。
+  对齐。实测 263605 的 1080P 原画从「90 秒里缓冲 23 秒」降到 4 秒。**2026-11-22
+  注**：第七轮又改成 master 只拿档位骨架、地址按档解析，见下。
 - `internal/applog`：日志落盘（详见下一节）。这一轮最贵的是三轮拿不到 mpv 自己的
   话，不是改错。
 
@@ -201,8 +202,10 @@ libmpv）。它的取流参数是：
 - `biliPickPlayable` 的打分从「HLS +100」改成「FLV +200」。旧实现里 FLV 永远
   选不上，这是问题一直存在的直接原因。
 - `biliFetchPlayInfo` 合并两条路：master/url 给档位骨架（全档位、中文名、分辨率、
-  线路链），`attachFLVURLs` 逐档用 getRoomPlayInfo 补 FLV 地址。master 只出
-  HLS（地址写死 `index.m3u8`），必须补。
+  线路链），再逐档用 getRoomPlayInfo 补 FLV 地址。master 只出 HLS（地址写死
+  `index.m3u8`），必须补。**2026-11-22 注**：当时的 `attachFLVURLs` 已不存在；
+  现在 `biliFetchPlayInfo` 会显式清空 master 的 URL，FLV 由
+  `StreamForPlayback → biliTierURLs` 逐档解析。
 - `biliTierURLs` 的档位判据加上**流名后缀**：逐档接口的 `current_qn` 不可靠——
   登录态请求 10000 时服务端回的仍是 `current_qn=250`，但 base_url 是 `_bluray`，
   于是原画档拿到了蓝光的流。后缀（`_prohevc` / `_bluray` / `_2500`）是唯一和实际
@@ -349,7 +352,9 @@ FLV」只是当时的运气，哪天斗鱼改下发 m3u8，会静默踩上 B 站
 
 **同轮：日志落盘。** 这次排查最贵的不是改错，是三轮拿不到 mpv 自己说的话——
 `slog` 只输出到 stderr，双击启动的进程没有 stderr，等于不留日志。现在
-`internal/applog` 把日志写到 `%LOCALAPPDATA%\alive\logs\alive.log`（8MiB 轮转一份），
+`internal/applog` 把日志写到 `%LOCALAPPDATA%\alive\logs\alive.log`（当时是单文件
+8MiB 轮转一份）。**现状已变**：每次启动一个 `alive-<run>.log`，8MiB，保留最近
+5 份（`ALIVE_LOG_KEEP`），见 [diagnostics](../architecture/diagnostics.md)。
 播放器用 `mpv_request_log_messages("warn")` 订阅 mpv 日志，经 `State.Log` 由媒体层
 增量转进同一个文件。`duplicated MOOV Atom` 只留第一条——B 站 fMP4 每个分片重带
 init 段，实测 60 秒 50 条全是它，会把故障行淹掉。
@@ -407,7 +412,8 @@ init 段，实测 60 秒 50 条全是它，会把故障行淹掉。
 **观测进生产日志，但不进开关。** `third_party/mygo/plugins/video` 多观测 13 个属性
 （含 `hwdec-current`，确认 auto-safe 真的启用了硬解），`video.State` 带出；
 `trackContinuity` 只在缓冲起止和音频停走时各写一条日志
-（`缓冲开始` / `缓冲结束` / `音频停走`），正常播放不产生日志。
+（`缓冲开始` / `缓冲结束` / `音频停走`），正常播放不产生日志。后来补了第四类
+`视频停帧`（`session.video_stall`），同样只在状态翻转时写。
 
 ## 回到播放页：音频不断 + 画面 <1s
 
@@ -481,11 +487,14 @@ audioGate）：383+350+3−3 = 747ms；399+647+3−3 = 1077ms；417+1287+2−2 =
   一次，避免一帧小图闪烁。这是本地漂移，和 `hwdec` / `scale` 同类的引擎能力，
   不是新模块、不是用户开关。
 - `attachMedia` 只调 `applyPresent()` 放回全尺寸；不取流、不开新引擎、不进 loading。
+  **2026-11-24 注**：`attachMedia` 已在表面模型收口时删除；现在对应
+  `adoptPlayback → applyPresentForce()`。
 - **旧 5% 后台预算作废**：硬解 6.4–8.9% 已是这台机器 + RX 9070 XT 的地板，
   软件解码 21.7–33.4%。如果 5% 是硬要求，这条流上「画面 <1s」做不到——
   两者只能选一个。2K/4K 未测，后台成本预计更高。
 - 160×90 是给解码器看的，不该被任何界面显示：后台路径（灵动岛）不画视频，
-  小窗播放不走 `detachMedia`。若以后有界面在后台画这个流，会看到模糊的小图。
+  小窗播放不走后台尺寸。若以后有界面在后台画这个流，会看到模糊的小图。
+  **2026-11-24 注**：`detachMedia` 已删除，尺寸统一由 `presentSizeForSession` 求。
 
 ### 未达成 / 未验证
 

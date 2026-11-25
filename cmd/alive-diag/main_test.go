@@ -7,13 +7,16 @@ import (
 	"testing"
 )
 
-const fixture = `time=2026-11-25T01:00:00.000+08:00 level=INFO source=main.go:50 msg=进程启动 event=run.start run=r1 pid=42 version=0.1.0 commit=abc
-time=2026-11-25T01:00:01.000+08:00 level=INFO source=ui/watch_media.go:592 msg=墙格开始取流 event=wall.open run=r1 sub=wall room=douyu|1 session=watch#1 attempt=0 quality=原画
-time=2026-11-25T01:00:02.000+08:00 level=WARN source=ui/watch_media.go:745 msg=墙格失败 event=wall.fail run=r1 sub=wall room=douyu|1 session=watch#1 stage=fetch cause="取流失败" err.class=upstream err.op=stream err.status=403 err.text="forbidden"
-time=2026-11-25T01:00:03.000+08:00 level=INFO source=ui/watch_media.go:1126 msg=墙格重连 event=wall.restart run=r1 sub=wall room=douyu|1 session=watch#1 cause=fetch attempt=1 failures=1 retry_ms=2000
-time=2026-11-25T01:00:04.000+08:00 level=INFO source=ui/watch_media.go:1126 msg=墙格重连 event=wall.restart run=r1 sub=wall room=douyu|1 session=watch#2 cause=fetch attempt=2 failures=1 retry_ms=2000
-time=2026-11-25T01:00:05.000+08:00 level=INFO source=ui/watch_media.go:1126 msg=墙格重连 event=wall.restart run=r1 sub=wall room=douyu|1 session=watch#3 cause=fetch attempt=3 failures=1 retry_ms=2000
-time=2026-11-25T01:00:06.000+08:00 level=INFO source=main.go:130 msg=进程退出 event=run.stop run=r1 uptime_ms=6000
+// fixture 是 zerolog 写出来的真实形状：一行一个 JSON 对象，嵌套的 err 是对象，
+// level 是小写。日志从 slog 的 key=value 换成 JSON 之后，解析侧的验收样本也必须
+// 换——拿旧的 logfmt 样本喂新解析器，测的只是一段没人再写出来的格式。
+const fixture = `{"time":"2026-11-25T01:00:00.000+08:00","level":"info","source":"main.go:50","msg":"进程启动","event":"run.start","run":"r1","pid":42,"version":"0.1.0","commit":"abc"}
+{"time":"2026-11-25T01:00:01.000+08:00","level":"info","source":"ui/watch_media.go:592","msg":"墙格开始取流","event":"wall.open","run":"r1","sub":"wall","room":"douyu|1","session":"watch#1","attempt":0,"quality":"原画"}
+{"time":"2026-11-25T01:00:02.000+08:00","level":"warn","source":"ui/watch_media.go:745","msg":"墙格失败","event":"wall.fail","run":"r1","sub":"wall","room":"douyu|1","session":"watch#1","stage":"fetch","cause":"取流失败","err":{"class":"upstream","op":"stream","status":403,"text":"forbidden"}}
+{"time":"2026-11-25T01:00:03.000+08:00","level":"info","source":"ui/watch_media.go:1126","msg":"墙格重连","event":"wall.restart","run":"r1","sub":"wall","room":"douyu|1","session":"watch#1","cause":"fetch","attempt":1,"failures":1,"retry_ms":2000}
+{"time":"2026-11-25T01:00:04.000+08:00","level":"info","source":"ui/watch_media.go:1126","msg":"墙格重连","event":"wall.restart","run":"r1","sub":"wall","room":"douyu|1","session":"watch#2","cause":"fetch","attempt":2,"failures":1,"retry_ms":2000}
+{"time":"2026-11-25T01:00:05.000+08:00","level":"info","source":"ui/watch_media.go:1126","msg":"墙格重连","event":"wall.restart","run":"r1","sub":"wall","room":"douyu|1","session":"watch#3","cause":"fetch","attempt":3,"failures":1,"retry_ms":2000}
+{"time":"2026-11-25T01:00:06.000+08:00","level":"info","source":"main.go:130","msg":"进程退出","event":"run.stop","run":"r1","uptime_ms":6000}
 `
 
 func writeFixture(t *testing.T) string {

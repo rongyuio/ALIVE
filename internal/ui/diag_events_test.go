@@ -1,17 +1,19 @@
 package ui
 
 import (
-	"context"
-	"log/slog"
+	"encoding/json"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"alive/internal/diag"
 	"alive/internal/live"
 )
 
-// capture 收集诊断事件，按 key=value 摊平（err.class 这种 group 也摊平）。
+// capture 收集诊断事件，按 key=value 摊平（err.class 这种嵌套对象也摊平）。
 type capture struct {
 	mu   sync.Mutex
 	list []map[string]string
@@ -38,50 +40,66 @@ func (c *capture) find(event string) map[string]string {
 	return nil
 }
 
-type captureHandler struct {
-	c     *capture
-	attrs []slog.Attr
+// captureWriter 是捕获侧的真管道：事件先真的序列化成 JSON，再摊平回来。
+//
+// 以前这里是 slog 的 Handler，能看到每个 Attr。zerolog 没有那样的接口——
+// 事件只能写不能读。于是捕获点挪到 writer，测的是**落盘形状**：嵌套的 err
+// 真的落成了对象、数字真的是数字。这比逐 Attr 展开更接近读侧看到的东西。
+type captureWriter struct{ c *capture }
+
+func (w *captureWriter) Write(p []byte) (int, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(p, &obj); err != nil {
+		return len(p), nil
+	}
+	m := map[string]string{}
+	flattenInto("", obj, m)
+	w.c.add(m)
+	return len(p), nil
 }
 
-func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
-	m := map[string]string{"msg": r.Message, "level": r.Level.String()}
-	var flatten func(prefix string, a slog.Attr)
-	flatten = func(prefix string, a slog.Attr) {
-		if a.Value.Kind() == slog.KindGroup {
-			for _, g := range a.Value.Group() {
-				flatten(prefix+a.Key+".", g)
+func flattenInto(prefix string, v any, out map[string]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, sub := range t {
+			key := k
+			if prefix != "" {
+				key = prefix + "." + k
 			}
-			return
+			flattenInto(key, sub, out)
 		}
-		m[prefix+a.Key] = a.Value.String()
+	case string:
+		out[prefix] = t
+	case bool:
+		if t {
+			out[prefix] = "true"
+		} else {
+			out[prefix] = "false"
+		}
+	case float64:
+		out[prefix] = trimFloat(t)
+	case nil:
+	default:
+		out[prefix] = ""
 	}
-	for _, a := range h.attrs {
-		flatten("", a)
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		flatten("", a)
-		return true
-	})
-	h.c.add(m)
-	return nil
 }
 
-func (h *captureHandler) WithAttrs(as []slog.Attr) slog.Handler {
-	next := &captureHandler{c: h.c}
-	next.attrs = append(append([]slog.Attr(nil), h.attrs...), as...)
-	return next
+// trimFloat 让 403 变成 "403" 而不是 "403.000000"。
+func trimFloat(f float64) string {
+	n := int64(f)
+	if float64(n) == f {
+		return strconv.FormatInt(n, 10)
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
-
-func (h *captureHandler) WithGroup(string) slog.Handler { return h }
 
 func captureLogs(t *testing.T) *capture {
 	t.Helper()
 	c := &capture{}
-	old := slog.Default()
-	slog.SetDefault(slog.New(&captureHandler{c: c}))
-	t.Cleanup(func() { slog.SetDefault(old) })
+	old := diag.L()
+	l := zerolog.New(&captureWriter{c: c}).Level(zerolog.DebugLevel).With().Logger()
+	diag.SetLogger(&l)
+	t.Cleanup(func() { diag.SetLogger(old) })
 	return c
 }
 

@@ -14,7 +14,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -204,18 +203,20 @@ func waitDestroys() {
 		select {
 		case <-c:
 		case <-deadline.C:
-			slog.Warn("等待旧引擎销毁超时",
-				"event", diag.EvEngineDestroyTimeout,
-				"pending", len(chans),
-				"waited_ms", time.Since(start).Milliseconds())
+			diag.L().Warn().
+				Str(diag.Event, diag.EvEngineDestroyTimeout).
+				Int("pending", len(chans)).
+				Int64("waited_ms", time.Since(start).Milliseconds()).
+				Msg("等待旧引擎销毁超时")
 			return
 		}
 	}
 	if d := time.Since(start); d > 500*time.Millisecond {
-		slog.Info("等待旧引擎销毁",
-			"event", diag.EvEngineDestroy,
-			"pending", len(chans),
-			"waited_ms", d.Milliseconds())
+		diag.L().Info().
+			Str(diag.Event, diag.EvEngineDestroy).
+			Int("pending", len(chans)).
+			Int64("waited_ms", d.Milliseconds()).
+			Msg("等待旧引擎销毁")
 	}
 }
 
@@ -235,15 +236,16 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 	id := engineSeq.Add(1)
 	started := time.Now()
 	fail := func(step string, err error) (*Engine, error) {
-		slog.Warn("引擎打开失败",
-			"event", diag.EvEngineOpenFail,
-			diag.Engine, id,
-			diag.Room, opts.Key,
-			diag.Session, opts.Session,
-			diag.Role, opts.Role,
-			diag.Stage, step,
-			"ms", time.Since(started).Milliseconds(),
-			diag.Err(err))
+		diag.L().Warn().
+			Str(diag.Event, diag.EvEngineOpenFail).
+			Uint64(diag.Engine, id).
+			Str(diag.Room, opts.Key).
+			Str(diag.Session, opts.Session).
+			Str(diag.Role, opts.Role).
+			Str(diag.Stage, step).
+			Int64(diag.MS, time.Since(started).Milliseconds()).
+			Dict(diag.ErrField, diag.Err(err)).
+			Msg("引擎打开失败")
 		return nil, err
 	}
 	if upstream == "" {
@@ -292,15 +294,16 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		p.Close()
 		return fail("play", fmt.Errorf("%w: %v", ErrUnsupported, err))
 	}
-	slog.Info("引擎打开",
-		"event", diag.EvEngineOpen,
-		diag.Engine, id,
-		diag.Room, opts.Key,
-		diag.Session, opts.Session,
-		diag.Role, opts.Role,
-		diag.GPU, opts.GPU,
-		diag.URLHost, diag.Host(upstream),
-		"open_ms", time.Since(started).Milliseconds())
+	diag.L().Info().
+		Str(diag.Event, diag.EvEngineOpen).
+		Uint64(diag.Engine, id).
+		Str(diag.Room, opts.Key).
+		Str(diag.Session, opts.Session).
+		Str(diag.Role, opts.Role).
+		Bool(diag.GPU, opts.GPU).
+		Str(diag.URLHost, diag.Host(upstream)).
+		Int64(diag.OpenMS, time.Since(started).Milliseconds()).
+		Msg("引擎打开")
 
 	go func() {
 		select {
@@ -318,13 +321,14 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 			liveEngine.Add(-1)
 		}
 		e.mu.Unlock()
-		slog.Info("引擎销毁",
-			"event", diag.EvEngineDestroy,
-			diag.Engine, e.id,
-			diag.Room, e.key,
-			diag.Session, e.session,
-			diag.Role, e.role,
-			diag.AgeMS, time.Since(e.openedAt).Milliseconds())
+		diag.L().Info().
+			Str(diag.Event, diag.EvEngineDestroy).
+			Uint64(diag.Engine, e.id).
+			Str(diag.Room, e.key).
+			Str(diag.Session, e.session).
+			Str(diag.Role, e.role).
+			Int64(diag.AgeMS, time.Since(e.openedAt).Milliseconds()).
+			Msg("引擎销毁")
 		close(e.done)
 	}()
 	return e, nil
@@ -564,13 +568,14 @@ func (e *Engine) Close() error {
 		liveEngine.Add(-1)
 	}
 	e.mu.Unlock()
-	slog.Info("引擎关闭",
-		"event", diag.EvEngineClose,
-		diag.Engine, e.id,
-		diag.Room, e.key,
-		diag.Session, e.session,
-		diag.Role, e.role,
-		diag.AgeMS, time.Since(e.openedAt).Milliseconds())
+	diag.L().Info().
+		Str(diag.Event, diag.EvEngineClose).
+		Uint64(diag.Engine, e.id).
+		Str(diag.Room, e.key).
+		Str(diag.Session, e.session).
+		Str(diag.Role, e.role).
+		Int64(diag.AgeMS, time.Since(e.openedAt).Milliseconds()).
+		Msg("引擎关闭")
 	e.p.Close()
 	// 登记给下一次 Open：新实例要等这一路的 mpv / AO 真正释放完。
 	noteDestroy(e.p.Done())

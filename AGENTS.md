@@ -13,7 +13,7 @@
 
 ## 1. 事实从哪儿来
 
-界面是自绘的（`internal/ui` 里 140 处 `ui.Box`、0 处 `ui.Button`），播放是运行时加载的（libmpv DLL + purego），平台协议是逆向出来的。三块都没有「常识」可依赖，只有一手材料。
+界面是自绘的（`internal/ui` 里 145 处 `ui.Box`、0 处 `ui.Button`），播放是运行时加载的（libmpv DLL + purego），平台协议是逆向出来的。三块都没有「常识」可依赖，只有一手材料。
 
 | 要回答的问题 | 唯一权威 | 先看这里 |
 |---|---|---|
@@ -56,7 +56,7 @@
 - `Children(func(){...})` 共享 Context，只切换父作用域。
 - 副作用写在 `Clicked()` / `OnClick` 里，不写在渲染路径里：一次事件会重建多帧，渲染路径里的副作用会执行多次。
 - 慢 I/O 和耗时计算下 goroutine，结果用 `win.Update(func(){...})` 回主线程；视图数据只在主线程读写。
-- 稳定身份用 `c.Key(key)`（现在 7 处，都在列表行、岛、状态点这类会重排的元素上）。`Bind(&handle)` 只在真需要跨帧句柄时用；现在 0 处，不是不能用，是还没到需要的时候。
+- 稳定身份用 `c.Key(key)`（现在 10 处，都在列表行、岛、状态点这类会重排的元素上）。`Bind(&handle)` 只在真需要跨帧句柄时用；现在 0 处，不是不能用，是还没到需要的时候。
 
 ### 3.3 自绘控件是常态，所以规矩更严
 
@@ -145,7 +145,7 @@
 这六种在本仓库都真实存在。见到就改，不要「先留着」。
 
 1. **没有断言。** `internal/ui/motion_test.go:25` 的 `TestSkeletonRenders` 只构造了一个 Tester，连 `Frame()` 都没调。它永远绿；要么补断言（骨架在场、reduced motion 下不请求帧），要么删。
-2. **常量对照常量。** `internal/ui/island_test.go:206` 断言 `islandPlayerMaxWidth == 360`；`internal/ui/player_backdrop_test.go:194` 断言三个主题常量等于 B 站 CSS 的三个数。它们只在有人手改常量时红，而那时改的人本来就会改测试。常量的值归注释和设计文档管，测试管行为。
+2. **常量对照常量。** `internal/ui/island_test.go:206` 断言 `islandPlayerMaxW == 360`；`internal/ui/player_backdrop_test.go:194` 断言三个主题常量等于 B 站 CSS 的三个数。它们只在有人手改常量时红，而那时改的人本来就会改测试。常量的值归注释和设计文档管，测试管行为。
 3. **会自己跳过。** `internal/ui/nav_motion_test.go:270` 开头 `t.Skip("初值不同，这条断言没有意义")`。前提不满足就跳过，等于把「没测」写成「通过」。前提不满足应该修场景，修不了就删。
 4. **断言私有计数器。** `internal/ui/nav_motion_test.go:264` 在已经断言了 `SubIndex`、`FollowsPlatform` 之后，又断言 `app.followsSeq == seq+1`。可观察行为已经测过了，这句只是在钉实现里的代数——重构一动就红，行为坏了却不红。要守「重新进场」，就用帧探针看内容层确实重建，别数计数器。
 5. **源码字符串 grep 冒充行为测试。** `internal/ui/watch_watchdog_test.go:67` 用 `bytes.Contains` 找标识符，改个变量名就绕过。同一文件里的 `assertNoMuteCalls` 是正确写法：规则是「不许调用 `SetMuted`」，就用 AST 查调用点。**规则关于结构用 AST，规则关于行为用运行时。**

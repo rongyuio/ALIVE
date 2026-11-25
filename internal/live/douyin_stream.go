@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
+
+	"alive/internal/diag"
 )
 
 // 抖音取流。
@@ -172,7 +173,7 @@ func (p *douyinProvider) Stream(ctx context.Context, roomID, line string) (Strea
 	}
 	if len(out.Variants) == 0 {
 		// 缺少地址不代表下播，保留上游状态，让播放层报告取流失败。
-		slog.Debug("抖音取流没有可用清晰度", "room", webRID)
+		diag.L().Debug().Str("room", webRID).Msg("抖音取流没有可用清晰度")
 	}
 	return out, nil
 }
@@ -310,7 +311,7 @@ func (s *douyinStreamURL) parseStreamData() map[string]*douyinTierStream {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &outer); err != nil {
-		slog.Debug("抖音 stream_data 解析失败，退回 flv_pull_url", "error", err)
+		diag.L().Debug().Dict(diag.ErrField, diag.Err(err)).Msg("抖音 stream_data 解析失败，退回 flv_pull_url")
 		return nil
 	}
 	out := make(map[string]*douyinTierStream, len(outer.Data))

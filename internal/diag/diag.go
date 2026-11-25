@@ -15,10 +15,55 @@
 package diag
 
 import (
-	"context"
-	"log/slog"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/rs/zerolog"
 )
+
+// Level 是 diag 自己的级别语言。
+//
+// 它是 zerolog.Level 的别名，但调用点只认这里的名字：日志库换了，改这一处，
+// 几十个调用点不用跟着动。
+type Level = zerolog.Level
+
+const (
+	LevelDebug = zerolog.DebugLevel
+	LevelInfo  = zerolog.InfoLevel
+	LevelWarn  = zerolog.WarnLevel
+	LevelError = zerolog.ErrorLevel
+)
+
+// base 是进程级 logger，由 applog.Setup 注入。
+//
+// 放在 diag 而不是让调用点去拿 applog：live / playback 这些包只需要认识
+// diag 这一种日志语言，不该为了写一行日志去依赖日志的落盘方式。
+var base atomic.Pointer[zerolog.Logger]
+
+// SetLogger 由 applog 在 Setup 时调用。传 nil 恢复成丢弃一切的空 logger。
+func SetLogger(l *zerolog.Logger) {
+	base.Store(l)
+}
+
+// bootstrap 是 applog 就绪之前的兜底：写 stderr，一行一个 JSON。
+//
+// 必须是真的写出去，不能是 Nop。有些日志发生在 main() 之前——ui 包的 init
+// 里注册字体，失败时要留一条；那时日志文件还没打开，丢了就永远查不到「为什么
+// 字体没生效」。用 sync.OnceValue 只建一次，且不碰任何全局状态。
+var bootstrap = sync.OnceValue(func() *zerolog.Logger {
+	l := zerolog.New(os.Stderr).With().Timestamp().Logger()
+	return &l
+})
+
+// L 返回进程级 logger。applog 就绪前走 stderr 兜底，不会静默吞掉。
+func L() *zerolog.Logger {
+	if l := base.Load(); l != nil {
+		return l
+	}
+	return bootstrap()
+}
 
 // 字段名。全部小写、下划线分隔；带单位的字段以单位结尾。
 const (
@@ -83,11 +128,13 @@ const (
 	Path        = "path"
 	File        = "file"
 	SizeBytes   = "size_bytes"
-	Level       = "level"
-	Reason      = "reason"
-	Result      = "result"
-	From        = "from"
-	To          = "to"
+	// LevelKey 是 "level" 这个字段名。它不能叫 Level：Level 是下面的级别类型，
+	// 调用点写 diag.LevelInfo 比 diag.LogLevelInfo 顺手得多。
+	LevelKey = "level"
+	Reason   = "reason"
+	Result   = "result"
+	From     = "from"
+	To       = "to"
 
 	// 错误以 slog group 落盘，logfmt 里是 err.class / err.text 这种键。
 	// 读侧和写侧共用这些常量，重命名不会让查询静默变空。
@@ -188,53 +235,41 @@ type Ref struct {
 	Engine  string
 }
 
-// Logger 返回带关联字段的 logger。run 由 applog 的 handler 统一注入，
-// 这里不重复；重复就会有两个写者。
-func (r Ref) Logger() *slog.Logger {
-	l := slog.Default()
+// Logger 返回带关联字段的 logger。run 由 applog 统一注入，这里不重复；
+// 重复就会有两个写者。
+func (r Ref) Logger() *zerolog.Logger {
+	l := L().With()
 	if r.Sub != "" {
-		l = l.With(Sub, r.Sub)
+		l = l.Str(Sub, r.Sub)
 	}
 	if r.Room != "" {
-		l = l.With(Room, r.Room)
+		l = l.Str(Room, r.Room)
 	}
 	if r.Session != "" {
-		l = l.With(Session, r.Session)
+		l = l.Str(Session, r.Session)
 	}
 	if r.Engine != "" {
-		l = l.With(Engine, r.Engine)
+		l = l.Str(Engine, r.Engine)
 	}
-	return l
+	lg := l.Logger()
+	return &lg
 }
 
-// Emit 记一条诊断事件。msg 是给人看的中文；event 是稳定键。
+// Level 是 diag 自己的级别语言，只是 zerolog.Level 的别名。
 //
-// 用法：
-//
-//	diag.Emit(ctx, log, slog.LevelInfo, diag.EvSessionFetch, "取流完成",
-//	    "live", true, "quality", v.Label)
-func Emit(ctx context.Context, l *slog.Logger, level slog.Level, event, msg string, args ...any) {
-	if l == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	args = append([]any{Event, event}, args...)
-	l.Log(ctx, level, msg, args...)
-}
+// 调用点写 diag.LevelWarn 而不是 zerolog.WarnLevel：日志库真换了，改这一处。
 
-// ParseLevel 把字符串解析成 slog 级别。未知值返回 info 和 false。
-func ParseLevel(s string) (slog.Level, bool) {
+// ParseLevel 把字符串解析成级别。未知值返回 info 和 false。
+func ParseLevel(s string) (Level, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
-		return slog.LevelDebug, true
+		return LevelDebug, true
 	case "", "info":
-		return slog.LevelInfo, true
+		return LevelInfo, true
 	case "warn", "warning":
-		return slog.LevelWarn, true
+		return LevelWarn, true
 	case "error":
-		return slog.LevelError, true
+		return LevelError, true
 	}
-	return slog.LevelInfo, false
+	return LevelInfo, false
 }

@@ -1,25 +1,29 @@
 package diag
 
 import (
-	"context"
 	"io"
-	"log/slog"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 // 事件写入的基准。跑法：
 //
 //	go test ./internal/diag -run xxx -bench BenchmarkEmit -benchmem
 //
-// 目标不是零分配（slog 的属性本来就会分配），而是让「每条事件多少钱」有数，
-// 改 handler 或字段时能看出回退。
+// 目标不是零分配，而是让「每条事件多少钱」有数，改字段或换 handler 时能看出
+// 回退。zerolog 号称零分配，但我们的字段是逐个 Str/Bool 写的，而且事件要经过
+// applog 的 JSON 往返，真实数字只有这里能给出。
 func BenchmarkEmit(b *testing.B) {
-	l := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	ctx := context.Background()
+	l := zerolog.New(io.Discard).Level(LevelInfo)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		Emit(ctx, l, slog.LevelInfo, EvSessionFetch, "取流完成",
-			Live, true, Quality, "原画", "variants", 3)
+		l.Info().
+			Str(Event, EvSessionFetch).
+			Bool(Live, true).
+			Str(Quality, "原画").
+			Int("variants", 3).
+			Msg("取流完成")
 	}
 }
 

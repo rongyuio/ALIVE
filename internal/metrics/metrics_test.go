@@ -1,23 +1,33 @@
 package metrics
 
 import (
-	"log/slog"
-	"strings"
+	"encoding/json"
 	"testing"
 )
 
+// fields 造一条「从 JSON 解码出来」的字段表。
+//
+// 数字用 json.Number 而不是 int：Observe 的入参就是落盘前那次解码的结果，
+// 拿 int 去喂它测的是一段生产上不存在的形状。
+func fields(kv ...any) map[string]any {
+	m := make(map[string]any, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		m[kv[i].(string)] = kv[i+1]
+	}
+	return m
+}
+
 func TestObserveEvents(t *testing.T) {
 	Reset()
-	var buf strings.Builder
-	log := slog.New(Wrap(slog.NewTextHandler(&buf, nil))).With("room", "douyu|1")
-	log.Info("首帧", "event", "session.first_frame", "open_ms", int64(1200))
-	log.Info("墙首帧", "event", "wall.first_frame", "open_ms", int64(800))
-	log.Warn("重连", "event", "wall.restart", "cause", "ended")
-	log.Warn("失败", "event", "wall.fail", "stage", "fetch",
-		slog.Group("err", slog.String("class", "upstream")))
-	log.Info("引擎开", "event", "engine.open")
-	log.Info("引擎关", "event", "engine.close")
-	log.Warn("mpv", "event", "mpv", "module", "hls", "mpv_level", "error")
+	room := "douyu|1"
+	Observe(fields("event", "session.first_frame", "room", room, "open_ms", json.Number("1200")))
+	Observe(fields("event", "wall.first_frame", "room", room, "open_ms", json.Number("800")))
+	Observe(fields("event", "wall.restart", "room", room, "cause", "ended"))
+	Observe(fields("event", "wall.fail", "room", room, "stage", "fetch",
+		"err", map[string]any{"class": "upstream"}))
+	Observe(fields("event", "engine.open"))
+	Observe(fields("event", "engine.close"))
+	Observe(fields("event", "mpv", "module", "hls", "mpv_level", "error"))
 
 	snap := Snapshot()
 	counters := snap["counters"].(map[string]int64)
@@ -48,6 +58,17 @@ func TestObserveEvents(t *testing.T) {
 	wf := hists["wall_first_frame_ms"].(map[string]any)
 	if wf["count"].(int64) != 1 {
 		t.Fatalf("wall_first_frame_ms=%v", wf)
+	}
+}
+
+// 没有 event 的行不该产生任何计数：普通日志不是事件。
+func TestObserveIgnoresPlainLines(t *testing.T) {
+	Reset()
+	Observe(fields("msg", "普通日志"))
+	Observe(nil)
+	counters := Snapshot()["counters"].(map[string]int64)
+	if len(counters) != 0 {
+		t.Fatalf("普通日志进了指标: %v", counters)
 	}
 }
 

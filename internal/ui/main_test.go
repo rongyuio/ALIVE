@@ -1,10 +1,12 @@
 package ui
 
 import (
-	"io"
-	"log/slog"
 	"os"
 	"testing"
+
+	"github.com/rs/zerolog"
+
+	"alive/internal/diag"
 )
 
 // TestMain 把整包测试的用户目录换到临时目录。
@@ -39,8 +41,9 @@ func TestMain(m *testing.M) {
 	}
 
 	// 默认丢弃日志：新加的诊断事件会让测试输出变成几千行，真正的失败
-	// 反而找不到。需要检查日志的测试自己 slog.SetDefault 一个 capture。
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// 反而找不到。需要检查日志的测试自己在用 captureLogger 换一个。
+	nop := zerolog.Nop()
+	diag.SetLogger(&nop)
 
 	code := m.Run()
 	_ = os.RemoveAll(dir)

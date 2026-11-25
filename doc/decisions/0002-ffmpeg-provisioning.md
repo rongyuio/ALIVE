@@ -63,8 +63,9 @@ libmpv 自带 FFmpeg。随后 `internal/relay` 与 `internal/ffmpeg` 一起删�
 `internal/ffmpeg`（运行时下载）、`%LOCALAPPDATA%\alive\bin` 的缓存副本都不再需要。
 本文下面的「首次启动下载」一节描述的实现已经不存在，保留作历史。
 
-为什么主路径不放仓库外：DLL 是 exe 的加载期硬依赖（Windows 加载器在进程入口点之前
-就解析 import table），缺了进程起不来，跑不到"启动后发现缺库再去下载"这一步。
+为什么主路径不放仓库外：**旧 cgo FFmpeg** 的 DLL 是 exe 的加载期硬依赖（Windows
+加载器在进程入口点之前就解析 import table），缺了进程起不来，跑不到"启动后发现缺库
+再去下载"这一步。现在的 libmpv DLL 是运行时 `LoadLibrary` 加载，不适用这条。
 所以它只能是构建输入。这条推理写在 [0003](0003-libav-in-process.md)。
 ## 版本迁移
 
@@ -75,7 +76,8 @@ libmpv 自带 FFmpeg。随后 `internal/relay` 与 `internal/ffmpeg` 一起删�
 这些正是我们花了最多时间调的地方。换版本必须重新跑
 [reference/measurements.md](../reference/measurements.md) 里的首帧对照。
 
-升级步骤：
+升级步骤（针对已删除的 `internal/ffmpeg`，保留作历史；现在换 libmpv DLL 见
+[0004](0004-libmpv.md)）：
 
 1. 在本机装上目标版本，用它跑一遍公网首帧对照（B 站 HEVC、抖音、斗鱼、虎牙各一）
 2. 对比是否有退化，特别是转封装首帧和 HLS 播放列表解析

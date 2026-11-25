@@ -19,7 +19,7 @@
        ↓
 libmpv（third_party/mygo/plugins/video，purego 运行时绑定）
   ├─ 解封装、解码、缓冲、时钟、音画同步、丢帧策略
-  ├─ 音频直接输出（WASAPI），我们不碰 PCM
+  ├─ 音频直接输出，后端由 mpv 按平台选，我们不碰 PCM
   └─ 软件渲染（MPV_RENDER_API_TYPE_SW）→ bgr0 → 三缓冲复用
        ↓
 呈现（MyGo）
@@ -109,7 +109,8 @@ CPU 渲染器拿到的是空像素——真实窗口正常、截图里整格是�
 
 判据与归因顺序见 [decisions/0009](../decisions/0009-live-continuity.md)，实测数字见
 [reference/measurements.md](../reference/measurements.md) 的「直播连续性」一节。
-生产日志只在状态翻转时写：`缓冲开始` / `缓冲结束` / `音频停走`，正常播放不产生日志。
+生产日志只在状态翻转时写：`缓冲开始` / `缓冲结束` / `音频停走` / `视频停帧`，
+正常播放不产生日志。
 
 结论先写在这里，免得再被 `paused-for-cache` 一个信号带偏：
 
@@ -162,13 +163,14 @@ mpv 把「连接被关」当成文件播完——`phase=ended`，画面停在最
 几百毫秒的接缝。网页端同样要付这个代价，它的做法是 `destroy` + 重新取流。
 
 到期没换成功（取流失败、新地址不出图），或者这一路先停了——播放器自己 `ended`、
-或者时间轴 10 秒不动——走同一条路兜底；连试两次都失败才退回整轮重来。重试有
+或者时间轴 6 秒不动——走同一条路兜底；连试两次都失败才退回整轮重来。重试有
 退避，不会每帧都重开一路。
 
 ## 后台收听：离开直播间，声音留着
 
-离开播放页默认**不关播放**。左上角的叉和 Esc 是明确退出，其余离开方式
-（顶栏 tab、灵动岛、搜索跳转）都进后台收听：引擎活着、声音继续、画面不再上屏。
+离开播放页默认**不关播放**。左上角的叉是明确退出；Esc 第一下是收进岛（后台
+收听），再按一次才结束这一路。其余离开方式（顶栏 tab、灵动岛、搜索跳转）都进
+后台收听：引擎活着、声音继续、画面不再上屏。
 
 ### 后台保留解码，只停全尺寸呈现
 
@@ -257,10 +259,13 @@ demuxer 缓存并等 live 边缘的**下一个**关键帧，实测 0.08–5.2 �
 
 真正的问题在**关闭是异步的**：换引擎时不等旧实例 `Done()` 就建新的，旧 AO
 还占着设备，新实例打不开音频——那是「先关后开」的时序，不是共存。现在
-`stopPlayback` / `adoptSwap` 都等 `Done()` 之后才继续。
+`VideoPlayer.Close()` 仍立刻返回，真正的等待发生在下一次 `playback.Open` 的
+`waitDestroys()`；热切换是「先开后关」（`adoptSwap`），旧实例在新实例出图后
+才关，不等 `Done()`。
 
-从后台收听点开另一个直播间时仍然只有一路：`ensureMedia` 发现 `roomKey` 变了，
-走 `reset` → `stopPlayback` → 重开，旧引擎在 `stopPlayback` 里关掉。这条没有变。
+从后台收听点开另一个直播间时，旧焦点走 `endSessionFocus`：还在墙上就只收声、
+引擎留着做静音预览；不在墙上就连引擎一起关。所以同一时刻可能有两路引擎，
+但只有一路出声。
 
 ## 什么时候会慢，以及怎么区分
 
@@ -268,7 +273,7 @@ demuxer 缓存并等 live 边缘的**下一个**关键帧，实测 0.08–5.2 �
 
 1. **上游供给慢。** mpv 会报 `buffering=true`，并按实时速度慢放（因为它拿不到数据）。
    这不是 bug。判据：同一份签名地址用 ffmpeg 命令行解，8 秒流要跑十几秒、`speed`
-   小于 1x。`internal/playback/ffmpeg_test.go` 就是干这个的，URL 带签名所以不打印。
+   小于 1x。仓库里没有对应的自动化测试，这是一次手工对照。
 2. **我们自己的问题。** 表现是解码/上屏帧率低于 mpv 给的，或者 `State()` 卡在
    `Loading`。这时候才该改代码。
 
@@ -303,11 +308,13 @@ demuxer 缓存并等 live 边缘的**下一个**关键帧，实测 0.08–5.2 �
 工程检查：
 
 ```sh
-make check        # gofmt + build + vet + mygo vet + test
+make check        # gofmt + build + vet + mygo vet + lint + test + test-mygo
 ```
 
-跨平台矩阵与上游对照（都要连公网，默认跳过）。这两个测试不进仓库——脚本在
-`.tmp/probes/playback/`，跑之前先拷回 `internal/playback/`：
+跨平台矩阵与上游对照（都要连公网）。这两条探针不进仓库，也不在 `make check`
+里；需要时在 `.tmp/probes/playback/` 里重写，跑之前拷回 `internal/playback/`。
+命令形状如下（当前仓库内没有 `TestMatrix` / `TestFfmpegControl`，不要直接复制
+执行）：
 
 ```sh
 $env:ALIVE_MATRIX="1"; $env:ALIVE_MATRIX_PLATFORMS="bilibili,douyu,huya,douyin"

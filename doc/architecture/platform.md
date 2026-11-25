@@ -14,10 +14,11 @@
 
 | 入口 | 行为 |
 |---|---|
-| `xlive/web-room/v2/index/getRoomPlayInfo` | **单档下发**。匿名会话无论 `qn` 传什么，`expected_quality.qn` 恒为 250，所有 codec 的 `current_qn` 恒为 250（另有一条 `hdr_type=1` / `suffix=prohdr` 的 10000 壳子，其 `expected_qn` 仍是 250）。逐档请求 5 次，过滤后只剩 1 档。 |
+| `xlive/web-room/v2/index/getRoomPlayInfo` | **单档下发**。匿名会话无论 `qn` 传什么，`expected_quality.qn` 恒为 250，所有 codec 的 `current_qn` 恒为 250（另有一条 `hdr_type=1` / `suffix=prohdr` 的 10000 壳子，其 `expected_qn` 仍是 250）。菜单只发一次 `qn=0` 探档；真正播放时再按选中的档位解析一次，拿不到该档就退到平台给的第一档。 |
 | `xlive/play-gateway/master/url` | 网页播放器实际使用的入口。返回多码率 master m3u8，**一次给出全部档位**：`BILI-QN`、`BILI-DISPLAY`（官方中文名）、`RESOLUTION`、`BANDWIDTH`、`PATHWAY-ID`。 |
 
-`master/url` 不需要 cookie，也不需要签名，只带 `Referer` 和 `User-Agent`：
+`master/url` 不需要签名。匿名请求只带 `Referer` 和 `User-Agent`；登录态下走
+同一个 client，会顺带带上 Cookie。默认 `Referer` 是 `www.bilibili.com`：
 
 ```
 GET https://api.live.bilibili.com/xlive/play-gateway/master/url
@@ -36,8 +37,10 @@ live_50329118_9516950_2500        → live_50329118_9516950
 live_57bf9_SAe1Weh_27l4b_2500     → live_57bf9_SAe1Weh_27l4b
 ```
 
-正确做法：从 `getRoomPlayInfo` 某个 codec 的 `base_url` 取文件名，去掉 `.flv` / `.m3u8`，
-再削掉末尾的 `_<suffix>`——`suffix` 在同一条 codec 的 `url_info[].extra` 里有明码 `suffix=`。
+正确做法：从 `getRoomPlayInfo` 某个 codec 的 `base_url` 取文件名，先去掉
+`/index.m3u8`、`/index.flv` 尾段，再去掉 `.flv` / `.m3u8`，最后削掉末尾的
+`_<suffix>`——`suffix` 在同一条 codec 的 `url_info[].extra` 里有明码 `suffix=`。
+漏掉 `/index.*` 这一步，流名会变成 `index`，`master/url` 查不到任何档位。
 
 带编码后缀的分支档位不全：
 
@@ -64,11 +67,12 @@ AVC 分支码率约为 AV1 的 2~4 倍（S16 房 2K：AVC 4.5 Mbps / AV1 1.2 Mbp
 - 未登录就能拿到完整码流，分片全部 200；
 - CDN 不做登录校验，接口也不做。
 
-所以 `internal/live/bilibili_auth.go` 里「2K 和蓝光照样下不来」的描述，**用户体感是对的，
-归因是错的**——不是拿不到，是前端不让选。
+用户体感「2K 和蓝光照样下不来」是对的，但归因要分两段：`master/url` 匿名能拿到
+全档菜单；真正的播放走 `getRoomPlayInfo`，匿名 `current_qn` 恒 250，高档解析
+不到。所以「菜单看得到、匿名播不了」同时成立。
 
-alive 的选择是直接走接口（能拿多少给多少），因此未登录也能看到平台实际开放的最高档。
-这与网页端 UI 不一致，属于有意为之。
+alive 的菜单走 `master/url`，未登录也能看到平台实际开放的最高档；播放时按选中的
+档位解析，拿不到就落在 250。这与网页端 UI 不一致，属于有意为之。
 
 ### 1.4 线路 = HLS Content Steering 的 PATHWAY
 
@@ -88,8 +92,9 @@ master m3u8 头部：
 - `gotcha208 / 208b`（2 条）
 - `gotcha209`（AV1 分支）
 
-不能硬编码节点名，也不能假设恒为 4 条。切换线路时 path 和 query 全部保持不变，只换 host
-——`sign` 不绑定 host，实测换 host 后仍能拉取。
+不能硬编码节点名，也不能假设恒为 4 条。master 已经把每条 PATHWAY 给成完整地址，
+播放层按 `PATHWAY-ID` 在候选里选一条，不自己改写 host——`sign` 不绑定 host，
+实测换 host 后仍能拉取。
 
 历史上 `bilibili_stream.go` 的「线路」是从 playinfo 的 host 去重来的，那实际把 HLS 的 ts
 封装节点和 fmp4 封装节点当成了两条线路，与网页端语义不同。
@@ -105,36 +110,35 @@ master m3u8 头部：
 
 零失败、无掉速、无 403。单片耗时远低于 1 秒的分片间隔。
 
-**但 ffmpeg 长连接会抖**，这一点必须处理：
-
-| ffmpeg 参数 | 60 秒内 `keepalive request failed` |
-|---|---|
-| 默认（复用连接） | 42 次 `I/O error`，反复重连 |
-| `-http_persistent 0` | 0 次 |
-
-CDN 会主动踢掉空闲的持久连接。所有拉 B 站流的 ffmpeg 都必须带 `-http_persistent 0`。
+**ffmpeg 子进程时代还踩过一个坑，留作记录**：CDN 会主动踢掉空闲的持久连接，
+默认复用连接时 60 秒内 42 次 `I/O error`，加 `-http_persistent 0` 后 0 次。
+现在的播放层是 libmpv，不再有这条 ffmpeg 参数；连接复用由 mpv 自己管。
 
 ### 1.6 其他已知约束
 
 - 播放地址带 `expires`，约 6 小时。每次进房间重新取，不缓存。
-- AVC 分支有时会多一跳腾讯云调度（`*.v.smtcdns.net`），返回的是二级 playlist；ffmpeg 能自动跟随。
+- AVC 分支有时会多一跳腾讯云调度（`*.v.smtcdns.net`），返回的是二级 playlist；
+  播放器会自己跟随重定向。
 - `master/url` 是网页播放器的内部接口，B 站改版会断。返回空 body 时必须回退到 `getRoomPlayInfo`。
 - 不能仅凭"地址没有编码后缀"就认定是 AVC：真实房间遇到过 HEVC。
-  当前优先读 master 中的 `CODECS`，并把 `RESOLUTION` / `BANDWIDTH` / `FRAME-RATE` 传到播放层。
-  这些是**上游声明值**，首帧的解码尺寸另记。
+  master 的 `CODECS` 用于认出 master URL 属于哪条编码分支，这些 URL 随后会被
+  丢掉；播放变体的编码来自 `getRoomPlayInfo` 的 `codec.CodecName`，
+  `RESOLUTION` / `BANDWIDTH` / `FRAME-RATE` 作为上游声明值传到播放层。
+  首帧的解码尺寸另记。
 
-## 二、其他平台（未实测）
+## 二、其他平台
 
-代码层检查结论：**斗鱼、虎牙、抖音的取流实现里都没有登录态分支**，不区分是否登录，
-平台给多少档就产出多少档。
+代码层检查结论：**虎牙、抖音的取流实现里没有登录态分支**；**斗鱼有**，登录态
+与游客各走一条路，403 会强制续期，续不上退回 10 分钟游客兜底（见 §六）。
 
 | 平台 | 现状 | 备注 |
 |---|---|---|
-| 斗鱼 | 游客 `did` 走 query，服务端按它识别游客 | 注释提到「登录之后再叠上登录字段，清晰度才按账号给」，指的是账号等级专享档，不是通用门槛 |
+| 斗鱼 | 登录态与游客两条路径；游客 `did` 走 query，服务端按它识别游客 | 登录字段会叠进请求，清晰度按账号等级给；账号等级专享档是登录的唯一收益 |
 | 虎牙 | `profileRoom` + WUP token，全程游客身份 | 三个档位共用同一条流，只是 `ratio` 不同 |
 | 抖音 | 房间对象里直接读 `stream_url`，原画在 `stream_data` 内嵌 JSON | 签名依赖 `a_bogus`，与登录态无关；**2026-11-20 已实测**：匿名 5 档齐全、弹幕也通，所以登录已摘除（见 §七） |
 
-**斗鱼、虎牙的「未登录能否拿满档」尚未实测**，与 B 站是否同构未知。做之前需要逐个验证：
+**斗鱼的「未登录能拿多少档」还没有逐档实测**；虎牙 2026-11-20 已实测（见 §七），
+匿名三档与登录完全相同。做斗鱼之前需要逐个验证：
 
 1. 未登录请求取流接口，看返回的档位列表是否有高档；
 2. 拿到的地址是否真能拉分片（不是空壳 / 降档承诺）；
@@ -167,20 +171,22 @@ Chrome 不原生支持 HLS，所以网页必须走 MSE。MSE 的行为是「给�
 
 抖音用 FLV 而不用 HLS：FLV 是连续字节流，没有分片边界，收到首个关键帧就能出画。
 我们原先在同一档同时有 FLV / HLS 时优先选 HLS，理由是为 MF「省去一次重新切片」——
-那是代理时代的取舍，对自解码路径是反的：ffmpeg 直接读 FLV 就行，不需要切片。
+那是代理时代的取舍。现在播放层是 libmpv，直接读 FLV，不需要切片；FLV 优先。
 
 ### 各平台实际下发的编码
 
 2026-11-16 扫描（每个平台 10–20 个房间）：B 站同时下发 AVC 与 HEVC；
 **抖音、斗鱼、虎牙只下发 AVC**；暂未发现 AV1。
 
-这条结论决定了自带解码当前真正救的是谁：只有 B 站的 HEVC 房间。
+平台扫描是当时的观测；代码层的固定值只有斗鱼、虎牙写死 AVC，抖音能解析
+HEVC/AV1 变体。现在解码由 libmpv 负责，AV1 的硬解覆盖仍比 AVC 窄。
 
 ## 三、按需取流与实际档位
 
-斗鱼的播放页使用可选 `PlaybackStreamer`：先获取完整档位与线路目录，只解析当前
-选择的档位；首选线路确认命中即停止，必要时再按顺序尝试其他线路。
-未选档位的 URL 可以为空，选中时再解析。旧 `Streamer.Stream` 仍返回完整可播地址。
+斗鱼和 B 站都实现了可选 `PlaybackStreamer`：先获取完整档位与线路目录，只解析
+当前选择的档位；首选线路确认命中即停止，必要时再按顺序尝试其他线路。
+未选档位的 URL 可以为空，选中时再解析。B 站的旧 `Streamer.Stream` 只返回空地址
+菜单；斗鱼的旧接口仍返回完整可播地址。
 
 请求档位和实际档位分开处理：服务端确认了其他 rate，播放标签跟随实际 rate；
 没有确认 rate 的可播地址显示「默认」，不能沿用「原画」。本轮真实房间出现过

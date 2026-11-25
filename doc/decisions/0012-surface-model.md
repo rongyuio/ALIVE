@@ -89,8 +89,10 @@
 
 ## 后果
 
-- `internal/ui` 净减少：删 `background`、`WatchActive`、`WatchPending`、`watch.volumes`、
-  五个搬运函数；`a.Player` / `a.Playing` 变成焦点会话的视图。
+- `internal/ui` 净减少：删 `background`、`WatchActive`、`WatchPending`、
+  五个搬运函数；`a.Player` / `a.Playing` 变成焦点会话的视图
+  （`focusPlaying()` / `focusVolume()`）。`watch.volumes` 后来降级为会话不在时的
+  冷存，见下。
 - 新增 `surface.go`：纯函数求值，可在 Tester 里穷举。
 - 新增 `session_invariants_test.go`：假引擎 + 动作字母表 + 状态机走查。
 - 静态测试限制 `SetVolume` / `SetPresentSize` 的调用点，防止第二套机制回潮。
@@ -165,7 +167,9 @@
 
 ## 复查条件
 
-- 保留窗口 30 秒在真机上造成可感知的后台 CPU 浪费 → 调整窗口，不改模型。
+- ~~保留窗口 30 秒在真机上造成可感知的后台 CPU 浪费 → 调整窗口，不改模型。~~
+  该窗口 11-23 改成开关、11-25 开关也删掉；现在停不停只由导航决定，这条复查
+  条件失效。
 - 平台对"离开墙后仍保持 N 路连接"有限流反应 → 缩短窗口，或按平台错峰。
 - 探针 P1/P2 显示飞行期视频会冻帧 → 放弃连续放大，保持硬切。
 - 用户要求"离开墙后立刻释放" → 那是把可见性与策略重新焊回去，需要新理由。

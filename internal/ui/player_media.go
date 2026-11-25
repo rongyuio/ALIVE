@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/rs/zerolog"
 
 	"alive/internal/diag"
 	"alive/internal/live"
@@ -431,8 +431,10 @@ func (a *App) setPresent(s *roomSession, want presentSize) {
 	}
 	to := presentBucket(want)
 	if from != to {
-		s.event(slog.LevelInfo, diag.EvPresentChange, "呈现尺寸变化",
-			diag.From, from, diag.To, to, "w", want.W, "h", want.H)
+		s.event().Str(diag.Event, diag.EvPresentChange).
+			Str(diag.From, from).Str(diag.To, to).
+			Int("w", want.W).Int("h", want.H).
+			Msg("呈现尺寸变化")
 	}
 }
 
@@ -492,7 +494,7 @@ func (a *App) ensureFocusMedia() {
 	if s.stream.RoomID != "" && !s.stream.Live {
 		return
 	}
-	slog.Info("进入播放页，开始取流", "key", s.key)
+	diag.L().Info().Str("key", s.key).Msg("进入播放页，开始取流")
 	a.startStream(false)
 }
 
@@ -532,7 +534,7 @@ func (a *App) beginSession(stage string) playbackSession {
 	m.bufferingSince = time.Time{}
 
 	sess := playbackSession{seq: m.seq, ctx: ctx, id: m.id, start: m.start, win: m.win, log: m.log}
-	m.log.event(slog.LevelInfo, diag.EvSessionBegin, "开始起播", "cause", stage)
+	m.log.event().Str(diag.Event, diag.EvSessionBegin).Str("cause", stage).Msg("开始起播")
 	return sess
 }
 
@@ -612,10 +614,10 @@ func (a *App) startStream(keepDanmaku bool) {
 		if err != nil {
 			// 被新一轮取代时不必报错：用户已经不看这一路了。
 			if sess.ctx.Err() != nil {
-				sess.log.event(slog.LevelDebug, diag.EvSessionCancel, "取流被新一轮取代")
+				sess.log.debug().Str(diag.Event, diag.EvSessionCancel).Msg("取流被新一轮取代")
 				return
 			}
-			sess.log.event(slog.LevelWarn, diag.EvSessionFetchFail, "取流失败", diag.Err(err))
+			sess.log.warn().Str(diag.Event, diag.EvSessionFetchFail).Dict(diag.ErrField, diag.Err(err)).Msg("取流失败")
 			a.applyMedia(sess, func() {
 				a.media.setLoading(false)
 				a.media.setErr("取流失败，请重试或切换线路")
@@ -624,13 +626,14 @@ func (a *App) startStream(keepDanmaku bool) {
 			}, nil)
 			return
 		}
-		sess.log.event(slog.LevelInfo, diag.EvSessionFetch, "取流完成",
-			diag.Live, info.Live,
-			diag.Variants, len(info.Variants),
-			diag.Lines, len(info.Lines),
-			diag.Quality, selected.Label,
-			diag.Line, line,
-			diag.URLHost, diag.Host(selected.URL))
+		sess.log.event().Str(diag.Event, diag.EvSessionFetch).
+			Bool(diag.Live, info.Live).
+			Int(diag.Variants, len(info.Variants)).
+			Int(diag.Lines, len(info.Lines)).
+			Str(diag.Quality, selected.Label).
+			Str(diag.Line, line).
+			Str(diag.URLHost, diag.Host(selected.URL)).
+			Msg("取流完成")
 
 		// 房间详情先上屏：标题、头像、是否在播都不依赖转封装
 		a.applyMedia(sess, func() {
@@ -647,7 +650,7 @@ func (a *App) startStream(keepDanmaku bool) {
 			// 平台可以给不了所点的档位（斗鱼对匿名请求会把「原画」降成
 			// 「蓝光4M」）。默默换掉会让人以为切档没生效，所以明说一次。
 			if picked != "" && selected.Label != "" && !sameQuality(picked, selected.Label) {
-				slog.Info("清晰度被平台降档", "requested", picked, "applied", selected.Label)
+				diag.L().Info().Str("requested", picked).Str("applied", selected.Label).Msg("清晰度被平台降档")
 				a.notifyPlayback("该直播间没有「" + picked + "」，已切到「" + selected.Label + "」")
 			}
 		}, nil)
@@ -729,7 +732,9 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) b
 	if win == nil {
 		return false
 	}
-	sess.log.event(slog.LevelInfo, diag.EvSessionPath, "播放路径", "path", "native", "codec", upstream.Codec)
+	sess.log.event().Str(diag.Event, diag.EvSessionPath).
+		Str("path", "native").Str("codec", upstream.Codec).
+		Msg("播放路径")
 	opts := playback.Options{
 		Headers:   upstream.Headers,
 		Width:     upstream.Width,
@@ -750,7 +755,7 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) b
 		// 它 Close 时引擎自己收；这一轮的 ctx 仍用来判断结果是否过期。
 		e, err := openNative(context.Background(), upstream.URL, opts)
 		if err != nil {
-			sess.log.event(slog.LevelWarn, diag.EvSessionOpenFail, "原生引擎打开失败", diag.Err(err))
+			sess.log.warn().Str(diag.Event, diag.EvSessionOpenFail).Dict(diag.ErrField, diag.Err(err)).Msg("原生引擎打开失败")
 			if sess.ctx.Err() != nil {
 				return
 			}
@@ -816,10 +821,11 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 		a.media.pauseStarted = a.media.opened()
 		p.Pause()
 	}
-	sess.log.event(slog.LevelInfo, diag.EvSessionOpen, "引擎已打开",
-		diag.Quality, upstream.Label,
-		diag.URLHost, diag.Host(upstream.URL),
-		diag.DeclaredW, upstream.Width, diag.DeclaredH, upstream.Height)
+	sess.log.event().Str(diag.Event, diag.EvSessionOpen).
+		Str(diag.Quality, upstream.Label).
+		Str(diag.URLHost, diag.Host(upstream.URL)).
+		Int(diag.DeclaredW, upstream.Width).Int(diag.DeclaredH, upstream.Height).
+		Msg("引擎已打开")
 	// 小窗可能正开着而主窗口藏着：这一路是在主窗口的 Update 里接上的，
 	// 不叫小窗重画一次，它会一直停在「没有播放器」的那一帧封面上。
 	a.invalidateWindows()
@@ -856,6 +862,19 @@ func refreshAtFor(v live.Variant) time.Time {
 	return v.Expires.Add(-refreshLead)
 }
 
+// playerEnded 是播放页的「这一路自己停了」。
+//
+// 和墙的 watchEnded 是同一套判据（confirmEnded），差别只在平台说还在播之后：
+// 墙上整路重建，这里热切换——换一份地址、等新路出图再切，画面不断。
+//
+// 下播就走 watchOffline：引擎关掉、播放页画未开播层、焦点保留（错误层和岛上
+// 的退出键还要用）。不走这一步的后果是一整条死循环，见 trackFirstFrame。
+func (a *App) playerEnded(s *roomSession) {
+	a.confirmEnded(s, "dead-ended", func(_ *roomSession, why string) {
+		a.scheduleSwap(why)
+	})
+}
+
 // scheduleSwap 派一次「取新地址 → 开第二路 → 换上去」。
 //
 // 两种触发：地址快到期了，或者这一路已经停了（播放器自己结束 / 时间轴不动）。
@@ -874,7 +893,7 @@ func (a *App) scheduleSwap(reason string) {
 	cur := a.current()
 	line := a.lineIDFor(m.roomKey(), m.streamNow())
 	req := swapRequest{platform: live.Platform(cur.Platform), roomID: cur.RoomID, line: line, quality: m.up().Label, background: m.app.inBackground()}
-	sess.log.event(slog.LevelInfo, diag.EvSessionSwapStart, "开始换地址", diag.Cause, reason)
+	sess.log.event().Str(diag.Event, diag.EvSessionSwapStart).Str(diag.Cause, reason).Msg("开始换地址")
 	go a.runHotSwap(sess, req, reason)
 }
 
@@ -884,7 +903,10 @@ func (a *App) scheduleSwap(reason string) {
 // 只有声音有一次几百毫秒的接缝——网页端也是这个代价。
 func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 	fail := func(err error) {
-		sess.log.event(slog.LevelWarn, diag.EvSessionSwapFail, "换地址失败", diag.Cause, reason, diag.Err(err))
+		sess.log.warn().Str(diag.Event, diag.EvSessionSwapFail).
+			Str(diag.Cause, reason).
+			Dict(diag.ErrField, diag.Err(err)).
+			Msg("换地址失败")
 		runOnMain(sess.win, func() {
 			// 过期会话的失败不能记到新会话头上。
 			//
@@ -902,7 +924,7 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 				a.media.swapFailures = 0
 				// 这一行必须留：日志里连续出现的「取流#N」如果来自这里，
 				// 说明是整轮重开把缓冲丢掉了，不是播放器自己停的。
-				slog.Info("热切换失败，整轮重开", "reason", reason)
+				diag.L().Info().Str("reason", reason).Msg("热切换失败，整轮重开")
 				a.startStream(true)
 				return
 			}
@@ -1002,9 +1024,11 @@ func (a *App) adoptSwap(sess playbackSession, e *playback.Engine, v live.Variant
 	if !s.playing {
 		p.Pause()
 	}
-	sess.log.event(slog.LevelInfo, diag.EvSessionSwapDone, "换地址完成",
-		diag.Cause, reason, diag.Quality, v.Label,
-		diag.URLHost, diag.Host(v.URL), "background", a.inBackground())
+	sess.log.event().Str(diag.Event, diag.EvSessionSwapDone).
+		Str(diag.Cause, reason).Str(diag.Quality, v.Label).
+		Str(diag.URLHost, diag.Host(v.URL)).
+		Bool("background", a.inBackground()).
+		Msg("换地址完成")
 	// 旧播放器是在小窗正显示的时候被换掉的，同样得让小窗重画：新引擎的
 	// wake 要等小窗下一次画 Video 才会指向它。
 	a.invalidateWindows()
@@ -1038,7 +1062,10 @@ func (m *playerMedia) stopPlayback() {
 // 弹幕不动：画面断了不代表聊天断了，也不该因为一次播放失败触发整房间重连。
 func (a *App) failPlayback(class, msg string, err error) {
 	m := &a.media
-	m.log.event(slog.LevelWarn, diag.EvSessionFail, "播放失败", "class", class, diag.Err(err))
+	m.log.warn().Str(diag.Event, diag.EvSessionFail).
+		Str("class", class).
+		Dict(diag.ErrField, diag.Err(err)).
+		Msg("播放失败")
 	m.lastFail = time.Now()
 	a.stopPlayback()
 	m.setLoading(false)
@@ -1079,40 +1106,55 @@ func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
 				continue
 			}
 			if m.mpvLogSeq > 0 && l.Seq > m.mpvLogSeq+1 {
-				m.log.event(slog.LevelWarn, diag.EvMpv, "mpv 日志缺口",
-					diag.Dropped, l.Seq-m.mpvLogSeq-1)
+				m.log.warn().Str(diag.Event, diag.EvMpv).Uint64(diag.Dropped, l.Seq-m.mpvLogSeq-1).Msg("mpv 日志缺口")
 			}
-			level := slog.LevelWarn
+			level := diag.LevelWarn
 			if l.Level == "error" || l.Level == "fatal" {
-				level = slog.LevelError
+				level = diag.LevelError
 			}
-			m.log.event(level, diag.EvMpv, "mpv 日志",
-				diag.Module, l.Prefix,
-				"mpv_level", l.Level,
-				diag.Text, l.Text,
-				"mpv_at", l.At.Format(time.RFC3339Nano))
+			// level 是变量，logRef 只有按级别固定的四个入口（diag.go 不归这里改），
+			// 所以在调用点分派一次，每个分支都是具体的原生链式调用。
+			ev := func() *zerolog.Event {
+				switch level {
+				case diag.LevelError:
+					return m.log.err()
+				case diag.LevelDebug:
+					return m.log.debug()
+				case diag.LevelInfo:
+					return m.log.event()
+				default:
+					return m.log.warn()
+				}
+			}()
+			ev.Str(diag.Event, diag.EvMpv).
+				Str(diag.Module, l.Prefix).
+				Str("mpv_level", l.Level).
+				Str(diag.Text, l.Text).
+				Str("mpv_at", l.At.Format(time.RFC3339Nano)).
+				Msg("mpv 日志")
 			m.mpvLogSeq = l.Seq
 		}
 	}
 	if d.Buffering != m.buffering {
-		args := []any{
-			diag.PositionMS, d.Position.Milliseconds(),
-			diag.AudioMS, d.AudioPTS.Milliseconds(),
-			diag.AudioOK, d.AudioPTSValid,
-			diag.CacheMS, d.CacheDuration.Milliseconds(),
-			diag.CachePct, d.CacheBuffering,
-			"decoder_drops", d.DecoderDrops,
-			"mistimed", d.Mistimed,
-			diag.AVSyncS, d.AVSync,
+		// 起止两条共用的字段：state 在前，stalled_ms 只加在「结束」那一条。
+		bufferFields := func(ev *zerolog.Event) *zerolog.Event {
+			return ev.Int64(diag.PositionMS, d.Position.Milliseconds()).
+				Int64(diag.AudioMS, d.AudioPTS.Milliseconds()).
+				Bool(diag.AudioOK, d.AudioPTSValid).
+				Int64(diag.CacheMS, d.CacheDuration.Milliseconds()).
+				Int64(diag.CachePct, d.CacheBuffering).
+				Int64("decoder_drops", d.DecoderDrops).
+				Int64("mistimed", d.Mistimed).
+				Float64(diag.AVSyncS, d.AVSync)
 		}
 		if d.Buffering {
 			m.bufferingSince = now
-			m.log.event(slog.LevelInfo, diag.EvSessionBuffer, "缓冲开始",
-				append([]any{"state", "start"}, args...)...)
+			bufferFields(m.log.event().Str(diag.Event, diag.EvSessionBuffer).Str("state", "start")).
+				Msg("缓冲开始")
 		} else {
-			args = append(args, diag.StalledMS, now.Sub(m.bufferingSince).Milliseconds())
-			m.log.event(slog.LevelInfo, diag.EvSessionBuffer, "缓冲结束",
-				append([]any{"state", "end"}, args...)...)
+			bufferFields(m.log.event().Str(diag.Event, diag.EvSessionBuffer).Str("state", "end")).
+				Int64(diag.StalledMS, now.Sub(m.bufferingSince).Milliseconds()).
+				Msg("缓冲结束")
 		}
 		m.buffering = d.Buffering
 	}
@@ -1127,11 +1169,12 @@ func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
 	if !m.diagAt.IsZero() && d.AudioPTSValid && !d.Buffering && d.AudioPTS == m.diagAudio && d.Position > m.diagPos {
 		if !m.audioStalled {
 			m.audioStalled = true
-			m.log.event(slog.LevelWarn, diag.EvSessionAudioStop, "音频停走",
-				diag.PositionMS, d.Position.Milliseconds(),
-				diag.AudioMS, d.AudioPTS.Milliseconds(),
-				diag.AudioOK, d.AudioPTSValid,
-				diag.AVSyncS, d.AVSync)
+			m.log.warn().Str(diag.Event, diag.EvSessionAudioStop).
+				Int64(diag.PositionMS, d.Position.Milliseconds()).
+				Int64(diag.AudioMS, d.AudioPTS.Milliseconds()).
+				Bool(diag.AudioOK, d.AudioPTSValid).
+				Float64(diag.AVSyncS, d.AVSync).
+				Msg("音频停走")
 		}
 	} else if !d.AudioPTSValid || d.AudioPTS > m.diagAudio {
 		m.audioStalled = false
@@ -1143,15 +1186,16 @@ func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
 	if !m.diagAt.IsZero() && !d.Buffering && d.Position == m.diagPos && d.AudioPTS > m.diagAudio {
 		if !m.videoStalled {
 			m.videoStalled = true
-			m.log.event(slog.LevelWarn, diag.EvSessionVideoStall, "视频停帧",
-				diag.PositionMS, d.Position.Milliseconds(),
-				diag.AudioMS, d.AudioPTS.Milliseconds(),
-				"render_calls", calls-m.diagCalls,
-				"new_frames", frames-m.diagFrames,
-				diag.CacheMS, d.CacheDuration.Milliseconds(),
-				diag.CachePct, d.CacheBuffering,
-				"vfps", d.VFFPS,
-				diag.AVSyncS, d.AVSync)
+			m.log.warn().Str(diag.Event, diag.EvSessionVideoStall).
+				Int64(diag.PositionMS, d.Position.Milliseconds()).
+				Int64(diag.AudioMS, d.AudioPTS.Milliseconds()).
+				Uint64("render_calls", calls-m.diagCalls).
+				Uint64("new_frames", frames-m.diagFrames).
+				Int64(diag.CacheMS, d.CacheDuration.Milliseconds()).
+				Int64(diag.CachePct, d.CacheBuffering).
+				Float64("vfps", d.VFFPS).
+				Float64(diag.AVSyncS, d.AVSync).
+				Msg("视频停帧")
 		}
 	} else if d.Position > m.diagPos {
 		m.videoStalled = false
@@ -1207,22 +1251,24 @@ func (a *App) trackFirstFrame() {
 				gpu, gpuFrames, renders = debug.GPU, debug.GPUFrames, debug.Renders
 				displayFPS, vfps = debug.DisplayFPS, debug.VFFPS
 			}
-			m.log.event(slog.LevelInfo, diag.EvSessionFirstFrame, "首帧可用",
-				diag.HWDec, hwdec,
-				"upstream_codec", m.up().Codec,
-				diag.DeclaredW, m.up().Width, diag.DeclaredH, m.up().Height,
-				"declared_bitrate", m.up().Bitrate,
-				"declared_fps", m.up().FrameRate,
-				diag.DecodedW, w, diag.DecodedH, h,
-				diag.GPU, gpu,
-				diag.GPUFrames, gpuFrames,
-				diag.Renders, renders,
-				diag.DisplayFPS, displayFPS,
-				diag.VFPS, vfps,
-				diag.Buffering, p.Buffering())
+			m.log.event().Str(diag.Event, diag.EvSessionFirstFrame).
+				Str(diag.HWDec, hwdec).
+				Str("upstream_codec", m.up().Codec).
+				Int(diag.DeclaredW, m.up().Width).Int(diag.DeclaredH, m.up().Height).
+				Int64("declared_bitrate", m.up().Bitrate).
+				Float64("declared_fps", m.up().FrameRate).
+				Int(diag.DecodedW, w).Int(diag.DecodedH, h).
+				Bool(diag.GPU, gpu).
+				Uint64(diag.GPUFrames, gpuFrames).
+				Uint64(diag.Renders, renders).
+				Float64(diag.DisplayFPS, displayFPS).
+				Float64(diag.VFPS, vfps).
+				Bool(diag.Buffering, p.Buffering()).
+				Msg("首帧可用")
 			if !m.lastFail.IsZero() {
-				m.log.event(slog.LevelInfo, diag.EvSessionRecover, "播放恢复",
-					diag.RecoverMS, time.Since(m.lastFail).Milliseconds())
+				m.log.event().Str(diag.Event, diag.EvSessionRecover).
+					Int64(diag.RecoverMS, time.Since(m.lastFail).Milliseconds()).
+					Msg("播放恢复")
 				m.lastFail = time.Time{}
 			}
 		}
@@ -1232,9 +1278,16 @@ func (a *App) trackFirstFrame() {
 		//      这是兜底，正常情况下第一条先触发。
 		if a.focusPlaying() {
 			if why := m.deadReason(true, p.Playing(), p.Buffering(), p.Position(), now); why != "" {
-				// 不在这里打日志：卡住的时候每帧都会命中，scheduleSwap 自己会
-				// 记一条 swap-start，带原因。
-				a.scheduleSwap("dead-" + why)
+				if why == "ended" {
+					// 播放器自己停了：可能只是地址过期，也可能是主播下播了。
+					// 这两种在画面上分不出来，只能问平台——不问就换地址，下播
+					// 的房间会一直重取：平台给不出流，三次失败整轮重开，再判死。
+					a.playerEnded(m.session())
+				} else {
+					// 不在这里打日志：卡住的时候每帧都会命中，scheduleSwap 自己会
+					// 记一条 swap-start，带原因。
+					a.scheduleSwap("dead-" + why)
+				}
 			}
 		}
 		if !m.refresh().IsZero() && !now.Before(m.refresh()) {
@@ -1384,8 +1437,9 @@ func (m *playerMedia) startupElapsed(s *roomSession, now time.Time) time.Duratio
 func (a *App) PickQuality(label string) {
 	// 先记「用户的意图」，再记结果。排查「我切了 1080P 怎么还是糊」时，
 	// 这两条必须分开：requested 是用户点的，session.fetch/首帧才是实际生效的。
-	a.media.log.event(slog.LevelInfo, diag.EvSessionQualityPick, "用户选择清晰度",
-		diag.Requested, label)
+	a.media.log.event().Str(diag.Event, diag.EvSessionQualityPick).
+		Str(diag.Requested, label).
+		Msg("用户选择清晰度")
 	// 写进这一间房自己的记录：换台 / 离开后回来，选的还是这一档；
 	// 别的房间、别的平台一个字都不动。
 	a.setRoomQuality(a.choiceKey(), label)
@@ -1414,8 +1468,9 @@ func (a *App) PickQuality(label string) {
 func (a *App) pickLine(label string) {
 	// 选项来自当前这一路的档位表，标签 → 节点 id 就在这份表里换。
 	id := lineIDIn(a.media.streamNow().Lines, label)
-	a.media.log.event(slog.LevelInfo, diag.EvSessionLinePick, "用户选择线路",
-		diag.Requested, label, diag.Applied, id)
+	a.media.log.event().Str(diag.Event, diag.EvSessionLinePick).
+		Str(diag.Requested, label).Str(diag.Applied, id).
+		Msg("用户选择线路")
 	a.setRoomLine(a.choiceKey(), label, id)
 	if a.media.roomKey() != "" {
 		a.startStream(true)
@@ -1481,7 +1536,7 @@ func pickVariant(variants []live.Variant, label string) live.Variant {
 		}
 		// 菜单标签和平台这次的档位名对不上（列表刷新过）：仍然给一个能播的，
 		// 但要说清楚，并且让上层用“点选 vs 实际”的对比提示用户。
-		slog.Info("清晰度标签未命中，改用默认档", "requested", label, "fallback", variants[0].Label)
+		diag.L().Info().Str("requested", label).Str("fallback", variants[0].Label).Msg("清晰度标签未命中，改用默认档")
 	}
 	return variants[0]
 }
@@ -1605,12 +1660,15 @@ func (a *App) startDanmaku(ctx context.Context, seq int, prov live.Provider, pla
 			stream.Close()
 		}
 		// 正常关房也会返回 canceled；那不是故障，不要按 WARN 记。
-		level := slog.LevelWarn
+		level := diag.LevelWarn
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-			level = slog.LevelDebug
+			level = diag.LevelDebug
 		}
-		log.Log(context.Background(), level, "弹幕连接失败",
-			"event", diag.EvDanmakuFail, diag.Err(err))
+		// 级别是变量，*zerolog.Logger 自带 WithLevel；不再经过 diag 的包装。
+		log.WithLevel(level).
+			Str(diag.Event, diag.EvDanmakuFail).
+			Dict(diag.ErrField, diag.Err(err)).
+			Msg("弹幕连接失败")
 		runOnMain(win, func() {
 			if a.media.danmuSeq == seq {
 				a.media.danmuLastFail = time.Now()
@@ -1626,7 +1684,7 @@ func (a *App) startDanmaku(ctx context.Context, seq int, prov live.Provider, pla
 }
 
 // attachDanmaku 的清理不依赖主线程回调被执行；取消房间即可收掉未接纳连接。
-func (a *App) attachDanmaku(ctx context.Context, win *mygo.Window, seq int, stream live.DanmakuStream, log *slog.Logger) {
+func (a *App) attachDanmaku(ctx context.Context, win *mygo.Window, seq int, stream live.DanmakuStream, log *zerolog.Logger) {
 	stop := cleanupOnCancel(ctx, stream.Close)
 	if !runOnMain(win, func() {
 		if ctx.Err() != nil || a.media.danmuSeq != seq {
@@ -1638,10 +1696,11 @@ func (a *App) attachDanmaku(ctx context.Context, win *mygo.Window, seq int, stre
 		}
 		a.media.danmaku, a.media.stopDanmaku = stream, stop
 		if log != nil {
-			log.Info("弹幕已连接", "event", diag.EvDanmakuConnect)
+			log.Info().Str(diag.Event, diag.EvDanmakuConnect).Msg("弹幕已连接")
 			if !a.media.danmuLastFail.IsZero() {
-				log.Info("弹幕已恢复", "event", diag.EvDanmakuRecover,
-					diag.RecoverMS, time.Since(a.media.danmuLastFail).Milliseconds())
+				log.Info().Str(diag.Event, diag.EvDanmakuRecover).
+					Int64(diag.RecoverMS, time.Since(a.media.danmuLastFail).Milliseconds()).
+					Msg("弹幕已恢复")
 				a.media.danmuLastFail = time.Time{}
 			}
 		}
@@ -1784,8 +1843,9 @@ func (a *App) retryStream() {
 		return
 	}
 	// 用户主动重试是一条边沿：不记它，日志会把人的动作当成系统自动重连。
-	a.media.log.event(slog.LevelInfo, diag.EvSessionRetry, "用户重试",
-		"previous_error", a.media.errText())
+	a.media.log.event().Str(diag.Event, diag.EvSessionRetry).
+		Str("previous_error", a.media.errText()).
+		Msg("用户重试")
 	a.startStream(a.media.roomCtx != nil)
 }
 

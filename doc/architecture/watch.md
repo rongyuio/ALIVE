@@ -14,11 +14,11 @@
 - 双击格子：放大成播放页，**同一个引擎接管**，不重新取流。
 - 键盘和读屏没有双击：Enter 与单击同义（激活），打开播放页走 hover 底栏的
   「放大观测」。双击是鼠标的快捷方式，不是唯一入口。
-- 点灵动岛：回播放页（或回墙，见 `surfaces.md`）。
+- 点灵动岛：在播放页上收起这一路，别的页面回这一间的播放页（见 `surfaces.md`）。
 - 墙上不显示弹幕，也不保留弹幕连接；只有放大成播放页时才连一条全新的。
-- 墙头没有常驻状态；正在播放谁由灵动岛承担。墙上岛展开显示当前房间。
-- 墙头的「＋」展开添加面板：一行说明「从关注里挑，点一下收进观测墙」+ 候选
-  chip（`＋ [品牌色平台] 名字`）；点 chip 收进观测墙，面板收起。
+- 墙头没有常驻状态；正在播放谁由灵动岛承担。
+- 收进墙没有墙上的入口：首页卡片右键、关注页行右键的「悲鸣观测」。收进去之后
+  墙才出现这一格。
 - 最多 12 间，不是按带宽算的；用户带宽不在产品判断里。
 - 墙格可以拖动换位，顺序落盘。active 跟着房间身份走，换位不会把声音切到别的格子。
 
@@ -26,30 +26,37 @@
 
 ```text
 internal/ui/follows_page.go     第三个一级分区、分区顺序
-internal/ui/watch.go            墙面：布局、格子、控件、添加面板
-internal/ui/watch_media.go      wallMedia / wallSession：每格取流、静音、重连
+internal/ui/watch.go            墙面：布局、格子、底栏控件
+internal/ui/watch_media.go      wallMedia：会话表、每格取流、静音、重连
 internal/watch/layout.go        纯布局：1–12 间、16:9、铺满不裁剪
 internal/ui/player_media.go     active 在播放页时的所有权、弹幕生命周期
 internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳过音频门
 ```
 
-墙和播放页不是两套播放器。`wallSession` 和 `playerMedia` 是同一路引擎在不同
-位置的两种所有权。
+墙和播放页不是两套播放器。每一间房只有一个 `roomSession`，墙格和播放页画的
+是同一个 `VideoPlayer`；`a.focus` 指向当前出声的那一间。
 
-## 所有权与交接
+## 所有权与焦点
 
-`a.WatchActive` 是当前出声那间的 `platform|roomID`。**一激活就接管进
-`playerMedia`**；`wallSession` 只保留还没出首帧的 pending 格和所有非 active 格。
+会话表的身份是 `platform|roomID`，每一间房一个 `roomSession`，住在
+`a.watch.sessions`。`roomSession` 里同时有引擎、取流上下文、播放器、音量、
+错误/离线态。
 
-| 归属 | 什么时候 | 画面 | 声音 | 谁驱动 |
+`a.focus` 是唯一的「谁在出声」。`setFocus` 是唯一的写入口，`wallActiveKey()` /
+`focusPlaying()` / `presentSizeFor()` 都是它的推论。
+
+| 状态 | 什么时候 | 画面 | 声音 | 谁驱动 |
 |---|---|---|---|---|
-| `wallSession` | 非 active 预览；active 还没出首帧 | 格子物理像素 | 无 | `watchTick` |
-| `playerMedia` | 激活完成；从播放页退回墙 | 格子物理像素 | 开 | `mediaTick` |
+| 非焦点会话 | 墙上预览 | 格子物理像素 | 无（`StartSilent`） | `watchTick` |
+| 焦点会话 | 激活；从播放页退回墙 | 格子物理像素 | 开 | 媒体层心跳，内部也调 `watchTick` |
+| 焦点会话 + 播放页 | 有全尺寸视图 | 0,0（原始尺寸） | 开 | 媒体层心跳 |
+
+没有「搬移」：切焦点只换 `a.focus` 指向，引擎、流、连接一概不动。
 
 ### 呈现尺寸只有一个旋钮
 
-「这一路该画多大」由 `playerMedia.presentSizeFor()` 一处求值，`applyPresent()`
-推给引擎（`videoTrack.SetPresentSize`，0 表示视频原始尺寸）：
+「这一路该画多大」由 `a.presentSizeFor()` → `presentSizeForSession()` 一处求值，
+`applyPresent()` 推给引擎（`SetPresentSize`，0 表示视频原始尺寸）：
 
 | 位置 | 呈现尺寸 |
 |---|---|
@@ -62,7 +69,7 @@ internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳
 继承、各个调用点各自补一次 `SetPresentSize`。每条路径只记得自己那一套，
 于是「墙 → 播放页」永远停在格子分辨率——整屏都是放大的糊图。
 
-现在上限（`Options.MaxWidth/MaxHeight`）**只做安全阀**，不参与选尺寸；
+`Options.MaxWidth/MaxHeight` 现在没有生产调用点设置，字段留着但不参与选尺寸；
 `presentSizeFor` 是唯一的判断，`applyPresent` 是唯一的推送入口。换引擎时
 用 `applyPresentForce`（新引擎上的尺寸是它自己的默认值，和意图相等不代表
 推过）；其余时候值没变就不推——`SetPresentSize` 每次都会让引擎立刻重渲染一帧。
@@ -73,20 +80,14 @@ internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳
 
 交接规则：
 
-- **墙上激活 / 退出 active**：只换所有权、声音焦点和强调环；呈现尺寸不变
-  （墙上两种状态都是格子）。
-- **墙 → 播放页**：`watchAdoptActive(false)` 把 `player` / `stream` / `upstream`
-  原样交给 `playerMedia`，`applyPresent()` 放回全尺寸；弹幕由 `ensureDanmaku`
-  重新连一条。取流、首帧、地址都不重来。
-- **从墙上点岛进播放页**：引擎本来就在 `a.media` 里，`watchAdoptActive` 直接
-  返回 false，走的是 `attachMedia`——它也必须调 `applyPresent()`，这条漏过一次。
-- **播放页 → 墙**：`detachMedia` 保留引擎，`applyPresent()` 把尺寸收回格子；
-  墙直接画 `a.media.player`，视频在卡片里 `Contain`。弹幕在离开时断开并清空。
-- **墙上 active 的刷新 / 热切换**：新引擎接上时 `applyPresentForce()`，仍按
-  当前位置求尺寸，不缩回 160×90。
-- **在墙上激活另一格**：`watchReleaseActive` 把 `playerMedia` 持有的这一路移回
-  `wallSession`，静音但不停播；再接管新的一格。旧格子的 `player.Close()` 归墙
-  管理，不再由取流 ctx 管。
+- **墙上激活 / 换一格**：只换 `a.focus`。上一间若还在墙上，只收声、留静音预览；
+  不在墙上就连引擎一起关。呈现尺寸跟着 `presentSizeForSession` 每帧重算。
+- **墙 → 播放页**：`setFocus` 之后进播放页，`applyPresent()` 把尺寸放到全尺寸；
+  弹幕由 `ensureDanmaku` 重新连一条。取流、首帧、地址都不重来。
+- **播放页 → 墙**：焦点不动，`applyPresent()` 把尺寸收回格子；墙直接画
+  `watchPlayer(key)` 返回的同一个播放器。弹幕在离开播放页时断开并清空。
+- **焦点会话的刷新 / 热切换**：新引擎接上时 `applyPresentForce()`，仍按当前
+  位置求尺寸，不缩回 160×90。
 - **引擎不挂取流 ctx**：`playback.Open` 用 `context.Background()`，生命周期归
   `*ui.VideoPlayer`。否则墙上的画面会在切房 / 换档时被顺手关掉。
 
@@ -108,7 +109,7 @@ internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳
 
 没有开关（2026-11-25 去掉了「暂离时省流量」）：停不停只由「还在不在墙的
 上下文里」决定。墙在用的时候保留解码的代价见
-[measurements](../reference/measurements.md)「暂离时到底花什么」。
+[measurements](../reference/measurements.md)「暂离与回到墙」。
 
 **不要顺手挂起解码。** `vd-lavc-skipframe` 会把"回来"的延迟绑到关键帧间隔上：
 
@@ -196,20 +197,27 @@ internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳
 `BgSecondary` + 顶部 `TopLight`，和直播卡片同一套表面。格间用 `GridGap`（16），
 不是自己写的 12。没有整块黑色矩形。
 
-常态格子里只有画面；active 只加一圈强调色内阴影，不改格子大小——激活不该让
+常态格子里只有画面；active 只加左上角一颗脉冲绿点，不改格子大小——激活不该让
 整面墙重排。hover 或键盘聚焦时，底部升起一条底栏，**底栏本身就是遮罩**，信息
-和控件是一块：第一行是品牌色平台胶囊 + 主播名 + 标题，第二行直接复用播放页控制台：44 高玻璃条，左侧播放/刷新/音量（滑条+百分比），右侧放大/移出；弹幕/清晰度/线路/小窗/全屏都精简掉。每个 hover 的格子都显示完整控制条。active 的播放/暂停、刷新、音量分别直接调用
-播放页的 `togglePlayback` / `retryStream` / `volumeControl`，没有墙专用分支；
-非 active 格的播放/暂停切自己的 `player`，刷新只重载自己。**音量按格各存一份**
-（`wall.volumes`，key 是 `platform|roomID`）：非 active 格显示自己记住的百分比和
-静音图标，滑条填充用暗一档的 accent；点滑条 / 滚轮会先激活这一格再改它自己的
-值——改的始终只是这格，别的格的值一动不动。active 格的音量仍走 `volumeControl`，
-`setVolume` 负责把它记到当前 active 名下，切走再切回来还是那个值。每格音量随
-`watchRooms` 一起落盘（`watchRecord.Volume`），重启后还是自己的；没调过的格不写，
-重新上墙时继承当时的全局音量。加载态直接复用播放页整块遮罩、30px spinner 和 `正在拉取直播流…`，不再自己画小胶囊。不 hover 时不显示这些。
+和控件是一块：第一行是品牌色平台胶囊 + 主播名 + 标题，第二行是播放页控制台的
+精简版，按格宽分三档——格宽 ≥520 时沿用播放页的 44 高，300–519 收到 34 高，
+再窄让出音量百分比。左侧播放/刷新/音量（滑条+百分比），右侧放大/移出；弹幕/
+清晰度/线路/小窗/全屏都精简掉。
 
-接通中 / 未开播 / 预览失败的提示不等 hover，常显在格子顶部中间；那是状态，
-不是 chrome。
+active 格的播放/暂停走 `togglePlayback`；刷新走 `watchReload`，它按「是否焦点
+且在全尺寸」分播放页整路重取和墙上重开两条路；音量走 `volumeControlFor`。
+非 active 格的播放/暂停切自己的 `player`，音量走 `watchTileAudio`。
+
+**音量按格各存一份**：会话在时住 `roomSession.volume`，会话不在时由
+`wall.volumes` 冷存（key 是 `platform|roomID`）。非 active 格显示自己记住的
+百分比和「在墙上听」键，滑条填充用暗一档的 accent；点滑条 / 滚轮只改这一格
+记住的值，**不会激活这一格**。「在墙上听」是唯一一个只换声音、不进播放页的
+入口。active 格的音量走 `volumeControlFor`，切走再切回来还是那个值。每格音量
+随 `watchRooms` 一起落盘（`watchRecord.Volume`），重启后还是自己的；没调过的
+格不写，重新上墙时继承当时的全局音量。
+
+加载态直接复用播放页整块遮罩、30px spinner 和 `正在拉取直播流…`；未开播 /
+失败 / 缓冲是格子顶部的小胶囊。不 hover 时只有状态提示，没有底栏。
 
 ## 灵动岛
 
@@ -217,7 +225,8 @@ internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳
   整块是回播放页的热区（进的始终是 active 那一间）。右侧收藏键自己收点击，
   收藏左边多一颗「取消观测发声」：取消 active、岛回到时钟，画面留在墙上做
   静音预览，不关引擎也不移出观测墙。
-- 观测墙上没有 active 时：保持首页的时钟岛，不缩成圆。
+- 没有焦点时：保持首页的时钟岛，不缩成圆。岛形态只看焦点在不在，不看当前
+  在哪一页——焦点不在墙上时，岛显示的仍是那一条主播信息。
 - 其它页面后台收听：还是同一条主播信息（不缩成圆），点它回到这一路，
   右边那颗 X 结束这一路。
 - ~~岛上显示的是实际播放的档位；格子左上角也写 `平台 · 档位`~~——**代码里没有
@@ -226,8 +235,9 @@ internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳
 
 ## 落盘
 
-`state.json` 的 `watchRooms` 只存房间身份和展示元数据：platform、roomID、name、
-title、cover、avatar、hue、viewers。不存签名地址、不存会话状态、不存播放进度。
+`state.json` 的 `watchRooms` 只存房间身份、展示元数据和这一格自己的音量：
+platform、roomID、name、title、category、sub、viewers、live、hue、cover、
+avatar、volume。不存签名地址、不存会话状态、不存播放进度。
 恢复时先出封面，不自动起播；最多 12 间，重复与空身份在读盘时清掉。
 
 ## 验证
@@ -236,8 +246,9 @@ title、cover、avatar、hue、viewers。不存签名地址、不存会话状态
 - `internal/ui`：空态、两间大格、十二间上墙、单击激活、双击进播放页、在墙上听不跳路由、
   每格音量独立且不抢焦点、12 间上限与去重、落盘、卡片右键入口、墙上岛展开与
   取消 active。
-- 真实窗口（2026-11-21）：7 间同时出画；单击激活；岛展开；点岛进播放页日志
-  `观测墙接管进播放页`，无加载层；退回墙日志 `detach`，同一引擎继续出声。
+- 真实窗口（2026-11-21）：7 间同时出画；单击激活；岛展开；点岛进播放页无加载层；
+  退回墙同一引擎继续出声。当时日志行 `观测墙接管进播放页` / `detach` 已随事件
+  体系换成 `wall.*` / `focus.change` / `present.change`。
   截图在 `/d/tmp/watch-final.png` 等（临时文件，不入仓库）。
 - 未跑：真实窗口下 10–12 路并发（产品上限 12；平台探针只测到 9 路）；4K 格子的
   CPU；平台限流时的真实退避曲线。

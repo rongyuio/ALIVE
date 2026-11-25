@@ -262,10 +262,21 @@ type PlaybackStreamer interface {
 
 // ErrBlocked 表示被平台风控拦下（403/412/验证码/空响应）。
 // 上层据此提示「请求过于频繁」，而不是「加载失败」。
-var ErrBlocked = errors.New("live: 平台风控")
+var ErrBlocked = sentinel{msg: "live: 平台风控", class: "blocked"}
 
 // ErrUnsupported 表示该平台还没有接入这项能力。
-var ErrUnsupported = errors.New("live: 该平台暂不支持")
+var ErrUnsupported = sentinel{msg: "live: 该平台暂不支持", class: "unsupported"}
+
+// sentinel 是带分类标签的哨兵错误：原文一个字没改，多的是 DiagClass。
+//
+// 分类由错误自己给出，diag 认接口而不认 live 的类型——它一旦反向 import
+// live 就成环（diag -> live -> diag），「日志语言」的包不该认识业务包。
+type sentinel struct{ msg, class string }
+
+func (s sentinel) Error() string { return s.msg }
+
+// DiagClass 是错误的分组标签，供 diag.ErrClass 用。
+func (s sentinel) DiagClass() string { return s.class }
 
 // UpstreamError 是上游返回的业务错误。
 type UpstreamError struct {
@@ -280,6 +291,15 @@ func (e *UpstreamError) Error() string {
 		return fmt.Sprintf("%s %s: HTTP %d: %s", e.Platform, e.Op, e.Status, e.Message)
 	}
 	return fmt.Sprintf("%s %s: %s", e.Platform, e.Op, e.Message)
+}
+
+// DiagClass 把上游错误归到 upstream 组。
+func (e *UpstreamError) DiagClass() string { return "upstream" }
+
+// DiagError 把上游错误的证据字段交给 diag：platform / op / status / text。
+// text 是原文，脱敏由 diag 做——日志出口只有一个。
+func (e *UpstreamError) DiagError() (platform string, op string, status int, text string) {
+	return string(e.Platform), e.Op, e.Status, e.Message
 }
 
 // IsBlocked 报告错误是否属于风控。

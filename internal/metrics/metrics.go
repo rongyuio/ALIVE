@@ -1,16 +1,19 @@
 // Package metrics 从诊断事件里抽出一小组可聚合的数。
 //
 // 日志回答「为什么」，指标回答「多严重、多频繁」。两者共用同一个事件流，
-// 不另开一套埋点：Wrap 在 slog handler 前观察记录，按 event 更新计数/直方图。
-// 这样「重连率」「首帧 p95」不需要靠数日志行，也不会和日志口径漂移。
+// 不另开一套埋点：applog 在落盘前解析那一行字符串，Observe 顺手读走
+// event/room/stage，按 event 更新计数/直方图。这样「重连率」「首帧 p95」
+// 不需要靠数日志行，也不会和日志口径漂移。
 package metrics
 
 import (
-	"context"
-	"log/slog"
+	"encoding/json"
 	"maps"
 	"sort"
 	"sync"
+	"sync/atomic"
+
+	"alive/internal/diag"
 )
 
 // maxSeries 限制按 room 展开的序列数。房间号基数无上限，桌面应用里 200
@@ -64,7 +67,11 @@ type registry struct {
 	hist     map[string]*histogram
 }
 
-var std = newRegistry()
+// std 用原子指针而不是裸变量：Observe 在写日志的 goroutine 上跑，Reset 在
+// 测试线程上跑，裸指针一换就是数据竞争。
+var std atomic.Pointer[registry]
+
+func init() { std.Store(newRegistry()) }
 
 func newRegistry() *registry {
 	return &registry{
@@ -102,9 +109,9 @@ func (r *registry) observe(name string, v int64) {
 	}
 }
 
-// Snapshot 返回可 JSON 序列化的快照。bundle 直接把它写进 metrics.json。
+// Snapshot 返回可 JSON 序列化的快照。bundle 把它写进 meta.json 的 metrics 键。
 func Snapshot() map[string]any {
-	return std.snapshot()
+	return std.Load().snapshot()
 }
 
 func (r *registry) snapshot() map[string]any {
@@ -131,139 +138,119 @@ func (r *registry) snapshot() map[string]any {
 }
 
 // Reset 只给测试用。
-func Reset() { std = newRegistry() }
+func Reset() { std.Store(newRegistry()) }
 
-// Wrap 把指标观察接到一个 slog.Handler 前面。
-func Wrap(next slog.Handler) slog.Handler {
-	return &handler{next: next}
-}
-
-type handler struct {
-	next  slog.Handler
-	attrs []slog.Attr
-}
-
-func (h *handler) Enabled(ctx context.Context, l slog.Level) bool {
-	return h.next.Enabled(ctx, l)
-}
-
-func (h *handler) WithAttrs(as []slog.Attr) slog.Handler {
-	next := &handler{next: h.next.WithAttrs(as)}
-	next.attrs = append(append([]slog.Attr(nil), h.attrs...), as...)
-	return next
-}
-
-func (h *handler) WithGroup(name string) slog.Handler {
-	return &handler{next: h.next.WithGroup(name), attrs: h.attrs}
-}
-
-func (h *handler) Handle(ctx context.Context, r slog.Record) error {
-	var event, room, stage, module, level, class string
-	var ms int64
-	scan := func(a slog.Attr) bool {
-		switch a.Key {
-		case "event":
-			event = a.Value.String()
-		case "room":
-			room = a.Value.String()
-		case "stage":
-			stage = a.Value.String()
-		case "module":
-			module = a.Value.String()
-		case "mpv_level":
-			level = a.Value.String()
-		case "ms", "open_ms":
-			if ms == 0 {
-				ms = a.Value.Int64()
-			}
-		case "err":
-			if a.Value.Kind() == slog.KindGroup {
-				for _, g := range a.Value.Group() {
-					if g.Key == "class" {
-						class = g.Value.String()
-					}
-				}
-			}
-		}
-		return true
-	}
-	for _, a := range h.attrs {
-		scan(a)
-	}
-	r.Attrs(scan)
+// Observe 从一条已经序列化的事件里更新计数。drop 为真表示这行日志被丢弃了。
+//
+// 以前它是 slog.Handler 包装：在 handler 前观察记录。换成 zerolog 之后没有
+// 这条路——它的 Hook 拿到的 *Event 只能追加字段，读不回来。于是观察点挪到
+// 落盘前：那里本来就要把这一行解析成 JSON 做脱敏，顺手读走 event/room/stage
+// 不额外多一次解析。
+//
+// fields 是解码后的顶层字段。嵌套对象（err）单独取 class。
+func Observe(fields map[string]any) {
+	r := std.Load()
+	event, _ := fields[diag.Event].(string)
 	if event == "" {
-		return h.next.Handle(ctx, r)
+		return
+	}
+	room, _ := fields[diag.Room].(string)
+	stage, _ := fields[diag.Stage].(string)
+	module, _ := fields[diag.Module].(string)
+	level, _ := fields["mpv_level"].(string)
+	var class string
+	if g, ok := fields[diag.ErrField].(map[string]any); ok {
+		class, _ = g[diag.ErrClassField].(string)
+	}
+	ms := num(fields[diag.MS])
+	if ms == 0 {
+		ms = num(fields[diag.OpenMS])
 	}
 
 	switch event {
 	case "session.first_frame":
-		std.observe("first_frame_ms", ms)
+		r.observe("first_frame_ms", ms)
 	case "wall.first_frame":
-		std.observe("wall_first_frame_ms", ms)
+		r.observe("wall_first_frame_ms", ms)
 	case "wall.open":
-		std.counter("wall_open_total", 1)
+		r.counter("wall_open_total", 1)
 		if room != "" {
-			std.counter("wall_open."+room, 1)
+			r.counter("wall_open."+room, 1)
 		}
 	case "wall.ready":
-		std.counter("wall_ready_total", 1)
+		r.counter("wall_ready_total", 1)
 	case "wall.restart":
-		std.counter("wall_restarts_total", 1)
+		r.counter("wall_restarts_total", 1)
 		if room != "" {
-			std.counter("wall_restarts."+room, 1)
+			r.counter("wall_restarts."+room, 1)
 		}
 	case "wall.fail":
-		std.counter("wall_fail_total", 1)
+		r.counter("wall_fail_total", 1)
 		if stage != "" {
-			std.counter("wall_fail_stage."+stage, 1)
+			r.counter("wall_fail_stage."+stage, 1)
 		}
 	case "wall.offline":
-		std.counter("wall_offline_total", 1)
+		r.counter("wall_offline_total", 1)
 	case "wall.close":
-		std.counter("wall_close_total", 1)
+		r.counter("wall_close_total", 1)
 	case "engine.open":
-		std.counter("engine_open_total", 1)
-		std.gauge("engines_open", 1)
+		r.counter("engine_open_total", 1)
+		r.gauge("engines_open", 1)
 	case "engine.open_fail":
-		std.counter("engine_open_fail_total", 1)
+		r.counter("engine_open_fail_total", 1)
 		if stage != "" {
-			std.counter("engine_open_fail_stage."+stage, 1)
+			r.counter("engine_open_fail_stage."+stage, 1)
 		}
 	case "engine.close":
-		std.counter("engine_close_total", 1)
-		std.gauge("engines_open", -1)
+		r.counter("engine_close_total", 1)
+		r.gauge("engines_open", -1)
 	case "engine.gpu_fallback":
-		std.counter("engine_gpu_fallback_total", 1)
+		r.counter("engine_gpu_fallback_total", 1)
 	case "session.fail", "session.fetch_fail", "session.open_fail":
-		std.counter("session_fail_total", 1)
+		r.counter("session_fail_total", 1)
 		if class != "" {
-			std.counter("session_fail_class."+class, 1)
+			r.counter("session_fail_class."+class, 1)
 		}
 	case "session.audio_stall":
-		std.counter("audio_stall_total", 1)
+		r.counter("audio_stall_total", 1)
 	case "session.video_stall":
-		std.counter("video_stall_total", 1)
+		r.counter("video_stall_total", 1)
 	case "danmaku.connect":
-		std.counter("danmaku_connect_total", 1)
+		r.counter("danmaku_connect_total", 1)
 	case "danmaku.fail":
-		std.counter("danmaku_fail_total", 1)
+		r.counter("danmaku_fail_total", 1)
 		if class != "" {
-			std.counter("danmaku_fail_class."+class, 1)
+			r.counter("danmaku_fail_class."+class, 1)
 		}
 	case "mpv":
-		std.counter("mpv_log_total", 1)
+		r.counter("mpv_log_total", 1)
 		if level != "" {
-			std.counter("mpv_log_level."+level, 1)
+			r.counter("mpv_log_level."+level, 1)
 		}
 		if module != "" {
-			std.counter("mpv_log_module."+module, 1)
+			r.counter("mpv_log_module."+module, 1)
 		}
 	case "state.load_fail":
-		std.counter("state_load_fail_total", 1)
+		r.counter("state_load_fail_total", 1)
 	case "state.save_fail":
-		std.counter("state_save_fail_total", 1)
+		r.counter("state_save_fail_total", 1)
 	case "log.dropped":
-		std.counter("log_dropped_total", 1)
+		r.counter("log_dropped_total", 1)
 	}
-	return h.next.Handle(ctx, r)
+}
+
+// num 把 JSON 解出来的数字转成 int64。UseNumber 之后是 json.Number。
+func num(v any) int64 {
+	switch t := v.(type) {
+	case json.Number:
+		n, _ := t.Int64()
+		return n
+	case float64:
+		return int64(t)
+	case int64:
+		return t
+	case int:
+		return int64(t)
+	}
+	return 0
 }

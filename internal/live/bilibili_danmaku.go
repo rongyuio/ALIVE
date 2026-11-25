@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +20,8 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/coder/websocket"
 	bilibiliLive "github.com/rongyuio/bilibili/live"
+
+	"alive/internal/diag"
 )
 
 // B 站弹幕：一条 WebSocket 连接 + 二进制协议。
@@ -153,7 +154,7 @@ func (s *biliDanmaku) run() {
 			return
 		}
 		if err != nil {
-			slog.Debug("B 站弹幕断开", "room", s.roomID, "error", err, "retry", backoff)
+			diag.L().Debug().Str("room", s.roomID).Dict(diag.ErrField, diag.Err(err)).Dur("retry", backoff).Msg("B 站弹幕断开")
 		}
 		if time.Since(started) >= biliDanmuStable {
 			backoff = time.Second
@@ -325,7 +326,7 @@ func (s *biliDanmaku) readLoop(conn *websocket.Conn, token string) error {
 		// 只会切出错位的数据，直接丢弃这一帧。
 		payload, err := biliFramePayload(typ, data)
 		if err != nil {
-			slog.Debug("B 站弹幕忽略非二进制帧", "room", s.roomID, "error", err)
+			diag.L().Debug().Str("room", s.roomID).Dict(diag.ErrField, diag.Err(err)).Msg("B 站弹幕忽略非二进制帧")
 			continue
 		}
 		if err := s.handleFrame(payload); err != nil {

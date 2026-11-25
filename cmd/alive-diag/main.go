@@ -14,6 +14,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -149,74 +150,68 @@ func readFile(path string) ([]entry, error) {
 }
 
 func parseLine(line string) (entry, bool) {
-	if !strings.HasPrefix(line, "time=") {
+	if !strings.HasPrefix(line, "{") {
 		return entry{}, false
 	}
 	f := parseFields(line)
+	if f == nil {
+		return entry{}, false
+	}
 	at, err := time.Parse(time.RFC3339Nano, f[diag.Time])
 	if err != nil {
 		return entry{}, false
 	}
-	return entry{at: at, level: f[diag.Level], msg: f[diag.Msg], f: f, raw: line}, true
+	return entry{at: at, level: f[diag.LevelKey], msg: f[diag.Msg], f: f, raw: line}, true
 }
 
-// parseFields 解析 slog TextHandler 的 key=value。带空格/引号的值是 Go 的
-// 双引号转义形式，用 strconv.Unquote 还原。
+// parseFields 把一行 JSON 摊平成 key→字符串。
+//
+// 日志是 JSON 之后，这里终于不用自己切引号了——以前那段手写解析器要处理
+// Go 的双引号转义、带空格的值、逃逸字符，解析错一处就是排障时少一行证据。
+//
+// 嵌套对象摊平成点分键（err{class:"upstream"} → "err.class"），读侧那几十处
+// 按扁平键取字段的代码一行都不用动。数字用 json.Number 原样保留，不给毫秒
+// 和状态码套上浮点的精度误差。
 func parseFields(line string) map[string]string {
-	f := make(map[string]string)
-	i := 0
-	for i < len(line) {
-		for i < len(line) && line[i] == ' ' {
-			i++
-		}
-		if i >= len(line) {
-			break
-		}
-		start := i
-		for i < len(line) && line[i] != '=' && line[i] != ' ' {
-			i++
-		}
-		if i >= len(line) || line[i] != '=' {
-			for i < len(line) && line[i] != ' ' {
-				i++
-			}
-			continue
-		}
-		key := line[start:i]
-		i++
-		var val string
-		if i < len(line) && line[i] == '"' {
-			j := i + 1
-			for j < len(line) {
-				if line[j] == '\\' {
-					j += 2
-					continue
-				}
-				if line[j] == '"' {
-					break
-				}
-				j++
-			}
-			if j > len(line) {
-				j = len(line)
-			}
-			raw := line[i:min(j+1, len(line))]
-			if u, err := strconv.Unquote(raw); err == nil {
-				val = u
-			} else {
-				val = strings.Trim(raw, `"`)
-			}
-			i = min(j+1, len(line))
-		} else {
-			start = i
-			for i < len(line) && line[i] != ' ' {
-				i++
-			}
-			val = line[start:i]
-		}
-		f[key] = val
+	dec := json.NewDecoder(strings.NewReader(line))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil {
+		return nil
 	}
+	f := make(map[string]string, len(obj))
+	flatten("", obj, f)
 	return f
+}
+
+func flatten(prefix string, v any, out map[string]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, sub := range t {
+			key := k
+			if prefix != "" {
+				key = prefix + "." + k
+			}
+			flatten(key, sub, out)
+		}
+	case []any:
+		// 数组不摊平：诊断事件里没有按位置取字段的读法。
+		if prefix != "" {
+			if b, err := json.Marshal(t); err == nil {
+				out[prefix] = string(b)
+			}
+		}
+	case string:
+		out[prefix] = t
+	case json.Number:
+		out[prefix] = t.String()
+	case bool:
+		out[prefix] = strconv.FormatBool(t)
+	case nil:
+		// 空值不写：读侧拿到的空串和「没有这个字段」应当是同一种含义。
+	default:
+		out[prefix] = fmt.Sprint(t)
+	}
 }
 
 // timeline 按 session（没有就按 room）分组，重建每一条时间线。

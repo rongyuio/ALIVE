@@ -30,7 +30,7 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
 - 构造过程中修改窗口尺寸不再画一帧拉伸的画面
 - 布局快 8–23%
 - SVG 支持 CSS 变量、文本、marker
-- **破坏性变更**：`Element.Key` 迁移到 `Context.Key`
+- **破坏性变更**：新增 `Context.Key`（有状态控件用）；`Element.Key` 保留，仍用于容器
 - `ui.NewTester` 的默认外观随版本变化，依赖配色的测试要显式设置
   （`internal/ui/app_test.go` 的 `TestPaletteSwitch` 因此改成显式 `ThemeMode = "light"`）
 
@@ -52,24 +52,26 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
 
 ## 能力边界
 
-这些不是 bug，是当前版本的设计，直接影响我们的播放路线（见
-[decisions/0001](../decisions/0001-player-backend.md)）：
+这些不是 bug，是当前版本的设计边界。ALIVE 现在的播放主路径是
+[0004](../decisions/0004-libmpv.md) 的 libmpv，下面与 `ui/video` / `UpdateYUV`
+相关的行只描述框架自带的那套播放器，不是我们的主路径：
 
 | 事实 | 影响 |
 |---|---|
-| `ui/video` 在 Windows 上由 Media Foundation 实现 | 用系统解码器；没有 HEVC/AV1 扩展就只能转码 |
+| `ui/video` 在 Windows 上由 Media Foundation 实现 | 用系统解码器；没有 HEVC/AV1 扩展就只能转码。ALIVE 已不走它 |
 | `ui.VideoPlayer.Buffering()` 只读，`media.Engine` 没有缓冲水位/低延迟开关 | 直播延迟和卡顿不受我们控制 |
 | `ui.Bitmap.Update` 从 CPU 内存上传 | 自解码要 CPU→GPU 拷一次，不是零拷贝 |
-| `Bitmap.UpdateYUV` 支持 NV12 + `BT709`，色彩转换在 GPU 做 | 自解码走这条，上传量是 RGBA 的一半 |
-| `platform.ViewSurface.EmbedView` 只有 darwin 实现 | Windows 不能嵌原生播放视图 |
-| `ui.NewEngineVideoPlayer` 依赖内部包 `internal/media.Engine` | 应用无法实现自己的引擎 |
+| `Bitmap.UpdateYUV` 支持 NV12 + `BT709`，色彩转换在 GPU 做 | 框架自带的自解码走这条；ALIVE 的 libmpv 引擎走 `scene.SurfaceBGRA`，观测墙再走 D3D11 共享纹理 |
+| `platform.ViewSurface.EmbedView` 只有 darwin / mobile 实现 | Windows 不能嵌原生播放视图 |
+| `ui.NewEngineVideoPlayer` 依赖内部包 `internal/media.Engine` | 上游未导出；ALIVE 用 `media/`、`scene/` 别名包 + `ui/engine_export.go` 把这层打开，自研引擎就是这样接进去的 |
 
 ## 上游状态
 
 - `#789`（已关闭）：`ui/video` 用系统媒体引擎实现
 - `#973`（开放）：硬件帧直通未做，作者原话是"暂时只能 `av_hwframe_transfer_data` 到 bgra 再 `Bitmap.Update`"
-- `#124`（开放，2026-10-06 起未合）：`plugins/video`，基于 libmpv——我们的
-  `third_party/mygo/plugins/video` 就是这一份，还没进上游
+- `#124`（开放，2026-10-06 起未合）：`plugins/video`，基于 libmpv。我们的
+  `third_party/mygo/plugins/video` 以这一份为骨架，另加了渲染门控、零拷贝 D3D11
+  和连续性诊断等本地补丁，不是原样
 - `#105`（路线图）：第 16 条「Native-view hosting」未勾选
 
 ## 自动化验收的坑
@@ -92,8 +94,9 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
    `$(go env GOMODCACHE)/github.com/egoist/mygo@vX.Y.Z`
 2. `diff -rq third_party/mygo <新版本>`，把差异分成两类：
    - **我们的改动**：`media/`、`scene/`、`plugins/video/`、`plugins/internal/`、
-     `ui/engine_export.go`、`cmd/mygo/nsis.go`（安装器里「应用正在运行」的两句
-     提示改成 LangString——上游写死英文，声明了语言的安装包只有向导是中文）
+     `ui/engine_export.go`、`internal/scene/surface_id.go`（Surface 发号，上游只有
+     约定）、`cmd/mygo/nsis.go`、`cmd/mygo/languages.go`（安装器里「应用正在运行」
+     的两句提示改成 LangString——上游写死英文，声明了语言的安装包只有向导是中文）
    - **旧版遗留**：上游新版本已删掉的文件（比如 `website/showcase`），丢掉即可
 3. 把我们的改动移出去 → 整目录替换成新版本 → 再移回来
 4. 改 `go.mod` 的版本号，`go mod tidy`
@@ -104,8 +107,9 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
 两个容易踩的点：
 
 - **`third_party/mygo` 有自己的 `go.mod`，是独立模块**，`go build ./...` / `go test ./...`
-  根本不进去。上游 tag 里有几个测试文件引用了未发布的 API（`PopoverMenuOptions` 之类），
-  gopls 会报错，但不影响 ALIVE——不要去修它们。
+  根本不进去。`go test ./...` 在 `cmd/mygo` 会编译失败：本地把
+  `nsisLanguageMacros` 的签名改了，`languages_test.go` 没跟着改。这是本地补丁
+  留下的，不是上游未发布 API（`PopoverMenuOptions` 在上游已定义，`ui` 包能编译）。
 - 上游发布说明写 "No breaking changes to the Go API" 也要自己验：v0.10.0 这次 ALIVE
   一行没改就过了 `make check`，但 `internal/raster` 的重叠区像素修复上游已经合进去了，
   本地的补丁要删掉，否则会重复。
