@@ -231,6 +231,16 @@ type playbackSession struct {
 	log   logRef
 }
 
+// expired 报告这一轮是否已经作废，后台回调用它判断「我还是当前这一轮吗」。
+//
+// ctx 为 nil 表示这一轮根本不存在：cancelSession 之后、下一轮 beginSession
+// 之前。这个窗口里焦点会话的播放器还活着（在墙里静音预览，或者一次焦点交接
+// 还没走完），mediaTick 照样会看到「播放器报告结束」并派热切换。所以不能只问
+// ctx.Err()——对 nil 接口调方法就是 0xc0000005（生产崩溃的现场）。
+func (s playbackSession) expired() bool {
+	return s.ctx == nil || s.ctx.Err() != nil
+}
+
 // cancelSession 结束当前这一轮起播。
 //
 // ctx 取消后，后台取流与起 ffmpeg 的 goroutine 会自行收手；已经就绪但还没
@@ -487,7 +497,15 @@ func (a *App) ensureFocusMedia() {
 	if s == nil || s.room.Platform == "" || s.room.RoomID == "" {
 		return
 	}
-	if s.player != nil || s.loading || s.offline || s.err != "" {
+	if s.player != nil {
+		// 画面是从墙上带进来的：这一路没有经过 beginSession，媒体层手上没有
+		// 它这一轮的 ctx。补上，否则地址不续、ended 不重拉，热切换无凭据。
+		if a.media.ctx == nil {
+			a.adoptLiveSession(s)
+		}
+		return
+	}
+	if s.loading || s.offline || s.err != "" {
 		return
 	}
 	// 平台已经说过没开播：播放页画未开播层，等用户手动刷新或开播探测。
@@ -544,6 +562,41 @@ func (a *App) beginSession(stage string) playbackSession {
 func (a *App) session() playbackSession {
 	m := &a.media
 	return playbackSession{seq: m.seq, ctx: m.ctx, id: m.id, start: m.start, win: m.win, log: m.log}
+}
+
+// adoptLiveSession 给已经在出图的一路补一轮媒体会话。
+//
+// 从观测墙、关注页的墙上岛进播放页时，画面是墙格自己开的那枚播放器，没经过
+// beginSession；而 setFocus 已经把上一轮的 ctx 清掉了。ensureFocusMedia 看到
+// 「已经有播放器」就不会再起播——于是这一路在播放页上没有轮次：地址不会续、
+// ended 不会重拉，热切换只能拿空凭据去要地址（2026-11-25 的生产崩溃）。
+//
+// 不动画面：player 原样接着用，只把「这一轮」的凭据和状态补齐。首帧、opened
+// 都按「已经有画面」写，否则 trackFirstFrame 会拿首帧预算去判一路早就播着的流。
+func (a *App) adoptLiveSession(s *roomSession) {
+	m := &a.media
+	if s == nil || s.player == nil {
+		return
+	}
+	m.cancelSession()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.ctx = ctx
+	m.win = a.Win
+	m.id = fmt.Sprintf("接管#%d", m.seq)
+	m.start = time.Now()
+	m.log = newLogRef("player", s.key, m.id, m.start)
+	m.setFirstFrame(true)
+	m.setOpened(time.Now())
+	m.pauseStarted = time.Time{}
+	m.pausedFor = 0
+	m.setLoading(false)
+	m.setErr("")
+	m.buffering = false
+	m.bufferingSince = time.Time{}
+	// 这一路的档位是墙格取到的，续期时刻按它自己的寿命算。
+	m.setRefresh(refreshAtFor(s.up))
+	m.log.event().Str(diag.Event, diag.EvSessionBegin).Str("cause", "adopt").Msg("接管已在播的一路")
 }
 
 // startStream 取流 → 转封装 → 播放器 →（按需）弹幕。
@@ -613,7 +666,7 @@ func (a *App) startStream(keepDanmaku bool) {
 		info, selected, err := fetchStream(fetchCtx, prov, roomID, line, want)
 		if err != nil {
 			// 被新一轮取代时不必报错：用户已经不看这一路了。
-			if sess.ctx.Err() != nil {
+			if sess.expired() {
 				sess.log.debug().Str(diag.Event, diag.EvSessionCancel).Msg("取流被新一轮取代")
 				return
 			}
@@ -756,7 +809,7 @@ func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) b
 		e, err := openNative(context.Background(), upstream.URL, opts)
 		if err != nil {
 			sess.log.warn().Str(diag.Event, diag.EvSessionOpenFail).Dict(diag.ErrField, diag.Err(err)).Msg("原生引擎打开失败")
-			if sess.ctx.Err() != nil {
+			if sess.expired() {
 				return
 			}
 			runOnMain(win, func() {
@@ -881,7 +934,18 @@ func (a *App) playerEnded(s *roomSession) {
 // 两条要的是同一件事——再要一份能播的地址——所以走同一条路。
 func (a *App) scheduleSwap(reason string) {
 	m := &a.media
-	if m.refreshing || m.eng() == nil {
+	// m.ctx 是「这一轮取流还在」的存在凭据，m.eng() 不是：cancelSession 只清
+	// ctx，焦点会话的播放器照旧活着（墙里的静音预览、交接中间态）。少了这一条，
+	// 一次「没有活会话」的热切换会拿着 nil ctx 去打平台接口——成功的那一半被
+	// 判过期丢掉，失败的那一半在 fail 里崩。
+	if m.refreshing || m.ctx == nil || m.eng() == nil {
+		// 没有活会话的换地址请求：不该有，但真出现过（2026-11-25 的生产
+		// 崩溃就是它一路走到失败回调里对 nil ctx 调方法）。debug 级常驻，
+		// 下次再有人报「播放页冻住 / 崩了」，这条能回答守卫有没有工作。
+		if m.ctx == nil && m.eng() != nil && !m.refreshing {
+			m.log.debug().Str(diag.Event, diag.EvSessionSwapSkip).
+				Str(diag.Cause, reason).Msg("这一路没有媒体轮次，跳过换地址")
+		}
 		return
 	}
 	if !m.lastSwapAt.IsZero() && time.Since(m.lastSwapAt) < swapRetryDelay {
@@ -914,7 +978,7 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 			// fetchStream 随后带着 context.Canceled 回来。照常累加
 			// swapFailures 会污染新会话的退避：新会话自己的热切换再失败一次
 			// 就凑满阈值，把刚起来的一路整轮重开（loading 覆盖层 + 断音）。
-			if sess.ctx.Err() != nil || a.media.seq != sess.seq {
+			if sess.expired() || a.media.seq != sess.seq {
 				return
 			}
 			a.media.refreshing = false
@@ -970,7 +1034,7 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 	deadline := time.Now().Add(8 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
-		if sess.ctx.Err() != nil {
+		if sess.expired() {
 			_ = e.Close()
 			return
 		}
@@ -1713,7 +1777,7 @@ func (a *App) attachDanmaku(ctx context.Context, win *mygo.Window, seq int, stre
 // 资源清理由各结果的 context 守卫兜底，不能依赖关闭窗口后仍有回调。
 func (a *App) applyMedia(sess playbackSession, fn, stale func()) {
 	if runOnMain(sess.win, func() {
-		if sess.ctx.Err() != nil || a.media.seq != sess.seq {
+		if sess.expired() || a.media.seq != sess.seq {
 			if stale != nil {
 				stale()
 			}

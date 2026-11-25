@@ -114,6 +114,7 @@ run   = 20261125-013933-4821-1        一次进程启动（也是日志文件名
 | 引擎 | `engine.open` | `engine.open_fail` / `engine.close` / `engine.destroy` / `engine.destroy_timeout` / `engine.gpu_fallback` |
 | 首帧 | `session.first_frame` | `session.recover`（失败后第一次出帧） |
 | 换地址 | `session.swap_start` | `session.swap_done` / `session.swap_fail` |
+| 换地址被跳过 | `session.swap_skip`（debug：这一路没有媒体轮次） | — |
 | 连续性 | `session.buffer`（state=start） | `session.buffer`（state=end） / `session.audio_stall` / `session.video_stall` |
 | 墙格 | `wall.open` | `wall.fail` / `wall.offline` / `wall.close` |
 | 墙格就绪 | `wall.ready` | `wall.first_frame` |

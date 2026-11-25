@@ -901,14 +901,20 @@ func (a *App) volumeControlFor(c *ui.Context, m controlMetrics, name string) {
 				track.Height(6).Background(theme.MediaTrackFill)
 			}
 			track.Children(func() {
+				// 填充用强调色，而且必须是**墨面那一支**（AccentOnInk）。
+				//
+				// 控制条是恒定暗面：直接放 theme.Accent，浅色主题里那条就是
+				// 墨白·日 / 纸·日 的近黑强调色，压在墨玻璃上等于没画。
+				// AccentOnInk 是 palette.go 对 IslandInk 推导的同族强调色——
+				// 深色主题下它就是 Accent 本身，浅色主题下翻成亮的那一支。
 				ui.Box(c).Absolute().Left(0).Top(0).Bottom(0).
-					Width(m.volumeW * a.focusVolume()).Radius(999).Background(theme.Accent)
+					Width(m.volumeW * a.focusVolume()).Radius(999).Background(theme.AccentOnInk)
 			})
 		})
 
 		if m.showPercent {
 			ui.Text(c, fmt.Sprintf("%d%%", int(a.focusVolume()*100+0.5))).
-				FontSize(theme.TextXS).TextColor(theme.Accent).
+				FontSize(theme.TextXS).TextColor(theme.MediaTextDim).
 				FontFeatures("tnum").Width(36).TextAlign(ui.End)
 		}
 	})

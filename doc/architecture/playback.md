@@ -166,6 +166,47 @@ mpv 把「连接被关」当成文件播完——`phase=ended`，画面停在最
 或者时间轴 6 秒不动——走同一条路兜底；连试两次都失败才退回整轮重来。重试有
 退避，不会每帧都重开一路。
 
+### 换地址的凭据是「这一轮取流」，不是「播放器还在」
+
+`playbackSession` 里有两样东西，它们**不同步**：
+
+- `ctx` 是这一轮取流的存在凭据。`cancelSession`（换焦点、关直播间、closeMedia）
+  第一件事就是把它置 nil、推进 `seq`。
+- `m.eng()` 是焦点会话的播放器。它在 `cancelSession` 之后照旧活着——墙里的静音
+  预览、一次焦点交接的中间态，都是这个形态。
+
+所以在「ctx 没了、播放器还在」的窗口里，`mediaTick` 仍然会看到「播放器报告结束」
+并派一次热切换。判据只能问 ctx，不能问 eng：**没有活会话就不该去要新地址**，
+后台回调也只许用 `sess.expired()`（nil 也算作废）。
+
+2026-11-25 的生产崩溃就是这个：`runHotSwap` 的失败回调对 nil ctx 调 `Err()`，
+`addr=0x28`——那是 itab 里 Err 的槽位。修法是三条一起：
+
+- `scheduleSwap` 用 `m.ctx == nil` 挡住没有活会话的换地址；
+- 「这一轮还有效吗」收敛成一个判据 `playbackSession.expired()`（nil 也算作废），
+  所有后台回调——`runHotSwap` 的失败路径、`applyMedia` 的接纳口、取流失败与
+  等首帧循环里的取消判断——都只问它，谁都不许自己写 `ctx.Err()`；
+- 回归测试 `internal/ui/player_swap_cancel_test.go` 四条：没有活会话不派换地址、
+  作废会话的失败不计数（改前 panic）、活会话的失败仍然计数（防 `expired()`
+  写成恒真）、`applyMedia` 丢掉作废会话的结果并走 stale 分支（改前 panic）。
+
+### 从墙上带进来的那一枚播放器，也要有自己的一轮
+
+上面那个窗口在旧实现里不是一瞬，而是常驻：从观测墙 / 墙上岛进播放页时，画面
+是墙格自己开的播放器，没走 `beginSession`；`setFocus` 清掉上一轮的 ctx 之后，
+`ensureFocusMedia` 看到「已经有播放器」就再也不会起播。结果这一路在播放页上
+**没有轮次**——地址不续、`ended` 不重拉，热切换只能拿空凭据去要地址。
+
+所以 `ensureFocusMedia` 补一条：有播放器、但 `media.ctx` 为空时走
+`adoptLiveSession`——建 ctx / id / `refreshAt`，首帧与 opened 按「已经在出图」
+写，**不动播放器本身**。日志里是 `session.begin` + `cause=adopt`（`接管#N`）。
+
+真窗口验证（2026-11-25 17:30，`-tags e2e` + 真实流的 profile 副本）：
+从「悲鸣观测」里把虎牙那间（485503，就是崩溃那间）激活 → 岛上回到播放页，
+日志先出现 `接管#2`，随后 405ms 一次 `swap_start`（dead-ended）→ 915ms
+`swap_done`，15.4s / 30.4s 又各换一次地址，进程全程存活、`crash-*.log` 为空。
+旧代码在这个位置是「拿 nil ctx 去要地址」，最好情况是静默冻帧。
+
 ## 后台收听：离开直播间，声音留着
 
 离开播放页默认**不关播放**。左上角的叉是明确退出；Esc 第一下是收进岛（后台

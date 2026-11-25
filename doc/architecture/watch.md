@@ -205,7 +205,10 @@ internal/playback              libmpv 薄壳；呈现尺寸、起播静音、跳
 清晰度/线路/小窗/全屏都精简掉。
 
 active 格的播放/暂停走 `togglePlayback`；刷新走 `watchReload`，它按「是否焦点
-且在全尺寸」分播放页整路重取和墙上重开两条路；音量走 `volumeControlFor`。
+且在全尺寸」分播放页整路重取和墙上重开两条路；音量走 `volumeControlFor`——
+这一组的滑块填充用强调色的**墨面那一支** `AccentOnInk`（控制条是恒定暗面，
+`Accent` 在浅色主题里是近黑，压上去等于没画），百分比退到中性墨、不跟配色
+（`internal/ui/player_volume_ink_test.go`）。
 非 active 格的播放/暂停切自己的 `player`，音量走 `watchTileAudio`。
 
 **音量按格各存一份**：会话在时住 `roomSession.volume`，会话不在时由

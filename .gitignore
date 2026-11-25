@@ -15,3 +15,6 @@ mygo_windows_*.syso
 # 需要时拷回对应包。见 AGENTS.md「测试与验证」。
 *_probe_test.go
 zz_*_test.go
+
+# README 等 owner 验收后再入库。
+/README.md

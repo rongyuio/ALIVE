@@ -178,6 +178,7 @@ const (
 	EvSessionSwapStart   = "session.swap_start"
 	EvSessionSwapDone    = "session.swap_done"
 	EvSessionSwapFail    = "session.swap_fail"
+	EvSessionSwapSkip    = "session.swap_skip"
 	EvSessionBuffer      = "session.buffer"
 	EvSessionAudioStop   = "session.audio_stall"
 	EvSessionRetry       = "session.retry"

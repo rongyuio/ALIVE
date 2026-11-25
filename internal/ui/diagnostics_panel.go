@@ -1,10 +1,14 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -18,68 +22,327 @@ import (
 	"alive/internal/theme"
 )
 
-// syncDiagBody 是「诊断」页签：导出证据包、采一段性能剖析。
+// 性能剖析的采样窗口。「30 秒」这个数字同时写进按钮文案，两处必须同源。
+const profileWindow = 30 * time.Second
+
+// diagFirstFrameSlowMS 是首帧 p95 标红的门槛。
+//
+// 出处是 doc/reference/measurements.md：同一台机器上 B 站 545068 走正常路径
+// 首帧 1666ms，而改造前被判为「慢」的那条路是 3648ms。3000ms 落在这两点之间：
+// 正常路径够不着，坏路径一定跨过去。
+const diagFirstFrameSlowMS int64 = 3000
+
+// diagLabelW 是指标行左列宽度：「mpv 日志」是最长的标签，留出余量后右值列
+// 才能在整张卡里对齐。以前用空格凑对齐，换字体就散。
+const diagLabelW float32 = 76
+
+// diagStat 是一行指标：左标签、右值。
+//
+// bad 只给「有东西真的坏了」的行：首帧过慢、日志丢弃、打开失败。计数非零
+// 不等于坏——墙重连、引擎开过又关都是正常运行的一部分。
+type diagStat struct {
+	label string
+	value string
+	bad   bool
+}
+
+// diagGroup 是一组指标。分组让读者知道横向在比什么：播放延迟、观测墙、
+// 运行时各自成段。
+type diagGroup struct {
+	title string
+	rows  []diagStat
+}
+
+// syncDiagBody 是「诊断」页签：本次运行的指标、导出证据包、采一段 CPU 剖析。
 //
 // 它不读 state.json、不读登录态；只打包日志、最近事件、崩溃/卡死现场、
-// 环境指纹和指标。导出完成后的路径在结果提示里。
+// 环境指纹和指标。顺序是「状态 → 动作 → 结果」：用户先看清现在什么样，
+// 再决定导不导，导出后的产物就在正下方，带复制路径和定位。
 func (a *App) syncDiagBody(c *ui.Context) {
 	ui.Column(c).Padding(theme.Space3, theme.Space4, theme.Space4, theme.Space4).
 		Gap(theme.Space3).Children(func() {
 		a.syncHint(c, "导出日志、最近事件、崩溃/卡死现场、环境指纹和指标。不包含登录态和 state.json。")
 
-		ui.Row(c).Gap(8).Children(func() {
-			a.syncButton(c, iconUpload, "导出诊断包", true, a.exportDiagnostics)
-			a.syncButton(c, iconActivity, "30 秒性能剖析", false, a.profileCPU)
+		a.diagCard(c)
+
+		ui.Row(c).Gap(theme.Space2).AlignItems(ui.Center).Children(func() {
+			if !a.DiagEmpty {
+				a.diagTextAction(c, "复制摘要", func() {
+					mygo.Clipboard.WriteText(a.diagText())
+					a.toastTone("诊断摘要已复制", toastSuccess)
+				})
+			}
+			ui.Box(c).Grow(1)
+			a.syncButton(c, syncActProfile, iconActivity, "30 秒性能剖析", false, a.profileCPU, a.stopProfile)
+			a.syncButton(c, syncActExport, iconUpload, "导出诊断包", true, a.exportDiagnostics, nil)
 		})
 
-		a.syncFeedback(c)
+		a.diagResult(c)
+	})
+}
 
-		if len(a.DiagSummary) > 0 {
-			ui.Column(c).Gap(2).Padding(8, 10, 8, 10).Radius(theme.RadiusMD).
-				Background(theme.FillQuaternary).Children(func() {
-				for _, line := range a.DiagSummary {
-					ui.Text(c, line).FontSize(theme.Text2XS).TextColor(theme.TextSecondary)
-				}
+// diagCard 画指标卡：标题行 + 分组 + 行。
+//
+// 全零时整块压成一句话。冷启动的截图原来是一屏「—」和「0」，看起来像坏了；
+// 那五行只是还没开始播。
+func (a *App) diagCard(c *ui.Context) {
+	ui.Column(c).Gap(theme.Space2).Padding(8, 12, 10, 12).Radius(theme.RadiusMD).
+		Background(theme.FillQuaternary).Children(func() {
+		ui.Row(c).Height(20).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "本次运行").FontSize(theme.Text2XS).FontWeight(600).
+				TextColor(theme.TextMeta).Grow(1)
+			a.diagTextAction(c, "刷新指标", func() {
+				a.DiagGroups, a.DiagEmpty = diagnosticGroups()
 			})
+		})
+
+		if a.DiagEmpty {
+			ui.Text(c, "还没有播放记录。导出包里仍然有环境指纹、日志和指标原始值。").
+				FontSize(theme.TextXS).TextColor(theme.TextMeta)
+			return
+		}
+
+		for gi, g := range a.DiagGroups {
+			if gi > 0 {
+				ui.Box(c).Height(theme.Space1)
+			}
+			// 组标题比行标签更深、更重：不然「播放页」读起来像又一行指标。
+			ui.Text(c, g.title).FontSize(theme.Text2XS).FontWeight(600).
+				TextColor(theme.TextSecondary)
+			for _, row := range g.rows {
+				ui.Row(c).Gap(theme.Space2).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, row.label).FontSize(theme.TextXS).TextColor(theme.TextMeta).
+						Width(diagLabelW).SingleLine()
+					col := theme.TextSecondary
+					if row.bad {
+						col = theme.DangerInk
+					}
+					ui.Text(c, row.value).FontSize(theme.TextXS).TextColor(col).
+						Grow(1).TextAlign(ui.End).SingleLine()
+				})
+			}
 		}
 	})
 }
 
-// diagnosticSummary 把指标压成几行给人看。只在切到诊断页签/动作完成时算一次，
-// 不在每帧构建路径里分配。
-func diagnosticSummary() []string {
+// diagTextAction 是卡内的次级文字动作（刷新指标、复制摘要）。
+//
+// 自绘控件三件套：Label 跟屏幕文字一致、指针光标、Clicked 写在链上。
+func (a *App) diagTextAction(c *ui.Context, label string, on func()) {
+	btn := ui.Box(c).Height(20).Padding(0, 4, 0, 4).Radius(theme.RadiusXS).
+		Center().Cursor(ui.CursorPointer).Label(label)
+	col := theme.TextMeta
+	if btn.Hovered() {
+		col = theme.TextPrimary
+	}
+	btn.Children(func() {
+		ui.Text(c, label).FontSize(theme.Text2XS).FontWeight(600).TextColor(col)
+	})
+	if btn.Clicked() {
+		on()
+	}
+}
+
+// diagIconAction 是结果条右侧的圆形图标动作（复制路径、打开所在文件夹）。
+func (a *App) diagIconAction(c *ui.Context, ico *ui.SVG, label string, on func()) {
+	btn := ui.Box(c).Size(24, 24).Radius(theme.RadiusFull).Center().
+		Cursor(ui.CursorPointer).Label(label)
+	col := theme.AccentInk
+	if btn.Hovered() {
+		btn.Background(theme.AccentSoft)
+		col = theme.TextPrimary
+	}
+	if btn.Clicked() {
+		on()
+	}
+	btn.Children(func() {
+		ui.Icon(c, ico).FontSize(14).TextColor(col)
+	})
+}
+
+// diagResult 画上一次动作的结果。
+//
+// 三种状态共用一块固定高度的位置：空 / 进行中 / 已写出。高度一变，居中的
+// 模态整体挪，用户刚点过的按钮就跑了——剖析一开始清空上一条提示，按钮会
+// 上跳二十几像素，手指还没离开。
+//
+// 和导入页的 syncFeedback 分开：诊断的产物是文件，结果条要让用户下一步就能
+// 拿到它——复制完整路径、在资源管理器里选中——而不是自己去日志目录翻。
+func (a *App) diagResult(c *ui.Context) {
+	row := ui.Row(c).Gap(8).AlignItems(ui.Center)
+	// 只有「已写出」是一条带底色的结果条；空、进行中、错误都不铺底。
+	notice := a.SyncError == "" && !a.SyncBusy && a.SyncNotice != ""
+	if notice {
+		row.Height(28).Padding(0, 10, 0, 6).Radius(theme.RadiusMD).
+			Background(theme.AccentSofter).Border(1, theme.AccentSoft)
+	} else if a.SyncError == "" {
+		row.Height(28)
+	}
+	row.Children(func() {
+		switch {
+		case a.SyncError != "":
+			ui.Icon(c, iconAlert).FontSize(14).TextColor(theme.DangerInk)
+			ui.Text(c, a.SyncError).FontSize(theme.TextXS).TextColor(theme.DangerInk).Grow(1)
+
+		case a.SyncBusy && a.SyncBusyAction != syncActImport:
+			// 进行中也占住这一行：用户点完就知道在等什么、等多久。
+			label := "正在打包诊断包…"
+			if a.SyncBusyAction == syncActProfile {
+				label = "正在剖析 30 秒样本…"
+			}
+			ui.Icon(c, iconSync).FontSize(14).TextColor(theme.TextTertiary)
+			ui.Text(c, label).FontSize(theme.TextXS).TextColor(theme.TextTertiary).Grow(1)
+
+		case a.SyncNotice != "":
+			ui.Icon(c, iconOkCircle).FontSize(15).TextColor(theme.AccentInk)
+			ui.Text(c, a.SyncNotice).FontSize(theme.TextXS).TextColor(theme.TextSecondary).
+				Grow(1).SingleLine().TruncateMiddle()
+			if a.SyncPath != "" {
+				a.diagIconAction(c, iconCopy, "复制文件路径", func() {
+					mygo.Clipboard.WriteText(a.SyncPath)
+					a.toastTone("已复制文件路径", toastSuccess)
+				})
+				a.diagIconAction(c, iconFolderOpen, "打开所在文件夹", func() {
+					if err := support.Reveal(a.SyncPath); err != nil {
+						a.toastTone(err.Error(), toastError)
+					}
+				})
+			}
+		}
+	})
+}
+
+// diagnosticGroups 把指标压成给人看的分组。只在切页签 / 动作完成 / 点刷新时
+// 调用，不在每帧构建路径里分配。
+func diagnosticGroups() (groups []diagGroup, empty bool) {
 	snap := metrics.Snapshot()
 	counters := snap["counters"].(map[string]int64)
 	gauges := snap["gauges"].(map[string]int64)
 	hists := snap["histograms"].(map[string]any)
 	ff := hists["first_frame_ms"].(map[string]any)
 	wf := hists["wall_first_frame_ms"].(map[string]any)
-	ms := func(v any) string {
-		n, _ := v.(int64)
-		if n == 0 {
-			return "—"
+
+	// latency 把一路首帧直方图拼成「p50 · p95 · 次数」。bad 只看 p95：
+	// 中位数正常、尾部很慢，正是用户能感觉到卡的那种分布。
+	//
+	// 分位数前面写 ≤：metrics.quantile 返回的是桶上界，真实样本只会更小，
+	// 写成「2.0s」会让人以为是精确值。
+	latency := func(h map[string]any) (value string, bad bool, count int64) {
+		count, _ = h["count"].(int64)
+		if count == 0 {
+			return "—", false, 0
 		}
-		return fmt.Sprintf("%.1fs", float64(n)/1000)
+		p50, _ := h["p50"].(int64)
+		p95, _ := h["p95"].(int64)
+		return fmt.Sprintf("p50 ≤%s · p95 ≤%s · %s 次",
+			fmtLatency(p50), fmtLatency(p95), fmtCount(count)), p95 > diagFirstFrameSlowMS, count
 	}
-	return []string{
-		fmt.Sprintf("播放页首帧  p50 %s · p95 %s（%d 次）", ms(ff["p50"]), ms(ff["p95"]), ff["count"]),
-		fmt.Sprintf("墙格首帧    p50 %s · p95 %s（%d 次）", ms(wf["p50"]), ms(wf["p95"]), wf["count"]),
-		fmt.Sprintf("墙重连 %d · 失败 %d · 未开播 %d", counters["wall_restarts_total"], counters["wall_fail_total"], counters["wall_offline_total"]),
-		fmt.Sprintf("引擎当前 %d · 开 %d / 关 %d", gauges["engines_open"], counters["engine_open_total"], counters["engine_close_total"]),
-		fmt.Sprintf("mpv 日志 %d · 日志丢弃 %d", counters["mpv_log_total"], counters["log_dropped_total"]),
+
+	playFF, playBad, playCount := latency(ff)
+	wallFF, wallBad, wallCount := latency(wf)
+
+	restarts := counters["wall_restarts_total"]
+	fails := counters["wall_fail_total"]
+	offline := counters["wall_offline_total"]
+	openFail := counters["engine_open_fail_total"]
+	dropped := counters["log_dropped_total"]
+
+	groups = []diagGroup{
+		{"播放页", []diagStat{
+			{"首帧", playFF, playBad},
+		}},
+		{"观测墙", []diagStat{
+			{"首帧", wallFF, wallBad},
+			{"重连", fmt.Sprintf("%s 次 · 失败 %s · 未开播 %s",
+				fmtCount(restarts), fmtCount(fails), fmtCount(offline)), false},
+		}},
+		{"运行时", []diagStat{
+			{"引擎", fmt.Sprintf("存活 %s · 累计开 %s · 关 %s",
+				fmtCount(gauges["engines_open"]), fmtCount(counters["engine_open_total"]),
+				fmtCount(counters["engine_close_total"])), false},
+			{"打开失败", fmtCount(openFail), openFail > 0},
+			{"mpv 日志", fmt.Sprintf("%s 条", fmtCount(counters["mpv_log_total"])), false},
+			{"日志丢弃", fmtCount(dropped), dropped > 0},
+		}},
 	}
+
+	// 空态看「有没有播过 / 引擎有没有起来」：没有这些，下面的重连、失败、
+	// 日志全是 0，摆出来只会让人以为播放出了问题。日志丢弃是例外——它说明
+	// 证据本身少了，哪怕没播过也要摆出来。
+	empty = playCount == 0 && wallCount == 0 &&
+		counters["engine_open_total"] == 0 && counters["mpv_log_total"] == 0 && dropped == 0
+	return groups, empty
+}
+
+// diagText 是「复制摘要」写进剪贴板的文本。支持场景里这比截图好用：
+// 用户可以改，也可以贴进对话。
+func (a *App) diagText() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "ALIVE %s · run %s · %s · %s/%s\n",
+		diagVersion(), applog.RunID(), time.Now().Format("2006-01-02 15:04"),
+		runtime.GOOS, runtime.GOARCH)
+	if a.DiagEmpty {
+		b.WriteString("本次运行还没有播放记录")
+		return b.String()
+	}
+	for _, g := range a.DiagGroups {
+		for _, row := range g.rows {
+			fmt.Fprintf(&b, "%s %s：%s\n", g.title, row.label, row.value)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// fmtLatency 把直方图里的毫秒写成给人看的时间。
+//
+// metrics.quantile 返回的是桶上界（250 / 500 / 1000 …），所以这串数天然是
+// 量级而不是精确值。短于 1s 保持毫秒：首帧的判断吃 100ms 级的差别，
+// 一刀切成 %.1fs 会把 80ms 和 140ms 都写成 0.1s。
+func fmtLatency(ms int64) string {
+	if ms <= 0 {
+		return "—"
+	}
+	if ms < 1000 {
+		return strconv.FormatInt(ms, 10) + "ms"
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
+}
+
+// fmtCount 给计数加千分位。这些数会被念出来、贴出去，1204 不如 1,204 好读。
+func fmtCount(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
+}
+
+// diagVersion 取当前构建的版本号。空版本（本地 go run）写成 unknown，
+// 免得摘要里出现一串空格。
+func diagVersion() string {
+	if v := mygo.App.Version(); v != "" {
+		return v
+	}
+	return "unknown"
 }
 
 // diagnosticMeta 是 bundle 里 meta.json 的内容。只放身份和计数，不放内容。
 func (a *App) diagnosticMeta() map[string]any {
-	version := mygo.App.Version()
-	if version == "" {
-		version = "unknown"
-	}
 	commit, modified := buildinfo.Commit()
 	meta := map[string]any{
 		"run":       applog.RunID(),
-		"version":   version,
+		"version":   diagVersion(),
 		"commit":    commit,
 		"modified":  modified,
 		"go":        runtime.Version(),
@@ -118,7 +381,9 @@ func (a *App) exportDiagnostics() {
 	meta := a.diagnosticMeta()
 	win := a.Win
 	a.SyncBusy = true
+	a.SyncBusyAction = syncActExport
 	a.SyncNotice = ""
+	a.SyncPath = ""
 	a.SyncError = ""
 	go func() {
 		_, err := support.Bundle(support.Options{Out: out, LogDir: dir, Meta: meta})
@@ -127,17 +392,22 @@ func (a *App) exportDiagnostics() {
 		}
 		win.Update(func() {
 			a.SyncBusy = false
+			a.SyncBusyAction = ""
 			if err != nil {
 				a.SyncError = "导出诊断包失败: " + err.Error()
 				return
 			}
-			a.DiagSummary = diagnosticSummary()
-			a.SyncNotice = "诊断包已导出: " + out
+			a.DiagGroups, a.DiagEmpty = diagnosticGroups()
+			a.SyncPath = out
+			a.SyncNotice = "诊断包已导出：" + filepath.Base(out)
 		})
 	}()
 }
 
-// profileCPU 采 30 秒 CPU profile，写到日志目录。
+// profileCPU 采一段 CPU profile，写到日志目录。
+//
+// 采样跑在 goroutine 里，取消入口留在 ProfCancel 上：30 秒是一段很长的
+// 等待，用户点错了或者只是想看个大概，必须能中途停。
 func (a *App) profileCPU() {
 	if a.SyncBusy {
 		return
@@ -149,22 +419,48 @@ func (a *App) profileCPU() {
 	}
 	out := filepath.Join(dir, "cpu-"+time.Now().Format("20060102-150405")+".pprof")
 	win := a.Win
+	ctx, cancel := context.WithCancel(context.Background())
 	a.SyncBusy = true
+	a.SyncBusyAction = syncActProfile
+	a.ProfStarted = time.Now()
+	a.ProfCancel = cancel
 	a.SyncNotice = ""
+	a.SyncPath = ""
 	a.SyncError = ""
 	go func() {
-		err := support.CPUProfile(out, 30*time.Second)
+		took, err := support.CPUProfile(ctx, out, profileWindow)
+		cancel() // 释放 ctx，别让计时器留到窗口结束
 		if win == nil {
 			return
 		}
 		win.Update(func() {
 			a.SyncBusy = false
-			if err != nil {
+			a.SyncBusyAction = ""
+			a.ProfStarted = time.Time{}
+			a.ProfCancel = nil
+			if err != nil && !errors.Is(err, support.ErrProfileCanceled) {
 				a.SyncError = "性能剖析失败: " + err.Error()
 				return
 			}
-			a.DiagSummary = diagnosticSummary()
-			a.SyncNotice = "性能剖析已写出: " + out
+			a.DiagGroups, a.DiagEmpty = diagnosticGroups()
+			a.SyncPath = out
+			if errors.Is(err, support.ErrProfileCanceled) {
+				// 停下来的文件仍然可读：说清楚采了多久，别让用户以为是废文件。
+				a.SyncNotice = fmt.Sprintf("性能剖析已停止：%s（采样 %s）",
+					filepath.Base(out), fmtLatency(took.Milliseconds()))
+				return
+			}
+			a.SyncNotice = "性能剖析已写出：" + filepath.Base(out) + "（和诊断包在同一目录）"
 		})
 	}()
+}
+
+// stopProfile 是剖析中的「停止剖析」按钮：只负责叫停，收尾仍在采样
+// goroutine 里做，按钮状态由它统一恢复。重复点没有副作用。
+func (a *App) stopProfile() {
+	if a.ProfCancel == nil {
+		return
+	}
+	a.ProfCancel()
+	a.ProfCancel = nil
 }

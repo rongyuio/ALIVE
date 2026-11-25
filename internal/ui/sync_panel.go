@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -20,15 +21,24 @@ const (
 	syncTabPadH float32 = 14
 )
 
+// 面板里正在跑的动作。三个动作共用一个 SyncBusy 位（同一时刻只允许一个），
+// 但按钮要知道忙的是不是自己：忙的那个转圈并显示进度，其余的只是禁用。
+const (
+	syncActExport  = "export"
+	syncActImport  = "import"
+	syncActProfile = "profile"
+)
+
 // openSyncPanel 打开面板，并清掉上一次留下的页签、预览和反馈。
 func (a *App) openSyncPanel() {
 	a.SyncOpen = true
 	a.SyncTab = "export"
 	a.SyncNotice = ""
 	a.SyncError = ""
+	a.SyncPath = ""
 	a.SyncPlan = nil
 	a.SyncCounts = a.configCounts()
-	a.DiagSummary = nil
+	a.DiagGroups, a.DiagEmpty = nil, false
 }
 
 // syncOverlay 是顶栏「数据同步」的模态弹窗。
@@ -164,9 +174,10 @@ func (a *App) syncTab(c *ui.Context, t syncTabItem, w float32, active bool) {
 		a.SyncTab = t.id
 		a.SyncNotice = ""
 		a.SyncError = ""
+		a.SyncPath = ""
 		a.SyncPlan = nil
 		if t.id == "diag" {
-			a.DiagSummary = diagnosticSummary()
+			a.DiagGroups, a.DiagEmpty = diagnosticGroups()
 		}
 	}
 
@@ -198,7 +209,7 @@ func (a *App) syncExportBody(c *ui.Context) {
 		a.syncSnapshot(c)
 		a.syncFeedback(c)
 		ui.Row(c).Justify(ui.End).Children(func() {
-			a.syncButton(c, iconUpload, "保存到文件…", true, a.exportConfig)
+			a.syncButton(c, syncActExport, iconUpload, "保存到文件…", true, a.exportConfig, nil)
 		})
 	})
 }
@@ -222,17 +233,17 @@ func (a *App) syncImportBody(c *ui.Context) {
 						})
 						ui.Text(c, "尚未选择文件").FontSize(theme.TextXS).TextColor(theme.TextTertiary)
 					}
-					a.syncButton(c, iconDownload, "选择文件…", true, a.pickImportFile)
+					a.syncButton(c, syncActImport, iconDownload, "选择文件…", true, a.pickImportFile, nil)
 				})
 			return
 		}
 
 		a.syncPlanCard(c, plan)
 		ui.Row(c).Gap(theme.Space2).Justify(ui.End).Children(func() {
-			a.syncButton(c, iconDownload, "重新选择…", false, a.pickImportFile)
-			a.syncButton(c, iconX, "取消", false, a.cancelImport)
+			a.syncButton(c, syncActImport, iconDownload, "重新选择…", false, a.pickImportFile, nil)
+			a.syncButton(c, syncActImport, iconX, "取消", false, a.cancelImport, nil)
 			if !plan.empty() {
-				a.syncButton(c, iconCheck, "确认导入", true, a.confirmImport)
+				a.syncButton(c, syncActImport, iconCheck, "确认导入", true, a.confirmImport, nil)
 			}
 		})
 	})
@@ -322,16 +333,29 @@ func (a *App) syncHint(c *ui.Context, text string) {
 // syncButton 是面板里的胶囊按钮：32 高、圆角 full、12px 半粗。
 //
 // primary 是 accent 底 + accent-text 字，其余是 fill-tertiary 底加描边。
-// busy 时按 :disabled 处理：透明度 .5、光标回箭头、不响应点击。
-func (a *App) syncButton(c *ui.Context, ico *ui.SVG, label string, primary bool, on func()) {
+// action 说明这枚按钮属于哪个动作：只有自己忙时图标才转、文字才换成进度；
+// 别的动作忙时它同样禁用（同一时刻只跑一个），但保持原样——用户要能看出
+// 「现在跑的是哪一件」。
+//
+// onBusy 非空表示这件动作忙的时候按钮不锁死，而是变成「停止」并调用它。
+// 剖析要等 30 秒，用户点错了或者只想看个大概，必须能中途停。
+func (a *App) syncButton(c *ui.Context, action string, ico *ui.SVG, label string, primary bool, on, onBusy func()) {
+	mine := a.SyncBusy && a.SyncBusyAction == action
+	stoppable := mine && onBusy != nil
+	// Label 跟着屏幕文字走，但倒计时每秒变、ref 会跟着失效，所以停住态用
+	// 固定前缀「停止剖析」，自动化按它点得到。
+	btnLabel := label
+	if stoppable {
+		btnLabel = "停止剖析"
+	}
 	btn := ui.Box(c).Height(syncBtnH).Padding(0, 14, 0, 14).Radius(theme.RadiusFull).
-		Center().Label(label)
+		Center().Label(btnLabel)
 	if primary {
 		btn.Background(theme.Accent)
 	} else {
 		btn.Background(theme.FillTertiary).Border(1, theme.Border)
 	}
-	if a.SyncBusy {
+	if a.SyncBusy && !stoppable {
 		btn.Opacity(0.5).Cursor(ui.CursorDefault)
 	} else {
 		btn.Cursor(ui.CursorPointer)
@@ -340,9 +364,23 @@ func (a *App) syncButton(c *ui.Context, ico *ui.SVG, label string, primary bool,
 		} else if btn.Hovered() {
 			btn.Background(theme.FillSecondary)
 		}
-		if btn.Clicked() {
-			on()
+		switch {
+		case stoppable:
+			if btn.Clicked() {
+				onBusy()
+			}
+		case !a.SyncBusy:
+			if btn.Clicked() {
+				on()
+			}
 		}
+	}
+
+	// 剖析要 30 秒，转圈说明不了还剩多久；文字直接倒计时。时间取构建帧的
+	// 时钟（c.Now()），Tester 才能用 Advance 把它推到想要的位置。
+	text := label
+	if stoppable {
+		text = profileStopLabel(a.ProfStarted, c.Now())
 	}
 
 	btn.Children(func() {
@@ -351,14 +389,31 @@ func (a *App) syncButton(c *ui.Context, ico *ui.SVG, label string, primary bool,
 			col = theme.AccentText
 		}
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			if a.SyncBusy {
-				// 读写文件期间图标转起来，兼作进度提示
+			switch {
+			case stoppable:
+				// 方块停止图标：告诉用户这一下是按下去停，不是再转一圈。
+				ui.Icon(c, iconStop).FontSize(13).TextColor(col)
+			case mine:
+				// 跑着的时候图标转起来，兼作进度提示
 				ui.Icon(c, iconSync).FontSize(14).TextColor(col).Rotate(
 					btn.Loop("sync-btn-spin", 900*time.Millisecond, ui.Linear) * 360)
-			} else {
+			default:
 				ui.Icon(c, ico).FontSize(14).TextColor(col)
 			}
-			ui.Text(c, label).FontSize(theme.TextXS).FontWeight(600).TextColor(col)
+			ui.Text(c, text).FontSize(theme.TextXS).FontWeight(600).TextColor(col)
 		})
 	})
+}
+
+// profileStopLabel 是剖析期间按钮上的文字。向上取整：开始显示 30s，最后
+// 不足 1 秒显示 1s，不会出现已经停了却写着 0s 的那一帧。
+func profileStopLabel(start, now time.Time) string {
+	left := int(start.Add(profileWindow).Sub(now).Seconds())
+	if left < 0 {
+		left = 0
+	}
+	if start.Add(profileWindow).Sub(now) > time.Duration(left)*time.Second {
+		left++
+	}
+	return fmt.Sprintf("停止剖析 · %ds", left)
 }

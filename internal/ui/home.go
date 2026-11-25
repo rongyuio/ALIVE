@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -310,16 +311,28 @@ type App struct {
 	ShortcutsOpen      bool
 
 	// 顶栏「数据同步」面板：导出 / 导入 / 诊断三个页签。
-	// SyncBusy 期间按钮不响应，SyncNotice / SyncError 是上一次动作的反馈；
-	// SyncPlan 是选完文件、还没确认落地的导入改动清单。
-	SyncOpen    bool
-	SyncTab     string // "export" / "import" / "diag"
-	SyncBusy    bool
-	SyncNotice  string
-	SyncPlan    *importPlan
-	SyncCounts  configCounts
-	DiagSummary []string // 诊断页签的指标快照；切到该页签时算一次
-	SyncError   string
+	// SyncBusy 期间按钮不响应，SyncBusyAction 记住忙的是哪一个动作——三个
+	// 动作共用一个位，但界面要能说清「现在跑的是哪个」。
+	// SyncPath 是最近一次产物的完整路径，诊断页拿它做复制 / 定位；
+	// SyncNotice 只放文件名，省得长路径把结果条撑成两行。
+	SyncOpen       bool
+	SyncTab        string // "export" / "import" / "diag"
+	SyncBusy       bool
+	SyncBusyAction string
+	SyncNotice     string
+	SyncPath       string
+	SyncPlan       *importPlan
+	SyncCounts     configCounts
+	SyncError      string
+	// ProfStarted 是性能剖析的起点：按钮用它算还剩几秒。
+	// ProfCancel 是同一份采样的取消入口；30 秒太长，用户必须能中途停。
+	ProfStarted time.Time
+	ProfCancel  context.CancelFunc
+
+	// DiagGroups / DiagEmpty 是诊断页签的指标快照。切到该页签、动作完成或
+	// 点「刷新指标」时才重算，不在每帧构建路径里读 registry、分配字符串。
+	DiagGroups []diagGroup
+	DiagEmpty  bool
 
 	// 播放页悬浮 chrome（顶栏 / 控制条 / 窗口按钮）的自动隐藏，
 	// 指针静止 2.8 秒后淡出，一动就回来。

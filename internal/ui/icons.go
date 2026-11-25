@@ -145,6 +145,11 @@ var (
 	iconOkCircle = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="m8.5 12 2.5 2.5 4.5-5"/>`)
 	// Activity：诊断面板的页签与「性能剖析」按钮
 	iconActivity = iconSVG(`<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>`)
+	// Copy / FolderOpen：诊断产物落盘后的「复制路径」「打开所在文件夹」
+	iconCopy       = iconSVG(`<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>`)
+	iconFolderOpen = iconSVG(`<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>`)
+	// Stop：剖析进行中的按钮，按下去叫停
+	iconStop = fitFilledIcon(`<rect width="11" height="11" x="6.5" y="6.5" rx="2"/>`, 14)
 	// AlertCircle：toast 的 info 色调
 	iconAlert = iconSVG(`<circle cx="12" cy="12" r="10"/><path d="M12 7v6"/><path d="M12 16.5v.5"/>`)
 	// TriangleAlert：toast 的 error 色调

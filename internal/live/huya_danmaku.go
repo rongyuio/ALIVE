@@ -48,7 +48,7 @@ const (
 	huyaDanmuDefaultColor = 0xFFFFFF
 )
 
-// huyaDanmuHeartbeatBytes 是虎牙客户端的心跳包原始字节（抓包得来）。
+// huyaDanmuHeartbeatBytes 是虎牙网页端心跳包的原始字节（从它实际发出的数据里核对得到）。
 //
 // 包体是 TARS 编码的 onlineui.OnUserHeartBeat 请求，自己拼极易出错，原样保留。
 var huyaDanmuHeartbeatBytes = []byte{

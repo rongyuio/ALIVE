@@ -644,8 +644,10 @@ func (a *App) exportConfig() {
 		return
 	}
 	a.SyncBusy = true
+	a.SyncBusyAction = syncActExport
 	a.SyncError = ""
 	a.SyncNotice = ""
+	a.SyncPath = ""
 	win := a.Win
 	payload := a.buildConfigFile()
 
@@ -672,12 +674,14 @@ func (a *App) exportConfig() {
 
 		win.Update(func() {
 			a.SyncBusy = false
+			a.SyncBusyAction = ""
 			switch {
 			case err != nil:
 				a.SyncError = "导出失败：" + err.Error()
 			case path == "":
 				// 用户取消，不提示
 			default:
+				a.SyncPath = path
 				a.SyncNotice = "已导出：" + filepath.Base(path)
 			}
 		})
@@ -693,8 +697,10 @@ func (a *App) pickImportFile() {
 		return
 	}
 	a.SyncBusy = true
+	a.SyncBusyAction = syncActImport
 	a.SyncError = ""
 	a.SyncNotice = ""
+	a.SyncPath = ""
 	a.SyncPlan = nil
 	win := a.Win
 
@@ -721,6 +727,7 @@ func (a *App) pickImportFile() {
 
 		win.Update(func() {
 			a.SyncBusy = false
+			a.SyncBusyAction = ""
 			switch {
 			case err != nil:
 				a.SyncError = err.Error()

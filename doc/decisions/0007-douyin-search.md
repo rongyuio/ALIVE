@@ -12,14 +12,13 @@
 ## 实测
 
 2026-11-20，本机，Windows 11，桌面 UA（Chrome 140）。验证用的会话是在应用内
-webview 里真扫码登录得到的（57 个 cookie，含 `sessionid`、`ttwid`、`s_v_web_id`、
-`bd_ticket_guard_*`）。
+webview 里真扫码登录得到的（会话 cookie 若干，这里不列举）。
 
 | 请求 | 结果 |
 |---|---|
 | `/aweme/v1/web/live/search/` 匿名，a_bogus 签名 | `status_code=2483` |
 | 同上，带登录会话 | `status_code=0`，`data=[]` |
-| 同上，补 `sec-ch-ua` / `sec-fetch-*`、`X-Secsdk-Csrf-Token`、`bd-ticket-guard-*`、`verifyFp`/`fp`、msToken 同时进 cookie 和 query | 仍然 `data=[]` |
+| 同上，把网页端常见的那几类请求头与会话字段都补齐 | 仍然 `data=[]` |
 | `/aweme/v1/web/general/search/single/` 带会话 | `data=[]`，同上 |
 | `www.douyin.com/search/{词}?type=live` 带会话 | HTML 是「验证码中间页」 |
 | `/aweme/v1/web/search/sug/`、分区列表、房间 reflow | 同一份会话全部正常 |
@@ -31,8 +30,8 @@ webview 里真扫码登录得到的（57 个 cookie，含 `sessionid`、`ttwid`�
 ```
 
 也就是说，登录只解开了账号这一层，第二层是设备/请求指纹的验证。分区接口能过，
-说明签名算法本身没错；搜索要的是浏览器里 webmssdk 现场生成的整套凭证
-（`a_bogus` 只是其中一项，`X-Bogus`、ticket guard 的每请求签名都还没复现）。
+说明我们实现的签名本身没问题；搜索要的是网页运行期现场生成的一整套凭证，
+`a_bogus` 只是其中一项，剩下几项依附于网页脚本版本，我们没有实现。
 这类凭证跟着网页 JS 版本走，今天打通，明天改版就静默失效——上游失败时只回空数组，
 排错成本比收益高。
 
@@ -44,7 +43,7 @@ webview 里真扫码登录得到的（57 个 cookie，含 `sessionid`、`ttwid`�
 
 ## WebView 方案也排除了
 
-在登录用的 webview 里打开搜索页、把结果读出来，本来是个绕开签名的办法。
+在登录用的 webview 里打开搜索页、把结果读出来，本来是个不用自己实现签名的办法。
 这一版 MyGo 的 `WebView` 只能整页显示，没有网络响应拦截的公开 API，读不到页面
 真正发出去的请求。脚本执行在 v0.10.0 已经可用（`Page.Eval`，类型注释也写着
 "evaluates scripts"），所以「读页面 DOM」不再是障碍；障碍变成了抖音的搜索语义
