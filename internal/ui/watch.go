@@ -458,7 +458,10 @@ func (a *App) watchTileAudio(c *ui.Context, m controlMetrics, room Streamer) {
 				return false
 			}
 			// 滚轮走同一套 1% 取整，但只落在这一格自己的值上。
-			a.setTileVolume(room, volume-watchWheelStep(ev.DY))
+			// watchWheelStep 返回的是音量增量（上滚为负、下滚为正，与播放页
+			// 的 `volume - dy*k` 同一套）；所以这里是「加增量」。以前写成
+			// `volume - watchWheelStep` 等于取负两次，上滚变小、下滚变大。
+			a.setTileVolume(room, volume+watchWheelStep(ev.DY))
 			return true
 		})
 		if hot.Clicked() {

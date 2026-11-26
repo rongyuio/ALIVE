@@ -123,12 +123,13 @@ var (
 	// 直播地址不只 http：弹幕走 wss，部分平台拉流是 rtmp。只认 http(s)
 	// 会让带签名的 rtmp URL 整条原样落盘。
 	urlRe    = regexp.MustCompile(`(?i)(?:https?|rtmps?|wss?)://[^\s"'<>]+`)
-	secretRe = regexp.MustCompile(`(?i)\b(token|sign|sig|auth|secret|session|cookie|sessdata|qrcode_key|wssecret|wstime|txsecret|did|key|access_key|bili_jct|buvid3|buvid4|csrf|password|passwd|pwd)=([^&\s"';,]+)`)
+	secretRe = regexp.MustCompile(`(?i)\b([a-z0-9_\-]*(?:token|secret|signature|sign|sig|auth|session|cookie|sessdata|qrcode_key|wssecret|wstime|txsecret|did|key|csrf|password|passwd|pwd|hdnts|md5|expires|bili_jct|buvid3|buvid4)[a-z0-9_\-]*)=([^&\s"';,]+)`)
 	// Windows 用户名目录两种写法：反斜杠来自 os 错误，正斜杠来自 Go 源码里
 	// 拼出来的路径和日志里的 source。
 	userRe = regexp.MustCompile(`(?i)([A-Z]:[\\/]Users[\\/])[^\\/\s"']+`)
 	// 头部的凭据不走 `key=` 形式。Bearer/Basic 后面跟的是完整的凭据本体。
-	bearerRe = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`)
+	// 下限 4 而不是 8：短 token 一样是凭据，宁可多打码。
+	bearerRe = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{4,}`)
 	ctrlRe   = regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`)
 )
 

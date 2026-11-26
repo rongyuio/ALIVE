@@ -175,13 +175,13 @@ func (s *biliDanmaku) run() {
 	}
 }
 
-// connectOnce 取一次 token 与节点列表，连上并读到断开。
+// connectOnce 取一次鉴权快照与节点列表，连上并读到断开。
 func (s *biliDanmaku) connectOnce() error {
-	token, hosts, err := s.provider.biliDanmuInfo(s.ctx, s.realID)
+	auth, hosts, err := s.provider.biliDanmuInfo(s.ctx, s.realID)
 	if err != nil {
 		return err
 	}
-	if token == "" || len(hosts) == 0 {
+	if auth.Token == "" || len(hosts) == 0 {
 		return errors.New("没有可用的弹幕服务器")
 	}
 	if len(hosts) > biliMaxHosts {
@@ -214,7 +214,7 @@ func (s *biliDanmaku) connectOnce() error {
 		s.conn = conn
 		s.mu.Unlock()
 
-		runErr := s.readLoop(conn, token)
+		runErr := s.readLoop(conn, auth)
 
 		s.mu.Lock()
 		if s.conn == conn {
@@ -252,18 +252,39 @@ func (p *bilibiliProvider) biliLoginUID() string {
 	return "0"
 }
 
-// biliDanmuInfo 取弹幕服务器的 token 与域名列表。
-func (p *bilibiliProvider) biliDanmuInfo(ctx context.Context, realID int64) (string, []string, error) {
-	release, err := p.lim.acquire(ctx)
-	if err != nil {
-		return "", nil, err
-	}
-	info, err := p.lc.GetDanmuInfo(ctx, bilibiliLive.GetDanmuInfoParam{
+// biliDanmuAuth 是一条弹幕连接的鉴权快照：token 与签发它时的登录 uid。
+//
+// 两者必须同源。token 是服务端按那次请求带的登录态签发的；如果等连上
+// 节点之后再现读 cookie 拿 uid（旧实现就是），中途换了号就会拿新账号的
+// uid 去配旧 token 的认证，连接照样被断开。所以取 token 的那一刻把 uid
+// 一起拍下来，之后一路传下去。
+type biliDanmuAuth struct {
+	Token string
+	UID   string
+}
+
+// biliDanmuInfoCall 是 getDanmuInfo 的请求实现。
+//
+// 抽成包级变量只为了测试能在「签发 token」与「组装 auth」之间插入登录态
+// 变化，验证 uid 用的是快照值；生产永远走默认实现。
+var biliDanmuInfoCall = func(ctx context.Context, lc *bilibiliLive.Client, realID int64) (*bilibiliLive.GetDanmuInfoResult, error) {
+	return lc.GetDanmuInfo(ctx, bilibiliLive.GetDanmuInfoParam{
 		ID: realID, Type: 0, WebLocation: "444.8",
 	})
+}
+
+// biliDanmuInfo 取一次弹幕鉴权快照（token + 同源 uid）与域名列表。
+func (p *bilibiliProvider) biliDanmuInfo(ctx context.Context, realID int64) (biliDanmuAuth, []string, error) {
+	release, err := p.lim.acquire(ctx)
+	if err != nil {
+		return biliDanmuAuth{}, nil, err
+	}
+	// 先拍 uid 再发请求：token 绑定的就是这次请求实际带出去的那份登录态。
+	uid := p.biliLoginUID()
+	info, err := biliDanmuInfoCall(ctx, p.lc, realID)
 	release()
 	if err != nil {
-		return "", nil, p.wrap("弹幕服务器", err)
+		return biliDanmuAuth{}, nil, p.wrap("弹幕服务器", err)
 	}
 
 	// 同一个 host 会在不同端口出现多次，去重保序。
@@ -277,17 +298,32 @@ func (p *bilibiliProvider) biliDanmuInfo(ctx context.Context, realID int64) (str
 		seen[host] = true
 		hosts = append(hosts, host)
 	}
-	return info.Token, hosts, nil
+	return biliDanmuAuth{Token: info.Token, UID: uid}, hosts, nil
+}
+
+// biliDanmuAuthJSON 组装 room-enter 的认证报文。
+//
+// uid 用会话快照里的值，不再现读 cookie：token 与 uid 必须同源。
+func biliDanmuAuthJSON(auth biliDanmuAuth, realID int64) string {
+	uid := auth.UID
+	if uid == "" {
+		uid = "0"
+	}
+	return fmt.Sprintf(`{"uid":%s,"roomid":%d,"protover":%d,"platform":"web","type":2,"key":%q}`,
+		uid, realID, biliDanmuProto, auth.Token)
+}
+
+// biliDanmuAuthPacket 把认证报文封成协议包。
+func biliDanmuAuthPacket(auth biliDanmuAuth, realID int64) []byte {
+	pkt := blivedmpacket.NewPlainPacket(blivedmpacket.RoomEnter,
+		[]byte(biliDanmuAuthJSON(auth, realID)))
+	return pkt.Build()
 }
 
 // readLoop 发 auth、跑心跳、读帧。
-func (s *biliDanmaku) readLoop(conn *websocket.Conn, token string) error {
-	// uid 必须和签发 token 用的一致：登录态下是登录 uid，匿名才是 0。
-	// 写死 0 会让登录用户的连接被服务端立刻断开（见 biliLoginUID）。
-	auth := fmt.Sprintf(`{"uid":%s,"roomid":%d,"protover":%d,"platform":"web","type":2,"key":%q}`,
-		s.provider.biliLoginUID(), s.realID, biliDanmuProto, token)
-	authPkt := blivedmpacket.NewPlainPacket(blivedmpacket.RoomEnter, []byte(auth))
-	if err := conn.Write(s.ctx, websocket.MessageBinary, authPkt.Build()); err != nil {
+func (s *biliDanmaku) readLoop(conn *websocket.Conn, auth biliDanmuAuth) error {
+	// auth 是取 token 时拍下的快照：uid 与 token 同源（见 biliDanmuAuth）。
+	if err := conn.Write(s.ctx, websocket.MessageBinary, biliDanmuAuthPacket(auth, s.realID)); err != nil {
 		return fmt.Errorf("发送 auth: %w", err)
 	}
 

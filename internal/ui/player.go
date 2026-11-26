@@ -95,7 +95,8 @@ func (a *App) PlayerPage(c *ui.Context) {
 
 		shell.Children(func() {
 			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0))
+				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0)).
+					Label("播放画面（双击全屏）")
 				// 舞台上一帧的矩形：收起时画面从这里起飞（见 surface_flight.go）。
 				// 舞台可能被右侧弹幕面板挤窄，不能按正文区估。
 				if r := stage.Bounds(); r.W > 0 && r.H > 0 {
@@ -527,7 +528,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 			})
 			ui.Text(c, "主播暂时没有开播").FontSize(theme.TextLG).FontWeight(600).
 				TextColor(theme.White94)
-			a.overlayText(c, "开播后会自动加载，也可以手动刷新试试")
+			a.overlayText(c, "主播开播后请点「立即刷新」；回到列表重新进入也会重连")
 			a.overlayButton(c, "立即刷新", a.retryStream)
 		})
 	}

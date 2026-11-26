@@ -24,7 +24,7 @@ func TestImportPreviewThenConfirm(t *testing.T) {
 		Follows: []FollowRecord{
 			{Platform: "bilibili", RoomID: "42", Name: "新人"},
 		},
-		Danmu: fileDanmu{On: true, Font: 30},
+		Danmu: &fileDanmu{On: true, Font: 30},
 	})
 	if plan.empty() {
 		t.Fatal("文件里有新增和覆盖，计划却是空的")
@@ -158,7 +158,7 @@ func TestImportPreviewMatchesResult(t *testing.T) {
 			{Platform: "huya", RoomID: "9", Name: "老张"},
 			{Platform: "douyu", RoomID: "77", Name: "老李"},
 		},
-		Danmu: fileDanmu{On: true, Filters: []string{"加微信", "抽奖"}},
+		Danmu: &fileDanmu{On: true, Filters: []string{"加微信", "抽奖"}},
 	}
 	plan := app.planImport("ALIVE.json", f)
 	sum := app.applyImportPlan(plan)

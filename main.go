@@ -98,6 +98,33 @@ func main() {
 		media.Default.SetDiskDir(filepath.Join(dir, "alive", "images"))
 	}
 
+	// 单实例锁：两个进程同时跑会共写 %APPDATA%\alive\state.json，后收尾的那份
+	// 把先写的整份覆盖掉——用户在另一个窗口里改的设置就这么没了。
+	//
+	// 第二个实例把命令行交给已经跑着的那个（OnSecondInstance），自己退出。
+	// 必须排在建 App / 装插件之前：锁在进程退出前一直持有，Run 返回后的收尾
+	// （关播放器、写状态）也就不会和新实例重叠。
+	//
+	// win 提到这里声明：OnSecondInstance 的回调在主线程上稍后才跑，那时窗口
+	// 已经建好；启动途中（win 还是 nil）什么都不用做，正在启动的那个实例
+	// 本来就会出现在前面。
+	var win *mygo.Window
+	if !mygo.App.RequestSingleInstanceLock() {
+		diag.L().Info().
+			Str(diag.Event, diag.EvRunStop).
+			Str(diag.Reason, "second_instance").
+			Msg("已有实例在运行，本次启动把命令行交给它")
+		applog.Close()
+		return // 已有实例接管了这次启动
+	}
+	mygo.App.OnSecondInstance(func(args []string, workingDir string) {
+		if win == nil {
+			return
+		}
+		win.Restore()
+		win.Focus()
+	})
+
 	// 自更新：签名发布在 GitHub release 上的版本，由这枚插件在后台按天查一次，
 	// 有新版本自己弹一个原生窗口（native.Plugin 是同一套东西的自绘版，和这个
 	// 应用一样不碰 webview——用 updater.Plugin 会为了一个更新对话框把 WebView2
@@ -112,7 +139,6 @@ func main() {
 	// 诊断页的「检查更新」走这一条：界面不认识更新插件，只认识这个函数。
 	app.CheckUpdates = updater.CheckForUpdates
 
-	var win *mygo.Window
 	var watcher *hang.Watcher
 	var followsPulse *time.Ticker
 	// pulseStop 关闭心跳 goroutine：Run 返回后不关就是一条泄漏到进程结束。
@@ -159,6 +185,10 @@ func main() {
 		win.OnClose(func(e *mygo.CloseEvent) {
 			// 关窗时立即取消起播和弹幕任务，避免结果回到已销毁的窗口。
 			app.CloseMedia()
+			// 关窗前最后那点改动也要落地：markDirty 的 300ms 合并窗口还在等
+			// 定时器，进程一退就丢了（拖一下音量条、300ms 内关窗就是这种情形）。
+			// OnClose 同步返回后进程可能立刻结束，所以这里必须同步写完。
+			app.FlushState()
 			if win.IsFullScreen() {
 				win.SetFullScreen(false)
 			}

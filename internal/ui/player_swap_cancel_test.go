@@ -141,8 +141,31 @@ func TestAdoptLiveSessionGivesTransferredPlayerItsRound(t *testing.T) {
 	if s.player != p {
 		t.Error("接管把画面换掉了：应该接着用同一枚播放器，不该重新取流")
 	}
-	if !app.media.firstFrame() {
-		t.Error("已经在出图的一路不该按「还没首帧」处理，否则首帧预算会把它判成失败")
+	// 首帧状态必须跟着播放器实际出图状态走。夹具里的 steadyEngine 从没被
+	// 推过帧，Ready() 是 false——旧断言要求 true，其实是在给「写死 true」的
+	// bug 背书（那会让首帧预算对真正的死地址永久失效）。
+	if got, want := app.media.firstFrame(), p.Ready(); got != want {
+		t.Errorf("接管后的首帧状态应等于播放器出图状态：firstFrame=%v Ready=%v", got, want)
+	}
+}
+
+// 接管一枚「还没出图」的引擎时，绝不能把它当成已出首帧：否则播放页的
+// 首帧预算（needFirstFrameTimeout）永久失效，死地址会无限停在「正在拉取
+// 直播流…」上，而那条 spinner 分支没有重试按钮。
+func TestAdoptLiveSessionNonReadyPlayerKeepsFirstFrameBudget(t *testing.T) {
+	app := seededApp(t)
+	s := app.focus
+	if s == nil {
+		t.Fatal("夹具里没有焦点会话")
+	}
+	p := ui.NewEngineVideoPlayer(&steadyEngine{})
+	s.player = p
+	app.media.cancelSession()
+
+	app.ensureFocusMedia()
+
+	if app.media.firstFrame() {
+		t.Fatal("还没出图的引擎被当成了已出首帧：首帧预算会永久失效")
 	}
 }
 

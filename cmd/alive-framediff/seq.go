@@ -75,6 +75,11 @@ func OpenSequence(dir string) (*Sequence, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("%s: manifest.json 坏了: %w", dir, err)
 	}
+	// version 声明了就要校验：不认识的新格式应该报错，而不是按 v1 静默误读像素。
+	// 只认 1 和 2（v2 是 zstd + format/codec 字段那一版）。
+	if m.Version != 0 && m.Version != 1 && m.Version != 2 {
+		return nil, fmt.Errorf("%s: manifest version=%d 不认识（只认 1/2）", dir, m.Version)
+	}
 	codec, err := manifestCodec(dir, m)
 	if err != nil {
 		return nil, err

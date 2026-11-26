@@ -196,9 +196,11 @@ type FileStat struct {
 // cmd/alive-gate —— 两处真相。现在两边都调 internal/churn：一条规则一个实现，
 // 「门禁会红」和「这一页说第几次」永远给同一个数。
 //
-// anchor 传 HEAD 的 committer 时间：同一个 HEAD 要出同一页，不能每天自己变。
-func ApplyChurn(root string, anchor int64, stats []*FileStat) error {
-	res, err := churn.Scan(root, churn.Options{Anchor: anchor})
+// anchor 与 windowDays 必须和本页「窗内」那一列用同一套：`-now` / `-days`
+// 是回看开关，如果 churn 口径恒用 HEAD + 7 天，同一行就会同时出现「窗内 24 /
+// churn 27」，而且「最后 fix」可能晚于窗口右端。同一个窗口，一个实现。
+func ApplyChurn(root string, anchor int64, windowDays int, stats []*FileStat) error {
+	res, err := churn.Scan(root, churn.Options{Anchor: anchor, WindowDays: windowDays})
 	if err != nil {
 		return err
 	}

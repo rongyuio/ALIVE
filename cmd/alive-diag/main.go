@@ -115,11 +115,19 @@ func load(path string) ([]entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(files, func(i, j int) bool {
-		a, _ := os.Stat(files[i])
-		b, _ := os.Stat(files[j])
-		return a.ModTime().Before(b.ModTime())
-	})
+	// 先 Stat 一次建表再排序：日志轮转/prune 会在 Glob 之后删文件，直接
+	// `a, _ := os.Stat(...); a.ModTime()` 会空指针 panic——诊断工具不能在
+	// 最需要它的时候崩。Stat 失败的直接跳过。
+	mods := make(map[string]time.Time, len(files))
+	kept := files[:0]
+	for _, f := range files {
+		if fi, err := os.Stat(f); err == nil {
+			mods[f] = fi.ModTime()
+			kept = append(kept, f)
+		}
+	}
+	sort.Slice(kept, func(i, j int) bool { return mods[kept[i]].Before(mods[kept[j]]) })
+	files = kept
 	var all []entry
 	for _, f := range files {
 		es, err := readFile(f)

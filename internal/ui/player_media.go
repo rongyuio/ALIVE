@@ -302,26 +302,16 @@ func (a *App) kickMediaTick() {
 		a.watch.tickPending = false
 		return
 	}
-	if m.app.inBackground() && m.eng() != nil && !m.tickPending {
+	// 一条链就够：mediaTick 先 watchTick（墙）再 trackFirstFrame（焦点）。
+	// 以前后台收听和墙各排一条、回调还一模一样，两个条件同时成立时 watchTick
+	// 的节拍会翻倍；stopPlayback 清标记又不取消已排的定时器，还会多留一条。
+	need := (m.app.inBackground() && m.eng() != nil) || len(a.watch.sessions) > 0
+	if need && !m.tickPending {
 		m.tickPending = true
 		win := a.Win
 		time.AfterFunc(playbackHealthPollInterval, func() {
 			runOnMain(win, func() {
 				a.media.tickPending = false
-				a.mediaTick()
-				a.kickMediaTick()
-			})
-		})
-	}
-	// 会话表里有任何一间都要有心跳：地址续期、断流、下播判定不能停在
-	// 没人看的那一面。焦点是不是由播放页画着并不影响这条。
-	needWatch := len(a.watch.sessions) > 0
-	if needWatch && !a.watch.tickPending {
-		a.watch.tickPending = true
-		win := a.Win
-		time.AfterFunc(playbackHealthPollInterval, func() {
-			runOnMain(win, func() {
-				a.watch.tickPending = false
 				a.mediaTick()
 				a.kickMediaTick()
 			})
@@ -410,6 +400,18 @@ func (a *App) applyPresent() {
 // 还是它自己的默认值，和 present 相等不代表已经推过。
 func (a *App) applyPresentForce() {
 	s := a.focus
+	if s == nil {
+		return
+	}
+	a.setPresent(s, a.presentSizeForSession(s))
+}
+
+// presentNewEngine 把呈现尺寸推给某一间刚接上的新引擎。
+//
+// 和 applyPresentForce 的区别只有一个：它不要求这一间是焦点。墙格重新连上
+// 的新引擎同样要推——dropEngine 会把 present 留在会话上，`applyPresentTo`
+// 的 `want == present` 会短路，于是那一格按视频原始尺寸（1080p）渲染。
+func (a *App) presentNewEngine(s *roomSession) {
 	if s == nil {
 		return
 	}
@@ -586,7 +588,10 @@ func (a *App) adoptLiveSession(s *roomSession) {
 	m.id = fmt.Sprintf("接管#%d", m.seq)
 	m.start = time.Now()
 	m.log = newLogRef("player", s.key, m.id, m.start)
-	m.setFirstFrame(true)
+	// 首帧只按「这一路到底出没出图」写：墙格刚挂上引擎、还没出图时
+	// Ready() 是 false，写死 true 会让 needFirstFrameTimeout 永久失效、
+	// 死地址无限停在「正在拉取直播流…」上（播放页那条 spinner 没有重试按钮）。
+	m.setFirstFrame(s.player.Ready())
 	m.setOpened(time.Now())
 	m.pauseStarted = time.Time{}
 	m.pausedFor = 0
@@ -781,7 +786,7 @@ func (a *App) startPlayback(sess playbackSession, upstream live.Variant) {
 // 返回 false 表示当前环境起不来（没有窗口）。成功后的接纳照旧走 applyMedia：
 // 过期结果自己关掉，不让旧会话的画面盖上来。
 func (a *App) startNativePlayback(sess playbackSession, upstream live.Variant) bool {
-	win := a.media.win
+	win := sess.win
 	if win == nil {
 		return false
 	}
@@ -1517,7 +1522,9 @@ func (a *App) PickQuality(label string) {
 		a.media.pendingQualityPick = ""
 		sess := a.beginSession("换档")
 		a.media.session().up = v
-		go a.startPlayback(sess, v)
+		// 不要在这里再包一层 go：startPlayback 内部已经在自己开的 goroutine
+		// 里跑 openNative。多包一层只会把「读 App 字段」挪到后台线程。
+		a.startPlayback(sess, v)
 		return
 	}
 	// 档位表还没到（刚进页面就点了一下），或者按需取流的平台还没解析这一档：

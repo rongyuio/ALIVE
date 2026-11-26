@@ -140,7 +140,7 @@ func (p *bilibiliProvider) StreamForPlayback(ctx context.Context, roomID, line, 
 		out.Variants = append(out.Variants, biliTierVariant(out.RoomID, tier, info.QNDesc, biliPlayURL{}))
 	}
 
-	target := biliPickTierByLabel(info.Tiers, quality)
+	target := biliPickTierByLabel(info.Tiers, info.QNDesc, quality)
 	if target == nil {
 		return out, Variant{}, &UpstreamError{
 			Platform: Bilibili, Op: "取流",
@@ -282,14 +282,18 @@ func (p *bilibiliProvider) biliStreamSkeleton(ctx context.Context, roomID string
 }
 
 // biliPickTierByLabel 按菜单标签找档位；空标签或没命中时取最高档。
-func biliPickTierByLabel(tiers []biliTier, quality string) *biliTier {
+//
+// 比对用的是 biliQualityLabel(qn, desc)——菜单标签的同一个求值点。只查
+// biliQNLabels 固定表的话，表外 qn（标签来自服务端 desc）永远匹配不上，
+// 用户点到那一档会被静默换成最高档。
+func biliPickTierByLabel(tiers []biliTier, desc map[int64]string, quality string) *biliTier {
 	if len(tiers) == 0 {
 		return nil
 	}
 	want := strings.TrimSpace(quality)
 	if want != "" {
 		for i := range tiers {
-			if biliQNLabels[tiers[i].QN] == want {
+			if biliQualityLabel(tiers[i].QN, desc[tiers[i].QN]) == want {
 				return &tiers[i]
 			}
 		}

@@ -736,6 +736,10 @@ func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win
 		}
 		s.attachPlayer(p)
 		s.track = e
+		// 新引擎上的呈现尺寸还是它自己的默认值，而 s.present 记的是上一枚
+		// 引擎推过的意图——`want == s.present` 会短路，于是这一格永远按视频
+		// 原始尺寸（1080p）渲染。新引擎一律强推一次，不只焦点格要。
+		a.presentNewEngine(s)
 		// 音量按「是不是焦点」求：非焦点预览一律 0，焦点落它自己的值。
 		// 不能用 SetMuted：MyGo 把静音视频当「一张画」调度，系统要求
 		// 减少动效、窗口被遮住或元素不再显示时会把它按住不播，时间轴
@@ -760,8 +764,8 @@ func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win
 		s.lastPos = 0
 		if s == a.focus {
 			// 焦点这一间后开出来的引擎：把这一间自己的播放意图推上去。
+			// 呈现尺寸上面已经推过（新引擎必须走一次），这里只管声音。
 			a.applyFocusAudio()
-			a.applyPresentForce()
 		}
 		a.invalidateWindows()
 	})
@@ -1090,6 +1094,11 @@ func (a *App) watchTick(now time.Time) {
 		return
 	}
 	for _, s := range a.watch.sessions {
+		// stalled 是每帧观测量，焦点格也要算：它被用来画墙格的「缓冲中…」，
+		// 算在焦点过滤之后就只会停在历史值（该报的不报、恢复了的常驻）。
+		if s.player != nil {
+			s.stalled = wallStalled(s.player.Ready(), s.player.Playing(), s.stillSince, now)
+		}
 		// 焦点由媒体层驱动（播放页的首帧/断流/换地址在 trackFirstFrame，
 		// 后台收听的音频时钟在 trackBackground）。这里再管一遍就是第二套
 		// 看门狗：同一条断流会被两边各重连一次。
@@ -1139,7 +1148,6 @@ func (a *App) watchTick(now time.Time) {
 			a.watchEnded(s, why)
 			continue
 		}
-		s.stalled = wallStalled(s.player.Ready(), s.player.Playing(), s.stillSince, now)
 		if !s.refreshAt.IsZero() && now.After(s.refreshAt) {
 			a.watchRestart(s, "地址到期")
 			continue

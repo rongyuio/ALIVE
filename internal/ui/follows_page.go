@@ -342,8 +342,15 @@ func (a *App) followsActions(c *ui.Context) {
 		if search.FocusWithin() {
 			border = theme.AccentInk
 		}
+		// 展开由聚焦边沿触发一次，Esc 之后不再按 FocusWithin 每帧翻回来。
+		// CancelFocus 只清待处理请求，放不掉已生效焦点，所以不能靠它收起。
+		sfocused := search.FocusWithin()
+		if sfocused && !a.followsSearchFocused {
+			a.followsSearchOpen = true
+		}
+		a.followsSearchFocused = sfocused
 		width := catSearchW
-		if search.FocusWithin() || a.FollowsQuery != "" {
+		if a.followsSearchOpen || a.FollowsQuery != "" {
 			width = catSearchWide
 		}
 		search.Width(search.AnimateTo("follows-search-w", width,
@@ -357,13 +364,13 @@ func (a *App) followsActions(c *ui.Context) {
 				Placeholder("搜索主播").PlaceholderColor(theme.TextTertiary).
 				Label("搜索已关注的主播").
 				OnTextKey(func(k ui.TextKey) bool {
-					// 和顶栏搜索、分区搜索一致：一次 Esc 清空（页面本身不收起，
-					// 只把搜索退掉）
+					// 和顶栏搜索、分区搜索一致：一次 Esc 清空并把搜索框收回去。
+					// 不能靠 CancelFocus——它只清待处理请求，放不掉已生效焦点。
 					if k.Key != ui.KeyEscape {
 						return false
 					}
 					a.FollowsQuery = ""
-					a.FollowsSearch.CancelFocus(c)
+					a.followsSearchOpen = false
 					return true
 				})
 			if a.FollowsQuery != "" {

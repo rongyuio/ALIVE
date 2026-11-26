@@ -228,12 +228,13 @@ func (a *App) searchItem(c *ui.Context, i int, hit searchHit) {
 	if active {
 		row.Background(theme.FillQuaternary)
 	}
-	if row.Hovered() {
+	// 悬停只影响绘制，不写模型。指针停在结果上时每帧写 SearchHit，会把键盘
+	// ↑↓ 刚选中的项覆盖掉——用户看到的是「按 ↑↓ 没反应，挪开鼠标又好了」。
+	if !active && row.Hovered() {
+		row.Background(theme.FillSecondary)
+	}
+	if row.Clicked() {
 		a.SearchHit = i
-		if row.Clicked() {
-			a.openSearchHit(hit)
-		}
-	} else if row.Clicked() {
 		a.openSearchHit(hit)
 	}
 

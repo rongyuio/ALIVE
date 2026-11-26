@@ -48,7 +48,7 @@ func (a *App) ensureLiveData() {
 // 只写 GroupsByPlatform，不碰 Groups / ListLoading 这些界面状态——
 // 用户没切过去之前，界面上不该有任何东西因为它而变化。
 func (a *App) prefetchCategories(platform string) {
-	provider, ok := live.ProviderFor(live.Platform(platform))
+	provider, ok := providerFor(live.Platform(platform))
 	if !ok {
 		return
 	}
@@ -144,7 +144,7 @@ func (a *App) prefetchFirstPage(platform string) {
 	if _, ok := a.feedCache[key]; ok {
 		return
 	}
-	provider, ok := live.ProviderFor(live.Platform(platform))
+	provider, ok := providerFor(live.Platform(platform))
 	if !ok {
 		return
 	}
@@ -198,7 +198,7 @@ func (a *App) loadCategories(platform string) {
 	if platform == a.Platform && a.liveLoaded != nil {
 		a.liveLoaded[platform] = true
 	}
-	provider, ok := live.ProviderFor(live.Platform(platform))
+	provider, ok := providerFor(live.Platform(platform))
 	if !ok {
 		// 该平台还没接入：保持空态，不显示假数据。
 		if platform == a.Platform {
@@ -211,8 +211,11 @@ func (a *App) loadCategories(platform string) {
 	}
 	a.ListLoading = true
 	a.ErrText = ""
-	a.liveSeq++
-	seq := a.liveSeq
+	// 分区树用自己的代次 seq，不复用列表的 liveSeq：两个请求的生命周期互不
+	// 相干，共用一个序号时切平台会把分区树的在途响应一起作废（A→B→A 快切
+	// 一次，B 的分区树就永远填不进 GroupsByPlatform，下次切过去又重拉）。
+	a.catSeq++
+	seq := a.catSeq
 	win := a.Win
 
 	go func() {
@@ -222,8 +225,10 @@ func (a *App) loadCategories(platform string) {
 		if win == nil {
 			return
 		}
-		win.Update(func() {
-			if seq != a.liveSeq {
+		// 走 runOnMain（= 窗口的 Update）：同一件事，测试里能换成当场执行的
+		// 桩，序号守卫才算得清（见 TestLoadCategoriesKeepsOtherPlatformTree）。
+		runOnMain(win, func() {
+			if seq != a.catSeq {
 				return
 			}
 			a.ListLoading = false
@@ -264,7 +269,7 @@ func (a *App) loadRooms() {
 	if !a.LiveMode {
 		return
 	}
-	provider, ok := live.ProviderFor(live.Platform(a.Platform))
+	provider, ok := providerFor(live.Platform(a.Platform))
 	if !ok {
 		a.Rooms = nil
 		a.ListLoading = false
@@ -389,7 +394,7 @@ func (a *App) loadMoreRooms() {
 	if a.Win == nil {
 		return
 	}
-	provider, ok := live.ProviderFor(live.Platform(a.Platform))
+	provider, ok := providerFor(live.Platform(a.Platform))
 	if !ok {
 		return
 	}
@@ -661,7 +666,7 @@ func (a *App) syncSearch() {
 		a.SearchLoading = false
 		return
 	}
-	provider, ok := live.ProviderFor(live.Platform(platform))
+	provider, ok := providerFor(live.Platform(platform))
 	if !ok {
 		a.SearchResults, a.SearchLoading = nil, false
 		a.SearchErr = "该平台暂未接入搜索"
@@ -711,6 +716,17 @@ func searchErrorText(err error) string {
 // （订阅永远落在二级分区维度，所以第三段是 -1）。
 func subFeedKey(sub Subscription) string { return sub.PlatformID + "|" + sub.CategoryID + "|-1" }
 
+// subResolveRetry 是「缺分区 id」的订阅回填失败后隔多久再试。
+//
+// 回填由 ensureSubFeed 在渲染路径上触发，每帧都会跑；没有冷却就是每帧一条
+// Categories 请求。上游挂了时每帧撞墙也没有意义——30s 一次，直到成功。
+const subResolveRetry = 30 * time.Second
+
+// subResolveKey 是回填去重的身份串：平台 + 一级分组 + 二级分区名。
+//
+// 不能用下标：订阅列表会增删重排，同一条订阅换了个位置仍是同一条。
+func subResolveKey(s Subscription) string { return s.PlatformID + "|" + s.Group + "|" + s.Name }
+
 // ensureSubFeed 在当前选中的订阅变化时拉第一页。
 //
 // 订阅页的平台和分区可以跟首页完全不同，所以它有一套自己的列表状态，
@@ -726,10 +742,25 @@ func (a *App) ensureSubFeed() {
 	// 一枚 chip 可能挂着好几家平台，房间列表只显示当前选中的那一家的
 	sub := a.activeSub(chips[a.SubIndex])
 	if sub.CategoryID == "" {
-		// 旧版本存下来的订阅没有分区 id：先按名字回填
-		if i := a.subIndex(sub); i >= 0 {
-			a.resolveSubID(i)
+		// 旧版本存下来的订阅没有分区 id：先按名字回填。
+		//
+		// 这个函数在渲染路径上每帧都会跑，而 resolveSubID 自己没有在途去重：
+		// 不在这里记账，一条缺分区 id 的旧订阅就是每帧一次 Categories 请求。
+		// 发起时把「下次可再试」记成 now+subResolveRetry，在途和刚失败都算
+		// 在这段冷却里；失败就一直按这个节奏退避，不是每帧重试。
+		key := subResolveKey(sub)
+		if a.subResolve == nil {
+			a.subResolve = map[string]time.Time{}
 		}
+		if next, tried := a.subResolve[key]; tried && time.Now().Before(next) {
+			return
+		}
+		i := a.subIndex(sub)
+		if i < 0 {
+			return
+		}
+		a.subResolve[key] = time.Now().Add(subResolveRetry)
+		a.resolveSubID(i)
 		return
 	}
 	key := subFeedKey(sub)
@@ -741,7 +772,7 @@ func (a *App) ensureSubFeed() {
 	a.subCursor = 0
 	a.SubLoadingMore = false
 
-	if _, ok := live.ProviderFor(live.Platform(sub.PlatformID)); !ok {
+	if _, ok := providerFor(live.Platform(sub.PlatformID)); !ok {
 		a.SubRooms, a.SubHasMore, a.SubLoading = nil, false, false
 		a.SubErr = "该平台暂未接入"
 		return
@@ -766,7 +797,7 @@ func (a *App) fetchSubChunk(platform, areaID, key string, seq, cursor int) {
 	if win == nil {
 		return // 视图测试没有窗口，也不该发真实请求
 	}
-	provider, ok := live.ProviderFor(live.Platform(platform))
+	provider, ok := providerFor(live.Platform(platform))
 	if !ok {
 		return
 	}
@@ -823,7 +854,12 @@ func (a *App) applySubChunk(key string, cursor int, chunk live.Chunk) {
 	a.SubHasMore = chunk.HasMore
 	a.subCursor = chunk.Cursor
 	a.writeFeedCache(key, feedEntry{
-		rooms: a.SubRooms, cursor: chunk.Cursor, hasMore: chunk.HasMore, at: time.Now(),
+		rooms: a.SubRooms, cursor: chunk.Cursor, hasMore: chunk.HasMore,
+		// misses 是首页「这一段是不是全是重复房间」的连续计数（两次才判死）。
+		// 订阅页也写同一份缓存，不带上的话会把首页的计数清零，一条上游深页
+		// 重复的段之后就再判不出来，列表只能靠别的信号收尾。
+		misses: a.feedCache[key].misses,
+		at:     time.Now(),
 	})
 	a.noteChunkOutcome(chunk)
 }
@@ -847,7 +883,7 @@ func (a *App) retrySubFeed() {
 	if sub.CategoryID == "" {
 		return
 	}
-	if _, ok := live.ProviderFor(live.Platform(sub.PlatformID)); !ok {
+	if _, ok := providerFor(live.Platform(sub.PlatformID)); !ok {
 		a.SubErr = "该平台暂未接入"
 		return
 	}
@@ -903,7 +939,7 @@ func (a *App) resolveSubID(i int) {
 		return
 	}
 	sub := a.Subs[i]
-	provider, ok := live.ProviderFor(live.Platform(sub.PlatformID))
+	provider, ok := providerFor(live.Platform(sub.PlatformID))
 	if !ok {
 		return
 	}

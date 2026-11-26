@@ -182,6 +182,13 @@ func (p *douyinProvider) Stream(ctx context.Context, roomID, line string) (Strea
 //
 // 参数顺序固定：签名是对这份原始串做哈希的。
 func (p *douyinProvider) douyinFetchStreamRoom(ctx context.Context, internalID string) (douyinStreamRoom, error) {
+	// 取流也是上游请求，和房间页、列表共用同一个闸门。
+	release, err := p.lim.acquire(ctx)
+	if err != nil {
+		return douyinStreamRoom{}, err
+	}
+	defer release()
+
 	params := [][2]string{
 		{"type_id", "0"},
 		{"live_id", "1"},

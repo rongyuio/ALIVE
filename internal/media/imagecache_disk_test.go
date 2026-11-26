@@ -278,6 +278,35 @@ func TestBitmapDoesNotWriteDisk(t *testing.T) {
 	}
 }
 
+// 盘上的字节解不出来（不是图片）时必须删掉。
+//
+// 坏文件判据（空 / 超大 / 读不出）看不见「解码失败」这一种：留着它，每次启动
+// 都读同一份坏字节、再失败一遍，回退网络这条活路永远走不到。
+func TestDiskHitDecodeFailureRemovesFile(t *testing.T) {
+	dir := t.TempDir()
+	url := "https://example.invalid/face/broken.jpg"
+	path := diskPath(dir, url)
+	if err := os.WriteFile(path, []byte("这不是图片，解不出来"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := testDiskCache(dir)
+	c.Avatar(url, 40)
+
+	waitFor(t, "坏文件被删掉", func() bool {
+		_, err := os.Stat(path)
+		return os.IsNotExist(err)
+	})
+
+	// L2 里也不该留着同一份坏字节：否则重试会一直读它，网络要等 rawTTL。
+	c.mu.Lock()
+	_, stillRaw := c.raw[url]
+	c.mu.Unlock()
+	if stillRaw {
+		t.Fatal("L2 里还留着解不出来的字节：重试会一直读它，回退网络要等 5 分钟")
+	}
+}
+
 // 表情和头像一样落盘：第二轮加载不再走网络。
 func TestEmoteLoadsFromDisk(t *testing.T) {
 	data := pngBytes(t)

@@ -405,7 +405,7 @@ func renderUnkept(b *strings.Builder, r Report) {
 		open = append(open, s)
 	}
 	if len(open) == 0 {
-		fmt.Fprintf(b, "没有：累计 ≥%d 次且仍在冷却期外的症状，一条都没有。\n\n", tbl.StopAt)
+		fmt.Fprintf(b, "没有：累计 ≥%d 次且仍在冷却期内的症状，一条都没有。\n\n", tbl.StopAt)
 	}
 	for _, s := range open {
 		fmt.Fprintf(b, "### %s —— 累计 %d 次\n\n", s.S.Name, len(s.All))

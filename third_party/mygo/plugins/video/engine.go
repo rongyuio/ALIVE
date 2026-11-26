@@ -236,6 +236,26 @@ func newNative(opts Options, wake, renderWake chan struct{}) (backend, error) {
 	for _, o := range [][2]string{{"hwdec", "auto-safe"}, {"scale", "bilinear"}, {"dscale", "bilinear"}, {"sws-fast", "yes"}} {
 		_ = e.option(n.handle, o[0], o[1])
 	}
+	// BLOCK_FOR_TARGET_TIME 关掉之后的补偿（见下面 render 里的 block=0）。
+	//
+	// render.h 对 MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME=0 写得很明确：关掉
+	// 渲染里的阻塞等待之后，要么在渲染线程里按 mpv_render_frame_info 的
+	// target time 自己等，要么「把 video-timing-offset 设成 0」。两条等价，
+	// 选后者：另一条要在渲染线程每帧读 target_time、自己算还差多久、再接一遍
+	// mpv 的唤醒——多一份时钟逻辑，坏起来是音画缓慢漂移，比一个选项难查得多。
+	//
+	// 和调优项一样，设不上不致命：退回 mpv 默认的 50ms 提前量，A/V 同步略偏，
+	// 但这一路照常播。所以留一行日志而不是 fail。
+	//
+	// 实测（2026-11-26，B 站 545068 720P，d3d11va-copy，audio 时钟有效）：
+	// 同一条流上 offset=0 与 offset=0.050 各采 20s，total-avsync-change /
+	// mistimed-frame-count / decoder-drop-count 全部为 0，两种设置看不出差别。
+	// 原因是我们的渲染是「有帧就渲、按需呈现」，不落在 vsync-locked 的
+	// display-resample 那一支——render.h 警告的「A/V 略偏」在这条管线上没有
+	// 可观测载体。保留设为 0 只是把那个警告的前提彻底消掉，不指望它改同步。
+	if err := e.err(e.option(n.handle, "video-timing-offset", "0")); err != nil {
+		slog.Warn("video: video-timing-offset 设不上，A/V 同步可能略偏", "err", err)
+	}
 	// 缓冲抽干后的恢复门槛。mpv 默认 cache-pause-wait=1.0：缓存一空就要重新
 	// 攒满 1 秒才继续播。直播分片本来就只有 1 秒，等 1 秒等于每次抖动都至少
 	// 卡一秒，所以收到 0.2。
@@ -454,6 +474,12 @@ func (n *native) render(w, h int, force bool) (*Frame, bool, error) {
 	w = (w + 1) &^ 1
 	h = (h + 1) &^ 1
 	// SW_STRIDE 的类型是 size_t*，单位是字节。bgr0 是 4 字节/像素。
+	//
+	// render.h 要求「stride 和指针都按 64 对齐」（快 SIMD 路径），否则最坏
+	// 整帧拷一遍。这里的取整已经把它满足了：stride 是 64 的倍数，而 w、h 在
+	// 上面都取成了偶数，所以 need = stride*h 恒为 128 的倍数；make 出来的
+	// 切片首地址由 Go 分配器给出，至少 64 对齐（实测审计结论：不要为此加
+	// 手动对齐，对齐不是问题所在）。
 	stride := (w*4 + 63) &^ 63
 	need := stride * h
 	n.slot = (n.slot + 1) % len(n.bufs)

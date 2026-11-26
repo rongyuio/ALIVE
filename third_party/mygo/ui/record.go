@@ -28,6 +28,17 @@ type PresentedFrame struct {
 // while frames draw.
 var FrameSink func(PresentedFrame)
 
+// FrameErrorSink takes the errors of reading a frame back from the GPU, when a
+// window could not produce one: the recorder counts them and notes the first
+// few, so a frame lost here is not lost silently. Nil by default: a window
+// then only counts them (the renderer's CaptureErrors).
+var FrameErrorSink func(error)
+
+// frameErrorSinkSetter is a GPU renderer that reports failed frame reads.
+type frameErrorSinkSetter interface {
+	SetCaptureErrorSink(fn func(error))
+}
+
 // frameSinkSetter is a GPU renderer that can read the frames it draws back, as
 // Windows' Direct3D 11 one does.
 type frameSinkSetter interface {

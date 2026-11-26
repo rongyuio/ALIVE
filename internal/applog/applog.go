@@ -331,8 +331,12 @@ func (w *asyncWriter) Write(p []byte) (int, error) {
 // 在第一个开关关着时直接放过。
 func (s *sink) noise(p []byte) bool {
 	lvl := zerolog.Level(s.level.Load())
-	// Debug 级别默认全开；指定了组件就只放行这些子系统。
-	if lvl <= zerolog.DebugLevel && len(s.components) > 0 {
+	// 组件白名单只作用于 Debug 行：`ALIVE_LOG_COMPONENTS` 的语义是「只放行这些
+	// 子系统的 Debug」，不是「只放行这些子系统的所有级别」。旧写法在此处不判
+	// 级别，把没有 sub 字段的 warn/error（hang、engine.destroy_timeout、
+	// log.dropped…）和 run.start 一起丢掉了——排障时反而把证据关掉。
+	if lvl <= zerolog.DebugLevel && len(s.components) > 0 &&
+		bytes.Contains(p, []byte(`"level":"debug"`)) {
 		if !bytes.Contains(p, []byte(`"`+diag.Sub+`":"`)) {
 			return true
 		}

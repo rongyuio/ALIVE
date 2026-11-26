@@ -83,8 +83,10 @@ func TestRetryReloadsCategoryTreeWhenMissing(t *testing.T) {
 	}
 	assertReloaded := func(t *testing.T, a *App, before int) {
 		t.Helper()
-		if a.liveSeq <= before {
-			t.Fatalf("点重试没有重新请求分区树：liveSeq %d → %d", before, a.liveSeq)
+		// 分区树的代次是 catSeq：loadCategories 已经不再推进列表的 liveSeq
+		// （两者共用一个序号时，切平台会连带作废在途的分区树响应）。
+		if a.catSeq <= before {
+			t.Fatalf("点重试没有重新请求分区树：catSeq %d → %d", before, a.catSeq)
 		}
 		if !a.ListLoading {
 			t.Fatal("重新请求分区树后没有进入加载态")
@@ -100,7 +102,7 @@ func TestRetryReloadsCategoryTreeWhenMissing(t *testing.T) {
 		a.Rooms = []Streamer{{Platform: "douyu", RoomID: "1", Name: "主播"}}
 		a.ErrText = "分区加载失败：超时"
 		tt := ui.NewTester(a.Shell, 1440, 900)
-		before := a.liveSeq
+		before := a.catSeq
 
 		if err := tt.Click("重试"); err != nil {
 			t.Fatal(err)
@@ -111,7 +113,7 @@ func TestRetryReloadsCategoryTreeWhenMissing(t *testing.T) {
 	t.Run("空态", func(t *testing.T) {
 		a := newAppWithBrokenTree(t)
 		tt := ui.NewTester(a.Shell, 1440, 900)
-		before := a.liveSeq
+		before := a.catSeq
 
 		if err := tt.Click("重试"); err != nil {
 			t.Fatal(err)

@@ -35,6 +35,7 @@ type huyaHeadline struct {
 
 // pollHeadlines 周期性拉留言板并上屏。
 func (s *huyaDanmaku) pollHeadlines() {
+	defer close(s.pollDone)
 	ticker := time.NewTicker(huyaHeadlinePoll)
 	defer ticker.Stop()
 	for {
@@ -59,6 +60,11 @@ func (s *huyaDanmaku) fetchHeadlines() {
 		return
 	}
 	for _, h := range headlines {
+		// 拉取是一次网络往返，这段时间里会话可能已经 Close：每上屏一条之前
+		// 都要再看一次 ctx，Close 之后不允许再有任何回调。
+		if s.ctx.Err() != nil {
+			return
+		}
 		if !s.firstSightHeadline(h.ID) {
 			continue
 		}

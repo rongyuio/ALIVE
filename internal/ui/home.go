@@ -42,6 +42,12 @@ type App struct {
 	GroupsByPlatform map[string][]CategoryGroup
 	liveLoaded       map[string]bool
 	liveSeq          int
+	// catSeq 是分区树请求自己的代次，和列表的 liveSeq 分开。
+	//
+	// 两者曾经共用一个序号：切平台时 loadRooms 推进会顺带作废在途的分区树
+	// 响应——A→B→A 快切一次，B 的分区树就永远填不进 GroupsByPlatform，下次
+	// 切过去又要重拉一遍。
+	catSeq int
 	// 分区级列表缓存：切回看过的分区先渲染缓存，再判断是否过期刷新。
 	feedCache map[string]feedEntry
 	// homeCursor 是首页列表自己的续取位置。不能读 feedCache 的 cursor：
@@ -56,10 +62,13 @@ type App struct {
 	topUpFailures int
 
 	// 分区搜索：查询词、输入框是否展开、当前高亮项
-	CategoryQuery        string
-	CategorySearchOpen   bool
-	CategoryHit          int
-	catHitQuery          string
+	CategoryQuery      string
+	CategorySearchOpen bool
+	CategoryHit        int
+	catHitQuery        string
+	// catSearchFocused 是「上一帧输入框有没有焦点」，用来取聚焦边沿。
+	// 展开必须由边沿触发一次，不能每帧按 FocusWithin 无条件写（见 category_bar.go）。
+	catSearchFocused     bool
 	CategorySearchHandle ui.Handle
 
 	// 「全部」浮层（二级分区放不下时出现）是否展开
@@ -83,6 +92,10 @@ type App struct {
 	SubErr         string
 	subKey         string // 已经发起过的 platform|areaId
 	subSeq         int
+	// subResolve 记「缺分区 id 的旧订阅」上一次回填请求的时刻，值是下一次
+	// 可以再试的时刻（键见 subResolveKey）。ensureSubFeed 在渲染路径上每帧
+	// 都跑，没有它一条旧订阅就是每帧一次 Categories 请求。
+	subResolve map[string]time.Time
 	// subCursor 是订阅列表自己的续取位置（平台 offset）。不能读 feedCache
 	// 的 cursor：那个 cursor 首页和订阅页共用，另一边续过之后会把这一边
 	// 没取到的一段整段跳过。
@@ -266,6 +279,9 @@ type App struct {
 	// 这些字段是它自己的筛选状态，切走再回来还留着。
 	FollowsQuery  string
 	FollowsSearch ui.Handle
+	// followsSearchOpen 是关注页搜索框的展开状态；由聚焦边沿置真、Esc 置假。
+	followsSearchOpen    bool
+	followsSearchFocused bool
 	// 关注页里的平台筛选：空串 = 全部，否则是平台 id
 	FollowsPlatform string
 	// FollowsSection 是关注页的一级分区：0 关注主播、1 订阅分区。
@@ -1114,7 +1130,11 @@ func (a *App) emptyGrid(c *ui.Context, view gridView) {
 					clear.Background(theme.AccentHover)
 				}
 				if clear.Clicked() {
+					// 换到「全部」是换了一份列表：必须重新取。以前这里只改了
+					// SubCatIndex，没有 reload——空态里的这个按钮点了什么都不会
+					// 发生，用户以为按钮坏了。
 					a.SubCatIndex = -1
+					a.reloadRooms()
 				}
 				clear.Children(func() {
 					ui.Text(c, "查看全部分区").FontSize(theme.TextSM).FontWeight(600).

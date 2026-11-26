@@ -3,6 +3,7 @@ package live
 import (
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,7 +32,8 @@ func expiryFromQuery(raw string, keys ...string) time.Time {
 			return time.Unix(n, 0)
 		}
 		// 小数字是「还能用多少秒」，只有斗鱼的 expire 这么写。
-		if n, err := strconv.Atoi(val); err == nil && n > 0 && n < 1<<20 {
+		// 上限取 1e7（约 115 天）：再长就不像相对秒数，宁可不认。
+		if n, err := strconv.Atoi(val); err == nil && n > 0 && n < 1e7 {
 			return time.Now().Add(time.Duration(n) * time.Second)
 		}
 	}
@@ -40,11 +42,20 @@ func expiryFromQuery(raw string, keys ...string) time.Time {
 
 // epochSeconds 认十进制与十六进制的绝对秒数。
 //
-// 阈值取 1e9（2001 年）：比它小的一律不当时间戳，避免把「300 秒」这种
-// 相对值误读成 1970 年。
+// 十进制必须先判：9 位十进制（如 500000000）本身也是合法十六进制串，
+// 先走十六进制会被读成 0x500000000 ≈ 2650 年。所以：
+//   - 纯十进制：>1e9 才算绝对秒数，否则是「剩余秒数」，这里不认；
+//   - 只有含 [a-fA-F] 的串才当十六进制试（虎牙的 wsTime 形如 6afa8732）。
 func epochSeconds(raw string) (int64, bool) {
-	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 1e9 {
-		return n, true
+	raw = strings.TrimSpace(raw)
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if n > 1e9 {
+			return n, true
+		}
+		return 0, false
+	}
+	if !strings.ContainsAny(raw, "abcdefABCDEF") {
+		return 0, false
 	}
 	if n, err := strconv.ParseInt(raw, 16, 64); err == nil && n > 1e9 {
 		return n, true

@@ -125,8 +125,17 @@ type danmuState struct {
 //
 // 只有播放页需要连续帧：33ms 一次让主线程按时间重算位置。
 // 离开播放页后 tickDanmu 把 active 置 false，goroutine 自行退出。
+//
+// 弹幕关着时不需要这个 ticker：tickDanmu 只维护画面上正在飞的那批
+// （见 tickDanmu），而右侧面板读的是 DanmuLog、由每帧的视图重建直接算出来，
+// 新弹幕到达本身就会经 runOnMain 触发一次重建——面板不要推动器。
+// 关掉时把 active 放下，正在跑的那个循环下一拍自己退出。
 func (a *App) ensureDanmuLoop() {
 	if a.Win == nil {
+		return
+	}
+	if !a.DanmuOn {
+		a.danmu.active.Store(false)
 		return
 	}
 	a.danmu.active.Store(true)

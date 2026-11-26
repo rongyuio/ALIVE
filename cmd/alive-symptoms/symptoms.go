@@ -73,6 +73,10 @@ func LoadTable(path string) (*Table, error) {
 }
 
 func (t *Table) Validate() error {
+	// version 声明了就要校验：不认识的新格式报错，不要按 v1 静默地少读字段。
+	if t.Version != 0 && t.Version != 1 {
+		return fmt.Errorf("version=%d 不认识（只认 1）", t.Version)
+	}
 	if t.WindowDays <= 0 {
 		return fmt.Errorf("windowDays 必须 > 0（现在是 %d）", t.WindowDays)
 	}

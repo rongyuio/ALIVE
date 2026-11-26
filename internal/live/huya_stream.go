@@ -190,8 +190,13 @@ func (p *huyaProvider) Stream(ctx context.Context, roomID, line string) (Stream,
 // 与 huya_room.go 的 RoomInfo 是同一个接口，区别只在 showSecret=1——
 // 不带它拿不到播放候选。
 func (p *huyaProvider) huyaFetchStreamProfile(ctx context.Context, roomID string) (*huyaStreamProfile, error) {
+	release, err := p.lim.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	target := fmt.Sprintf(huyaStreamProfileURL, url.QueryEscape(roomID))
 	body, err := p.api.get(ctx, "取流档案", target, nil)
+	release()
 	if err != nil {
 		return nil, p.wrap("取流档案", err)
 	}
@@ -327,11 +332,21 @@ func huyaAvailableBitrates(profile *huyaStreamProfile) []int32 {
 	return deduped
 }
 
-// huyaStreamVariants 生成三档：原画、最大码率的高清、最小码率的标清。
+// huyaStreamVariants 生成档位：原画、最大码率的高清、最小码率的标清。
+//
+// 只有一个码率时，「高清 N K」和「标清 N K」指的是同一条流（同一个 ratio
+// 参数、同一个地址）：只出一个高清项，菜单里不该出现两个 Rate 相同的档位。
 func huyaStreamVariants(profile *huyaStreamProfile) []huyaVariant {
+	bitrates := huyaAvailableBitrates(profile)
+	if len(bitrates) == 1 {
+		return []huyaVariant{
+			{ID: "source", Label: "原画"},
+			{ID: "high", Label: fmt.Sprintf("高清 %dK", bitrates[0]), Rate: bitrates[0]},
+		}
+	}
 	high := int32(huyaBitrateFallbackHD)
 	sd := int32(huyaBitrateFallbackSD)
-	if bitrates := huyaAvailableBitrates(profile); len(bitrates) > 0 {
+	if len(bitrates) > 0 {
 		sd = bitrates[0]
 		high = bitrates[len(bitrates)-1]
 	}
@@ -352,6 +367,13 @@ func huyaStreamBaseURL(candidate huyaStreamCandidate, anti string) string {
 
 // huyaCdnToken 调 getCdnTokenInfoEx 换播放鉴权 token。
 func (p *huyaProvider) huyaCdnToken(ctx context.Context, flvURL, streamName string) (string, error) {
+	// 换 token 也是一次上游取流请求，跟列表、档案共用同一个闸门。
+	release, err := p.lim.acquire(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	packet := huyaEncodeWupRequest(1, huyaWupServant, huyaWupFunc,
 		huyaEncodeCdnTokenParam(flvURL, streamName))
 

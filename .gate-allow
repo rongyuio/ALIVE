@@ -15,9 +15,16 @@ churn internal/ui/surface.go 4 次 fix / 7 天 # 同上
 churn internal/ui/surface_motion.go 6 次 fix / 7 天 # 同上（「飞回格子」修了 6 次）
 # 历史里的多文件 fix：规则落地之前就存在的，改不了。只豁免这几个具体提交，
 # 新提交照拦（commit-msg 钩子在第一道就拦）。
-commits 356a0dc # 11 个文件，规则落地前
-commits 63a7613 # 27 个文件，规则落地前
-commits 775fa3e # 22 个文件，规则落地前
-commits 9f86a4b # 11 个文件，规则落地前
-commits df1a37e # 5 个文件，规则落地前
-commits fd52e01 # 13 个文件，规则落地前
+# 数字是修好 commits 判据后重算的真实文件数（旧版把多行 body 当成文件，
+# 数字曾虚高成 11/27/22/11/5/13）。356a0dc(2) 与 df1a37e(1) 本就不超限，
+# 已从清单移除。
+commits 63a7613 # 5 个文件，规则落地前
+commits 775fa3e # 5 个文件，规则落地前
+commits 9f86a4b # 4 个文件，规则落地前
+commits fd52e01 # 4 个文件，规则落地前
+
+# 导入/导出的"字段存在性"语义全在同一个文件里：音量指针、清晰度、墙音量、
+# 彩色弹幕各修过一次（四次 fix 是四个独立字段，不是同一条路径返工）。
+# 写者收口欠账：下一步把 configFile 的全部可选字段统一成指针语义，然后撤掉
+# 这一条。值写死 4 次——再修一次变 5 次会自动恢复报警。
+churn internal/ui/config_transfer.go 4 次 fix / 7 天 # 字段存在性语义待统一成指针，写者收口未完成

@@ -25,11 +25,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -88,6 +90,12 @@ type frameRecorder struct {
 	encoders []*zstd.Encoder
 	workers  int
 
+	// logMu/logw 给「回读失败」那条旁路写 record.log 用：它跑在渲染线程上，
+	// 而 logw 由 begin 在主线程设置。captureErrs 是整段录制里丢掉的帧数。
+	logMu       sync.Mutex
+	logw        io.Writer
+	captureErrs atomic.Uint64
+
 	queue   chan recordJob // 渲染主线程 → 压缩
 	results chan recordJob // 压缩 → 写盘（乱序）
 	free    chan []byte    // 回收的像素缓冲
@@ -123,6 +131,20 @@ func init() {
 		done:    make(chan struct{}),
 	}
 	ui.FrameSink = recorder.frame
+	// 回读失败的帧不能悄悄丢：录制工具的唯一承诺是「每一帧」，所以把它
+	// 记进 record.log（计数 + 前几条），而不是让帧数无声地少一截。
+	ui.FrameErrorSink = recorder.captureError
+}
+
+// captureError 记一次「这一帧没读回来」。跑在渲染线程上，只做计数和写一行
+// 日志；record.log 还没建好时只计数（begin 之后才有 logw）。
+func (r *frameRecorder) captureError(err error) {
+	n := r.captureErrs.Add(1)
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	if r.logw != nil && n <= 8 {
+		fmt.Fprintf(r.logw, "capture error #%d: %v\n", n, err)
+	}
 }
 
 // compressWorkers 定压缩 goroutine 的条数。
@@ -218,6 +240,9 @@ func (r *frameRecorder) begin(p ui.PresentedFrame) error {
 		r.closeEncoders(encs)
 		return err
 	}
+	r.logMu.Lock()
+	r.logw = lg
+	r.logMu.Unlock()
 	// 第一帧里有多少像素不透明：ALIVE 的窗口是不透明的（d3d11.New），全 255；
 	// 有半透明说明窗口走的是 DirectComposition（premultiplied），记下来，
 	// 免得把「抓到的是不是用户看到的那一层」变成一句口头结论。
@@ -382,4 +407,11 @@ func (r *frameRecorder) stop(why string) {
 	r.stopped, r.why = true, why
 	close(r.queue)
 	<-r.done
+	if n := r.captureErrs.Load(); n > 0 {
+		r.logMu.Lock()
+		if r.logw != nil {
+			fmt.Fprintf(r.logw, "capture errors total: %d\n", n)
+		}
+		r.logMu.Unlock()
+	}
 }

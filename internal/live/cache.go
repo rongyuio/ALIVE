@@ -67,3 +67,13 @@ func (c *cache[T]) load(key string, ttl time.Duration, fn func() (T, error)) (T,
 
 	return f.val, f.err
 }
+
+// copyPageRooms 复制一页房间再交给调用方。
+//
+// cache 存 Page 时，页里的 Rooms 切片和缓存共用同一块底层数组：调用方
+// append 或者改 Rooms[0]，写的就是缓存本身，下一次命中拿到的就是脏数据。
+// 所以命中缓存后必须先把切片复制一份再返回。
+func copyPageRooms(page Page) Page {
+	page.Rooms = append([]Room(nil), page.Rooms...)
+	return page
+}

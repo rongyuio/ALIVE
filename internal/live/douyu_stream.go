@@ -138,7 +138,7 @@ func (p *douyuProvider) Stream(ctx context.Context, roomID, line string) (Stream
 
 	rates, cdns, err := p.douyuPlayQualities(ctx, room.RoomID)
 	if err != nil {
-		return Stream{}, err
+		return Stream{}, p.douyuStreamErr(err)
 	}
 	out.Lines = cdns
 	resolveOrder := douyuOrderCDNs(cdns, line)
@@ -213,7 +213,7 @@ func (p *douyuProvider) Stream(ctx context.Context, roomID, line string) (Stream
 	}
 	if len(out.Variants) == 0 {
 		if firstErr != nil {
-			return Stream{}, firstErr
+			return Stream{}, p.douyuStreamErr(firstErr)
 		}
 		return Stream{}, fmt.Errorf("房间 %s 没有可用的直播流", room.RoomID)
 	}
@@ -244,7 +244,7 @@ func (p *douyuProvider) StreamForPlayback(ctx context.Context, roomID, line, qua
 
 	rates, cdns, err := p.douyuPlayQualities(ctx, room.RoomID)
 	if err != nil {
-		return Stream{}, Variant{}, err
+		return Stream{}, Variant{}, p.douyuStreamErr(err)
 	}
 	out.Lines = cdns
 	for _, rate := range rates {
@@ -302,13 +302,36 @@ func (p *douyuProvider) StreamForPlayback(ctx context.Context, roomID, line, qua
 		return out, *unconfirmed, nil
 	}
 	if lastErr != nil {
-		return Stream{}, Variant{}, lastErr
+		return Stream{}, Variant{}, p.douyuStreamErr(lastErr)
 	}
 	return Stream{}, Variant{}, fmt.Errorf("房间 %s 没有可用的直播流", room.RoomID)
 }
 
+// douyuStreamErr 把一次取流的最终失败归类：403 进平台冷却，其余按上游错误上抛。
+//
+// 为什么不在每个上游请求上直接 wrap：斗鱼取流自己有一套自愈链（换票重试、
+// 游客兜底、逐线路回退）。403 在链条中途出现时先要让它继续往下试，立刻
+// block 会把同一次调用的后续请求全卡在冷却上，自愈反而失败。所以风控归档
+// 统一放在整次取流真的失败之后做一次。
+func (p *douyuProvider) douyuStreamErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	// 取消与超时原样上抛，上层要区分「用户切走了」和「上游出错」。
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return p.wrap("取流", err)
+}
+
 // douyuPickRate 按菜单标签选档；空值或没命中时用平台默认档（下发顺序第一项）。
+//
+// 空表先返回：兜底档不索引 rates，任何用到 rates[0] 的分支都必须在长度
+// 判断之后（旧实现把 len 判断写在 rates[0] 之后，空表直接 panic）。
 func douyuPickRate(rates []douyuRate, quality string) douyuRate {
+	if len(rates) == 0 {
+		return douyuRate{Name: "默认", Rate: -1}
+	}
 	want := strings.TrimSpace(quality)
 	if want != "" {
 		for _, rate := range rates {
@@ -321,10 +344,7 @@ func douyuPickRate(rates []douyuRate, quality string) douyuRate {
 		// 上层还会用“点选 vs 实际”的对比给用户提示。
 		diag.L().Info().Str("requested", want).Str("fallback", douyuRateLabel(rates[0])).Msg("斗鱼请求的清晰度不在当前档位表里，改用默认档")
 	}
-	if len(rates) > 0 {
-		return rates[0]
-	}
-	return douyuRate{Name: "默认", Rate: -1}
+	return rates[0]
 }
 
 // douyuRateByCode 在平台下发的档位表里找实际 rate 对应的名字。
@@ -612,6 +632,11 @@ func (p *douyuProvider) douyuPlayData(ctx context.Context, roomID string, rate i
 }
 
 // douyuPlayAttempts 用同一种身份（登录 / 游客）取流；描述符过期时强制刷新重试一次。
+//
+// 每次真正打上游的取流请求都要过 limiter：一次 Stream 会并发打「档位 × 线路」
+// 十几个请求，不过闸门就是一串齐发的上游请求。错误这里原样上抛，由
+// Stream / StreamForPlayback 的出口统一走 douyuStreamErr 归档（中途归档会把
+// 「换票重试 → 游客兜底 → 逐线路回退」这条自愈链卡在冷却上）。
 func (p *douyuProvider) douyuPlayAttempts(ctx context.Context, roomID string, rate int, cdn string, login bool) (*douyuPlayData, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -621,8 +646,13 @@ func (p *douyuProvider) douyuPlayAttempts(ctx context.Context, roomID string, ra
 			continue
 		}
 
+		release, err := p.lim.acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
 		body, err := p.api.postForm(ctx, "取流", fmt.Sprintf(douyuH5PlayURL, roomID),
 			strings.NewReader(form), p.douyuHeaders(roomID, did, login))
+		release()
 		if err != nil {
 			lastErr = err
 			continue
@@ -770,7 +800,15 @@ func (p *douyuProvider) douyuEncryption(ctx context.Context, force, login bool) 
 		return s.enc, nil
 	}
 
+	// 只有真的去取描述符时才占限流槽位：缓存命中不该白等一个 gap。
+	// 这里不 wrap：风控归档放在整次取流的出口做一次（douyuStreamErr），
+	// 免得刚进冷却就把同一次取流的重试卡在闸门上。
+	release, err := p.lim.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	body, err := p.api.get(ctx, "取流签名", fmt.Sprintf(douyuEncryptionURL, did), p.douyuHeaders("", did, login))
+	release()
 	if err != nil {
 		return nil, err
 	}

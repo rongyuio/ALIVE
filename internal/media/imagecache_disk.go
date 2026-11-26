@@ -70,7 +70,7 @@ func (c *Cache) loadDisk(key, url string, target int, dir string) {
 
 		// 顺手放进 L2：同一张头像换个尺寸再请求时不必回盘。
 		c.putRaw(url, data)
-		c.decodeRaw(key, url, target, data)
+		c.decodeRaw(key, url, target, data, true)
 		return
 	}
 	c.fetch(key, url, target)
@@ -96,8 +96,29 @@ func readDiskFile(path string) ([]byte, bool) {
 	return data, true
 }
 
-// persistData 把原始字节写进磁盘缓存，只对请求过 Avatar 的 URL 生效。
+// forgetDiskBytes 处理「盘上这份字节解不出来」：删文件，并把 L2 里同一份
+// 字节一起丢掉。
 //
+// 只删文件不够：loadDisk 命中时已经把字节放进了 L2，下一次重试（失败冷却
+// 30 秒之后）读到的是 L2 里那份同样的坏字节，于是又失败一次——网络那条活路
+// 要等到 rawTTL（5 分钟）过期才走得到。我们已经知道这堆字节解不出来，留着
+// 它没有任何好处。
+//
+// 只在解码失败时调用；文件不存在就是空操作（别的路径可能已经删过）。
+func (c *Cache) forgetDiskBytes(url string) {
+	c.mu.Lock()
+	dir := c.diskDir
+	if r, ok := c.raw[url]; ok {
+		c.rawBytes -= int64(len(r.data))
+		delete(c.raw, url)
+	}
+	c.mu.Unlock()
+	if dir != "" {
+		_ = os.Remove(diskPath(dir, url))
+	}
+}
+
+// persistData 把原始字节写进磁盘缓存，只对请求过 Avatar 的 URL 生效。
 // 调用点在解码成功之后：解不出来的字节（比如 CDN 转出来的动画 WebP）写
 // 下去只会让下次启动再失败一遍。
 func (c *Cache) persistData(url string, data []byte) {

@@ -105,6 +105,9 @@ func dwellReport(o options, a *Sequence) int {
 	fmt.Printf("%-6s %-8s %-9s %-8s %-10s %s\n", "起帧", "起(ms)", "帧数", "时长", "亮度", "判定")
 
 	var bad int
+	// 先按最长的那几段排，再打印：注释和结论都在说「先看最长的那几段」，
+	// 排序写在打印之后等于没做。
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].frames > lines[j].frames })
 	for _, l := range lines {
 		mark := ""
 		if l.kind != "内容" && l.frames > o.dwellMaxFrames {
@@ -125,7 +128,6 @@ func dwellReport(o options, a *Sequence) int {
 	}
 	fmt.Printf("结论：%d 段白/黑超过 %d 帧——用户能看到。先看那几段的起帧，导出 PNG 核对。\n",
 		bad, o.dwellMaxFrames)
-	sort.SliceStable(lines, func(i, j int) bool { return lines[i].frames > lines[j].frames })
 	return 1
 }
 

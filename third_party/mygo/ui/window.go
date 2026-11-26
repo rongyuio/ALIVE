@@ -680,6 +680,10 @@ func (h *windowHost) makeGPU() {
 		// the first frame, so the renderer's first one has it.
 		s.SetFrameSink(h.framed)
 	}
+	if s, ok := r.(frameErrorSinkSetter); ok && FrameErrorSink != nil {
+		// A read-back that fails would otherwise lose a frame without a trace.
+		s.SetCaptureErrorSink(FrameErrorSink)
+	}
 	if p, ok := r.(interface{ SetPost(func(func())) }); ok && h.conn.Post != nil {
 		// Frames waiting for the display draw through the main thread.
 		p.SetPost(h.conn.Post)

@@ -78,7 +78,11 @@ type huyaDanmaku struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
-	once   sync.Once
+	// pollDone 关闭表示「上头条」轮询 goroutine 真的退出了。Close 要等它，
+	// 否则 Close 返回之后轮询还可能把一条留言回调上屏（types.go 的约定）。
+	// 没有轮询（channelID 无效）时保持 nil。
+	pollDone chan struct{}
+	once     sync.Once
 
 	mu   sync.Mutex
 	conn *websocket.Conn
@@ -113,9 +117,12 @@ func (p *huyaProvider) Danmaku(ctx context.Context, roomID string, onMessage fun
 		seenHead:  map[int64]struct{}{},
 		done:      make(chan struct{}),
 	}
+	if channelID > 0 {
+		s.pollDone = make(chan struct{})
+	}
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	go s.run()
-	if channelID > 0 {
+	if s.pollDone != nil {
 		go s.pollHeadlines()
 	}
 	return s, nil
@@ -202,6 +209,15 @@ func (s *huyaDanmaku) Close() {
 		select {
 		case <-s.done:
 		case <-time.After(3 * time.Second):
+		}
+		// 留言轮询单独一条 goroutine：不等它，Close 返回之后还可能有一条
+		// 回调打到上层。超时兜底是因为轮询自己就在 onMessage 里，回调里
+		// 重入 Close 时必须能靠超时解开，不能互等。
+		if s.pollDone != nil {
+			select {
+			case <-s.pollDone:
+			case <-time.After(3 * time.Second):
+			}
 		}
 	})
 }

@@ -97,6 +97,15 @@ func (a *App) selectGroup(i int) {
 	if i < 0 || i >= len(a.Groups) {
 		return
 	}
+	// 点的就是当前这一组、而且已经停在它的第一个二级/「全部」上：这是一次
+	// 空操作。仍然换代会把内容层整棵子树重建一遍（换 key + 重拉列表）——
+	// 表现是「同一个分区点一下，内容重铺/滚动位置跳」，而且刚按下的卡片
+	// 会和松手时的不是同一个元素，点击就此丢掉。三级 chip 早就有这条保护
+	// （subChip 里的 `i != a.SubCatIndex`），一级/二级漏了。
+	if i == a.GroupIndex && a.CategoryIndex == 0 && a.SubCatIndex < 0 {
+		a.MoreOpen = false
+		return
+	}
 	a.navFlip(&a.navSeq)
 	// 切一级分区时自动选中它的第一个二级分区，三级回到「全部」
 	a.GroupIndex = i
@@ -107,6 +116,13 @@ func (a *App) selectGroup(i int) {
 }
 
 func (a *App) selectCategory(i int) {
+	if i == a.CategoryIndex && a.SubCatIndex < 0 {
+		// 同上：点已选中的二级分区是空操作，不能重建内容层。
+		a.MoreOpen = false
+		a.CategoryQuery = ""
+		a.CategorySearchOpen = false
+		return
+	}
 	a.navFlip(&a.navSeq)
 	a.CategoryIndex = i
 	a.SubCatIndex = -1
@@ -275,11 +291,17 @@ func (a *App) categorySearch(c *ui.Context) {
 		Radius(theme.RadiusFull).Background(theme.FillQuaternary).
 		Center().Cursor(ui.CursorText).Label("分区搜索框")
 
-	// 输入框一拿到焦点就展开到 220，不等用户开始打字
-	//（展开条件：搜索已打开，或者输入框里已经有内容）。
-	if field.FocusWithin() {
+	// 输入框一拿到焦点就展开到 220，不等用户开始打字。
+	//
+	// 只在「焦点刚进来」这个边沿写一次，不能每帧按 FocusWithin 无条件写：
+	// 写在渲染路径里等于每次 build 都重开，Esc / Enter 关掉的下一帧就被翻回来。
+	// 而且 Handle.CancelFocus 只清「待处理的聚焦请求」，放不掉已经生效的焦点
+	// （third_party/mygo/ui/ref.go），所以关掉之后必须靠这个边沿而不是靠清焦点。
+	focused := field.FocusWithin()
+	if focused && !a.catSearchFocused {
 		a.CategorySearchOpen = true
 	}
+	a.catSearchFocused = focused
 	width := catSearchW
 	if a.CategorySearchOpen || a.CategoryQuery != "" {
 		width = catSearchWide
@@ -422,6 +444,13 @@ func (a *App) categoryHits() []categoryHit {
 }
 
 func (a *App) pickCategoryHit(h categoryHit) {
+	if h.GroupIndex == a.GroupIndex && h.CategoryIndex == a.CategoryIndex && a.SubCatIndex < 0 {
+		// 搜到的就是当前这一档：只收掉搜索，不换代。
+		a.MoreOpen = false
+		a.CategoryQuery = ""
+		a.CategorySearchOpen = false
+		return
+	}
 	a.navFlip(&a.navSeq)
 	a.GroupIndex = h.GroupIndex
 	a.CategoryIndex = h.CategoryIndex
@@ -454,10 +483,13 @@ func (a *App) categorySearchItem(c *ui.Context, i int, h categoryHit) {
 	if active {
 		row.Background(theme.FillQuaternary)
 	}
-	if row.Hovered() {
-		a.CategoryHit = i
+	// 悬停只影响绘制，不写模型：指针停在列表上时每帧写 CategoryHit 会把
+	// 键盘 ↑↓ 刚改好的选中项覆盖掉。
+	if !active && row.Hovered() {
+		row.Background(theme.FillSecondary)
 	}
 	if row.Clicked() {
+		a.CategoryHit = i
 		a.pickCategoryHit(h)
 	}
 	row.Children(func() {

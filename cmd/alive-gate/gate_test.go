@@ -241,3 +241,97 @@ func TestCommitsAcceptsReason(t *testing.T) {
 		t.Fatalf("写了理由却被报：%v", got)
 	}
 }
+
+// TestCommitsMultiLineBodyIsNotFiles：多行 body 的第 2 行起不能被当成文件。
+//
+// 旧写法把 %b 和 --name-only 混在一份流里，3 个文件的合规提交被报成 4 个、
+// 5 个（取决于 body 有几行）。这里是反向回归：只要 body 多行，文件数必须
+// 仍是真实文件数。
+func TestCommitsMultiLineBodyIsNotFiles(t *testing.T) {
+	dir := newRepo(t)
+	for i := 0; i < 3; i++ {
+		write(t, dir, filepath.Join("internal", "x", string(rune('a'+i))+".go"), "package x\n")
+	}
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-qm", "fix: 三个文件", "-m", "第一行解释", "-m", "第二行解释")
+	if got := checkCommits(newEnv(dir)); len(got) != 0 {
+		t.Fatalf("3 个文件的提交被多行 body 顶成超限：%v", got)
+	}
+}
+
+// TestCommitsReasonOnSecondLine：理由写在 body 第二行也要认。
+func TestCommitsReasonOnSecondLine(t *testing.T) {
+	dir := newRepo(t)
+	for i := 0; i < 5; i++ {
+		write(t, dir, filepath.Join("internal", "x", string(rune('a'+i))+".go"), "package x\n")
+	}
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-qm", "fix: 五个文件", "-m", "先解释一句为什么", "-m", "拆不开：同一个写者收口")
+	if got := checkCommits(newEnv(dir)); len(got) != 0 {
+		t.Fatalf("理由在第二行却没读到：%v", got)
+	}
+}
+
+// TestCommitsBodySeparatorsDoNotHideFiles：body 里出现 @@ / | 也不能把提交藏掉。
+func TestCommitsBodySeparatorsDoNotHideFiles(t *testing.T) {
+	dir := newRepo(t)
+	for i := 0; i < 10; i++ {
+		write(t, dir, filepath.Join("internal", "x", string(rune('a'+i))+".go"), "package x\n")
+	}
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-qm", "fix: 横切十个文件", "-m", "详见 https://example.com/a@@b|c")
+	got := checkCommits(newEnv(dir))
+	if len(got) == 0 {
+		t.Fatal("10 个文件的横切提交没被抓到")
+	}
+	if !strings.Contains(got[0], "10 个文件") {
+		t.Errorf("文件数不对：%s", got[0])
+	}
+}
+
+// TestCommitsIgnoresScopedFeatMentioningFix：body 里抄了 `fix:` 的 feat 提交不是 fix。
+func TestCommitsIgnoresScopedFeatMentioningFix(t *testing.T) {
+	dir := newRepo(t)
+	for i := 0; i < 10; i++ {
+		write(t, dir, filepath.Join("internal", "x", string(rune('a'+i))+".go"), "package x\n")
+	}
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-qm", "feat: 横切新增", "-m", "fix: 顺手修了一句注释")
+	if got := checkCommits(newEnv(dir)); len(got) != 0 {
+		t.Fatalf("feat 提交被当成 fix：%v", got)
+	}
+}
+
+// TestEvaluatorCatchesPackageLevelEvaluator：包级函数形态的第二个求值点也要报。
+func TestEvaluatorCatchesPackageLevelEvaluator(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "internal/ui/surface.go", `
+package ui
+
+type picture int
+
+func pictureAlpha(key string) picture {
+	if key == "" {
+		return 0
+	}
+	if key == "x" {
+		return 1
+	}
+	return 2
+}
+
+func pictureBeta(key string) picture {
+	if key == "" {
+		return 0
+	}
+	if key == "y" {
+		return 1
+	}
+	return 2
+}
+`)
+	got := checkEvaluator(newEnv(dir))
+	if len(got) == 0 {
+		t.Fatal("两个包级求值点没被抓到")
+	}
+}

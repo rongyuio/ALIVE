@@ -99,7 +99,10 @@ func (c *Cache) doneAnimation(key, url string, frames []*ui.Bitmap, delays []tim
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.anims[key] = &animation{frames: frames, delays: delays, total: total}
+	// url 必须记下来：ReleaseTexturesExcept / sweep 都按 tex.url 判断该不该
+	// 保留，漏了它动图永远 keep 不住——切平台时被清掉，或者跟着首帧纹理一起
+	// 被回收，下一帧整段 GIF 重新解码。
+	c.anims[key] = &animation{url: url, frames: frames, delays: delays, total: total}
 	// 纹理记账覆盖整组帧：sweep / LRU / ReleaseTexturesExcept 都按
 	// texture.bytes 从 c.bytes 里减，只记首帧会让动图内存对 64MB 上限
 	// 不可见，回收时反而把账减成负数。替换同一 key 时旧账整份退出。

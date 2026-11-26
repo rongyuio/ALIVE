@@ -764,6 +764,21 @@ func (p *Player) target() (int, int) {
 	return 640, 360
 }
 
+// Size 返回最近一次渲染出的画面的尺寸，还没有画面时返回 0,0。
+//
+// 只读：不刷 lastPull，也不唤醒渲染线程。lastPull 是渲染门控的判据
+// （renderIdle），只看尺寸的调用方不该把自己算成「有人在看」——以前
+// playback.Engine.Size 借道 Frame()，问一次尺寸就让没人看的格子恢复全尺寸
+// 渲染，「没人看就不渲」永远生效不了。
+func (p *Player) Size() (int, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.frame == nil {
+		return 0, 0
+	}
+	return p.frame.W, p.frame.H
+}
+
 // Frame 返回最近一次渲染出的画面与它的序号，还没有画面时返回 nil。
 //
 // 序号每次成功渲染自增，调用方据此判断有没有换帧——比反复比较像素便宜得多。

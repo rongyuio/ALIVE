@@ -369,7 +369,7 @@ func (c *Cache) bitmap(url string, width float32, persist bool) *ui.Bitmap {
 
 	switch {
 	case raw != nil:
-		go c.decodeRaw(key, url, target, raw)
+		go c.decodeRaw(key, url, target, raw, false)
 	case persist && dir != "":
 		// 磁盘优先于网络：头像重启后还在，先看它。
 		// 只在 persist 时查——封面从来不落盘，查也是白查。
@@ -414,7 +414,7 @@ func (c *Cache) fetch(key, url string, target int) {
 		return
 	}
 	c.putRaw(url, data)
-	c.decodeRaw(key, url, target, data)
+	c.decodeRaw(key, url, target, data, false)
 }
 
 // get 下载一张图的原始字节。
@@ -504,7 +504,10 @@ func (c *Cache) evictRawLocked() {
 }
 
 // decodeRaw 把字节解码、缩放到目标宽度，然后排队等上屏。
-func (c *Cache) decodeRaw(key, url string, target int, data []byte) {
+//
+// fromDisk 表示这批字节是从磁盘缓存读出来的：解不出来时要把盘上那份删掉
+// （见 forgetDiskBytes），否则每次启动都读同一份坏字节、再失败一遍。
+func (c *Cache) decodeRaw(key, url string, target int, data []byte, fromDisk bool) {
 	// 先看是不是动图：是的话按帧队列上屏，表情才会真的动起来。
 	if frames, delays, ok := c.decodeAnimated(target, data); ok {
 		c.persistData(url, data)
@@ -513,6 +516,11 @@ func (c *Cache) decodeRaw(key, url string, target int, data []byte) {
 	}
 	img, err := c.decodeBytes(target, data)
 	if err != nil {
+		// 盘上的字节解不出来：坏文件判据（空 / 超大 / 读不出）看不到这一种，
+		// 留着它只会让下次启动再走一遍同样的失败，回退网络这条活路永远到不了。
+		if fromDisk {
+			c.forgetDiskBytes(url)
+		}
 		// 解不出来多数是动图：GIF 源被 CDN 转成了动画 WebP。
 		// 换静态 JPEG 变体再试一次，比直接判死多一条活路。
 		if alt := staticVariant(url, target); alt != "" {

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"alive/internal/diag"
 	"alive/internal/metrics"
 )
 
@@ -25,6 +26,35 @@ type Options struct {
 	LogDir  string
 	Meta    map[string]any
 	KeepRun int // 保留最近几次运行的 alive-*.log；默认 3
+}
+
+// sanitizeMeta 把 meta 里所有字符串过一遍 diag.Sanitize。
+//
+// meta 会带日志目录等绝对路径（`C:\Users\<名>\AppData\...`），它必须和日志
+// 正文走同一条脱敏出口：否则同一份包里日志里的用户名是 `***`、meta.json 里
+// 却是明文，而这份 zip 正是要发给支持人员的。
+func sanitizeMeta(v any) any {
+	switch x := v.(type) {
+	case string:
+		return diag.Sanitize(x)
+	case map[string]any:
+		for k, e := range x {
+			x[k] = sanitizeMeta(e)
+		}
+		return x
+	case []any:
+		for i, e := range x {
+			x[i] = sanitizeMeta(e)
+		}
+		return x
+	case []string:
+		for i, e := range x {
+			x[i] = diag.Sanitize(e)
+		}
+		return x
+	default:
+		return v
+	}
 }
 
 // Bundle 把日志目录里的证据打成一个 zip，返回输出路径。
@@ -58,7 +88,7 @@ func Bundle(opts Options) (string, error) {
 	}
 	meta["files"] = names
 
-	metaJSON, err := json.MarshalIndent(meta, "", "  ")
+	metaJSON, err := json.MarshalIndent(sanitizeMeta(meta), "", "  ")
 	if err != nil {
 		return "", err
 	}

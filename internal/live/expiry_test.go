@@ -41,3 +41,45 @@ func TestExpiryFromQuery(t *testing.T) {
 		}
 	}
 }
+
+// TestEpochSeconds 盯住「十进制先判、含字母才试十六进制」。
+//
+// 旧实现先试十六进制：9 位十进制 500000000 也是合法十六进制串，被读成
+// 0x500000000 ≈ 21474836480 秒（2650 年），播放层会以为地址永不过期。
+func TestEpochSeconds(t *testing.T) {
+	hexAbs, err := strconv.ParseInt("6afa8732", 16, 64)
+	if err != nil {
+		t.Fatalf("样本十六进制串不合法: %v", err)
+	}
+	cases := []struct {
+		name string
+		raw  string
+		want int64
+		ok   bool
+	}{
+		{"9 位十进制不是时间戳", "500000000", 0, false},
+		{"8 位十进制不是时间戳", "40000000", 0, false},
+		{"相对秒数不是时间戳", "300", 0, false},
+		{"虎牙十六进制绝对秒数", "6afa8732", hexAbs, true},
+		{"10 位十进制是绝对秒数", "1794806899", 1794806899, true},
+	}
+	for _, c := range cases {
+		got, ok := epochSeconds(c.raw)
+		if ok != c.ok || got != c.want {
+			t.Errorf("%s: epochSeconds(%q) = (%d,%v)，期望 (%d,%v)",
+				c.name, c.raw, got, ok, c.want, c.ok)
+		}
+	}
+
+	// 走完整入口：9 位十进制既不是绝对秒数、也超过相对秒数上限，必须是零值。
+	if got := expiryFromQuery("http://x/a.flv?expire=500000000", "expire"); !got.IsZero() {
+		t.Fatalf("expire=500000000 应返回零值，得到 %v", got)
+	}
+	if got := expiryFromQuery("http://x/a.flv?expire=40000000", "expire"); !got.IsZero() {
+		t.Fatalf("expire=40000000 应返回零值，得到 %v", got)
+	}
+	// 两位小秒数仍按相对秒数算。
+	if got := expiryFromQuery("http://x/a.flv?expire=900", "expire"); got.IsZero() {
+		t.Fatal("expire=900 应识别为相对秒数")
+	}
+}

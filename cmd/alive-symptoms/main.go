@@ -81,7 +81,7 @@ func run() error {
 	w := NewWindow(anchor, windowDays)
 
 	files := FileStats(repo.Commits, w)
-	if err := ApplyChurn(repo.Root, repo.Anchor().Unix(), files); err != nil {
+	if err := ApplyChurn(repo.Root, anchor.Unix(), windowDays, files); err != nil {
 		fmt.Fprintf(os.Stderr, "alive-symptoms: 读 churn 口径失败: %v\n", err)
 		os.Exit(1)
 	}

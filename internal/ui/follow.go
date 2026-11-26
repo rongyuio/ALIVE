@@ -313,6 +313,26 @@ func (a *App) refreshFollowsManual() {
 	a.refreshFollows(true, followsManual)
 }
 
+// followsRefreshable 拆出这一轮真要去查的记录。
+//
+// 没有房间号的旧记录（早期只有「平台|昵称」）查不了房间信息，取流也要房间
+// 号：以前让 refreshOne 对它们返回 false，于是整轮一条都没查到，followSettle
+// 判成「全失败」并退避到 10 分钟——绿点从此不再自动更新，而这一轮其实
+// 什么都没发生。
+//
+// 它们直接跳过：既不算成功，也不算失败。按昵称兜底匹配（isFollowed /
+// sameFollow）不受影响，下次用户关注 / 取关时自然补全房间号。
+func followsRefreshable(records []FollowRecord) []FollowRecord {
+	out := make([]FollowRecord, 0, len(records))
+	for _, r := range records {
+		if r.RoomID == "" {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // refreshFollows 刷新关注主播的实时状态。
 //
 // 刷新靠一条队列加若干 worker 摊开：谁拿到谁去查，
@@ -332,8 +352,10 @@ func (a *App) refreshFollows(report bool, reason string) {
 
 	a.followsBusy = true
 	a.followRefreshDone = 0
-	a.followRefreshTotal = len(a.Follows)
-	snapshot := append([]FollowRecord(nil), a.Follows...)
+	// 只排能查的记录：没有房间号的旧记录不算成功也不算失败（见
+	// followsRefreshable），否则整轮会被判成全失败、退避到 10 分钟。
+	snapshot := followsRefreshable(a.Follows)
+	a.followRefreshTotal = len(snapshot)
 	win := a.Win
 	// 一轮的开始和结束要成对落在日志里：绿点是旧的时，先看这一轮是谁发起、
 	// 什么时候发起、最后查到几条。
@@ -355,7 +377,7 @@ func (a *App) refreshFollows(report bool, reason string) {
 						failed.Add(1)
 					}
 					// 一条处理完（无论成败）就推进一格，圆环跟着走
-					win.Update(func() { a.followRefreshDone++ })
+					runOnMain(win, func() { a.followRefreshDone++ })
 				}
 			}()
 		}
@@ -364,7 +386,7 @@ func (a *App) refreshFollows(report bool, reason string) {
 		}
 		close(queue)
 		wg.Wait()
-		win.Update(func() {
+		runOnMain(win, func() {
 			a.followsBusy = false
 			// 新鲜度和退避都在这一处结算：一次刷新只有这一个收尾。
 			now := time.Now()

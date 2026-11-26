@@ -64,3 +64,28 @@ func TestDoneAnimationAccountsAllFrames(t *testing.T) {
 		t.Fatalf("替换动图后 c.bytes = %d，期望仍是 %d", c.bytes, want)
 	}
 }
+
+// doneAnimation 建的 animation 必须记住 url。
+//
+// ReleaseTexturesExcept 和 sweep 都按 url 判断该不该保留；漏了 url 时 keep
+// 永远对不上，切平台会把还在用的动图整段清掉，下一帧重新解码。
+func TestDoneAnimationKeepsURL(t *testing.T) {
+	c := testCache()
+	c.anims = map[string]*animation{}
+
+	url := "https://example.invalid/emote.gif"
+	frames := []*ui.Bitmap{testBitmap(t), testBitmap(t)}
+	delays := []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
+	key := cacheKey(url, c.targetPixels(20))
+
+	c.doneAnimation(key, url, frames, delays)
+	if a := c.anims[key]; a == nil || a.url != url {
+		t.Fatalf("doneAnimation 没有记住 url：%+v", a)
+	}
+
+	// 落到调用方身上：keep 里的动图不能被清掉。
+	c.ReleaseTexturesExcept(map[string]bool{url: true})
+	if c.anims[key] == nil {
+		t.Fatal("ReleaseTexturesExcept 把 keep 里的动图清掉了：animation.url 没记住")
+	}
+}

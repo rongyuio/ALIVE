@@ -18,11 +18,27 @@ package churn
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// typePrefix 从提交标题里取 type：`fix: …` 与 `fix(ui): …` 都是 fix。
+//
+// 这是「一条提交算不算 fix」的唯一判据。门禁（cmd/alive-gate）与现状简报
+// （cmd/alive-symptoms）都从这里取，别再各写一遍——`--grep=^fix:` 那种写法
+// 会逐行匹配，把 body 里抄了一句 `fix: …` 的 feat 提交也当成 fix。
+var typePrefix = regexp.MustCompile(`^([a-z]+)(\([^)]*\))?!?:\s*`)
+
+// TypeOf 返回提交标题的 type 小写（`fix` / `feat` / …），取不到返回空串。
+func TypeOf(subject string) string {
+	if m := typePrefix.FindStringSubmatch(strings.TrimSpace(subject)); m != nil {
+		return m[1]
+	}
+	return ""
+}
 
 // 口径的默认值。导出是因为展示层也要念同一句话——「一次改超过 8 个文件不算」
 // 这种解释如果各写一遍，改了阈值就有一边在说谎。
@@ -103,9 +119,10 @@ func Scan(root string, opt Options) (*Result, error) {
 	}
 	since := now - int64(o.WindowDays)*86400
 
+	// 不用 --grep：它逐行匹配消息，body 里出现过的 `fix:` 会把 feat 提交也算进来。
+	// 取回窗口内全部提交，在 Go 侧按 typePrefix 认标题，才是「这一条是不是 fix」。
 	out, err := git(root, "log",
 		"--since="+strconv.FormatInt(since, 10),
-		"--grep=^fix:",
 		"--name-only",
 		// %ct 是 committer date，不是 author date。两者的差别是真实的：
 		// 7091893 作者在 11-25 03:25 写完、09:31 才提交（中间 rebase 过），
@@ -123,6 +140,9 @@ func Scan(root string, opt Options) (*Result, error) {
 		}
 		c, ok := parseBlock(block)
 		if !ok {
+			continue
+		}
+		if TypeOf(c.Subject) != "fix" {
 			continue
 		}
 		cross := len(c.Files) > o.CrossMax

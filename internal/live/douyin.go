@@ -220,6 +220,9 @@ func (p *douyinProvider) RoomsFrom(ctx context.Context, areaID string, cursor, s
 		// 部分结果不进缓存：下一次同一个 cursor 要真的重试没取到的区间。
 		p.rooms.drop(key)
 	}
+	// 缓存里交出来的 Rooms 归缓存所有：复制一份再给调用方，别让上游
+	// （或界面）对切片的改写污染下一次命中。
+	chunk.Rooms = append([]Room(nil), chunk.Rooms...)
 	return chunk, err
 }
 

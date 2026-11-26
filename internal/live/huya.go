@@ -96,7 +96,7 @@ func (p *huyaProvider) Rooms(ctx context.Context, areaID string, page, size int)
 	upstreamPage := offset/huyaUpstreamPageSize + 1
 
 	key := fmt.Sprintf("%s|%d|%d", gid, page, size)
-	return p.rooms.load(key, huyaListTTL, func() (Page, error) {
+	cached, err := p.rooms.load(key, huyaListTTL, func() (Page, error) {
 		release, err := p.lim.acquire(ctx)
 		if err != nil {
 			return Page{}, err
@@ -119,6 +119,11 @@ func (p *huyaProvider) Rooms(ctx context.Context, areaID string, page, size int)
 		}
 		return result, nil
 	})
+	if err != nil {
+		return Page{}, err
+	}
+	// 缓存里的 Rooms 切片不能直接交出去，见 copyPageRooms。
+	return copyPageRooms(cached), nil
 }
 
 func (p *huyaProvider) Search(ctx context.Context, keyword string) ([]Room, error) {

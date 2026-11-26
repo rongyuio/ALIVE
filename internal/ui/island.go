@@ -581,11 +581,18 @@ func (a *App) clockDigits(c *ui.Context, now time.Time, text, slot string) {
 				FontWeight(600).TextColor(theme.MediaText).SingleLine().
 				Absolute().Top(mid).Translate(0, d*clockDigitH)
 			// 旧数字：从正中升出窗口上方。
-			// 必须是**上一个**字符，不是当前这个——两层用同一个字符的话，
-			// 看到的只是同一个数字在滑动，不是翻牌。9→0 时要显示 9。
-			prev := "9"
-			if ch[0] > '0' {
-				prev = string(rune(ch[0] - 1))
+			// 必须是**上一个**时刻同一个槽位的真实字符，不是「当前字符减一」。
+			// ch-1 只在 9→0 时碰巧对；十位 5→0（每个整分钟）会把 5 画成 9，
+			// 而 d=1 时它正停在窗口正中，肉眼可见约 160ms。
+			var prev string
+			p := now.Add(-time.Second)
+			switch slot {
+			case "h":
+				prev = clockDigitChar(p.Hour(), i)
+			case "m":
+				prev = clockDigitChar(p.Minute(), i)
+			default:
+				prev = clockDigitChar(p.Second(), i)
 			}
 			ui.Text(c, prev).Font(FontClock).FontSize(clockFontSize).
 				FontWeight(600).TextColor(theme.MediaText).SingleLine().
@@ -614,6 +621,15 @@ func clockDigitChanged(now time.Time, slot string, i int, ch string) bool {
 		return true
 	}
 	return text[i:i+1] != ch
+}
+
+// clockDigitChar 返回两位十进制数 v 的第 i 个字符（i 越界返回空串）。
+func clockDigitChar(v, i int) string {
+	s := fmt.Sprintf("%02d", v)
+	if i < 0 || i >= len(s) {
+		return ""
+	}
+	return s[i : i+1]
 }
 
 // clockRollProgress 是翻牌进度：整秒那一刻为 1，之后在 clockRollDur 内

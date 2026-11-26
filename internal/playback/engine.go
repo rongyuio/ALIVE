@@ -28,16 +28,62 @@ import (
 	"alive/internal/diag"
 )
 
-// ErrUnsupported 表示这一路起不来：地址为空，或者 libmpv 不接受它。
+// 失败分两类，上面（界面）据此决定「换个线路重试」还是「装坏了」：
 //
-// 它带 DiagClass，日志层不用 import playback 也能把它归类成 unsupported；
-// 否则 diag 与 playback 会互相 import。
-var ErrUnsupported error = unsupportedError{}
+//   - ErrUnsupported —— 这一条流解不了：地址为空、mpv 不接受它、loadfile 或
+//     play 被拒。换档位 / 换线路可能就好了，值得让用户重试。
+//   - ErrBackend —— 播放后端起不来：libmpv 的 DLL 找不到 / 载不进来，或者
+//     mpv_create 失败。这是安装损坏或环境问题，换哪条流都一样，重试没有意义。
+//
+// 两个都带 DiagClass，日志层不用 import playback 也能归类；否则 diag 与
+// playback 会互相 import。
+var (
+	ErrUnsupported error = unsupportedError{}
+	ErrBackend     error = backendError{}
+)
 
 type unsupportedError struct{}
 
 func (unsupportedError) Error() string     { return "playback: 该流无法自带解码" }
 func (unsupportedError) DiagClass() string { return "unsupported" }
+
+type backendError struct{}
+
+func (backendError) Error() string     { return "playback: 播放后端不可用" }
+func (backendError) DiagClass() string { return "backend" }
+
+// player 是 Engine 依赖的播放器接口，生产上只有 *video.Player 一个实现。
+//
+// 抽成接口是为了让 Open 的失败分支能在没有 libmpv DLL 的机器上被测到：
+// 它们以前只能靠人工点，计数泄漏和漏登记销毁就是这样一直没人发现的。
+type player interface {
+	SetInvalidate(func())
+	Frame() (*video.Frame, uint64)
+	Size() (int, int)
+	State() video.State
+	Play() error
+	Pause() error
+	Load(string) error
+	SetRate(float64) error
+	SetOption(string, string) error
+	SetVolume(float64) error
+	SetMuted(bool) error
+	SetPresentSize(w, h int)
+	Close()
+	Done() <-chan struct{}
+}
+
+// 注入点：测试替换掉「找库」与「建播放器」两步。生产路径就是下面两个默认值。
+var (
+	findLibrary = libraryPath
+	openPlayer  = func(opts video.Options) (player, error) {
+		p, err := video.New(opts)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
+	}
+)
 
 // Options 是一次播放的选项。
 type Options struct {
@@ -92,7 +138,7 @@ type Options struct {
 
 // Engine 是一路直播的播放引擎，实现 media.Engine。
 type Engine struct {
-	p    *video.Player
+	p    player
 	done chan struct{}
 
 	// id/key/role/openedAt 只服务日志：一路引擎从创建到销毁必须能配对，
@@ -111,7 +157,7 @@ type Engine struct {
 	// 直播画面停住时这两种完全不同，不能靠猜。
 	calls  uint64
 	closed bool
-	live   bool // 是否已计入 LiveEngines；Close 与销毁 goroutine 只减一次
+	live   bool // 是否已计入 LiveEngines；只由 release 扣一次，Open 的失败分支也走它
 	gate   audioGate
 }
 
@@ -229,6 +275,35 @@ var (
 // 不参与任何业务判断。
 func LiveEngines() int { return int(liveEngine.Load()) }
 
+// release 把这一路从存活计数里摘掉，只摘一次。
+//
+// 三个扣减点共用它：Close、销毁 goroutine、Open 的失败分支。重复扣会让计数
+// 变成负数，而 LiveEngines 是诊断里「现在有几路活着」的唯一来源——一路起不来
+// 却让它涨上去，卡死现场就永远对不上。
+//
+// e.live 是那道闸：谁先到谁扣，后到的一方什么都不做。
+func (e *Engine) release() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.live {
+		return
+	}
+	e.live = false
+	liveEngine.Add(-1)
+}
+
+// abandon 收掉一次没起来的 Open。
+//
+// 顺序和 Close 一致：先让 mpv 开始销毁，再把 Done 登记给下一次 Open（新实例
+// 要等这一路的 AO / mpv 真正释放完），最后把这一路从存活计数里摘掉。漏掉
+// 后两步时，失败的那一路既不进 destroyCh 也不减计数——一路失败就永久占着
+// 一个「活着」的名额，而且下一次 Open 不等上一路的销毁。
+func (e *Engine) abandon() {
+	e.p.Close()
+	noteDestroy(e.p.Done())
+	e.release()
+}
+
 // Open 打开一路直播并开始播放。
 //
 // 返回时 mpv 已经收到 loadfile，首帧要等 Frame 第一次给出画面。
@@ -253,11 +328,11 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 	}
 	// 上一个实例可能还在释放 AO / mpv；等它真正结束再建新的。
 	waitDestroys()
-	lib, err := libraryPath()
+	lib, err := findLibrary()
 	if err != nil {
-		return fail("library", fmt.Errorf("%w: %v", ErrUnsupported, err))
+		return fail("library", fmt.Errorf("%w: %v", ErrBackend, err))
 	}
-	p, err := video.New(video.Options{
+	p, err := openPlayer(video.Options{
 		Library:      lib,
 		Headers:      opts.Headers,
 		Width:        opts.Width,
@@ -271,7 +346,7 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		LogLevel:     opts.MPVLog,
 	})
 	if err != nil {
-		return fail("new", fmt.Errorf("%w: %v", ErrUnsupported, err))
+		return fail("new", fmt.Errorf("%w: %v", ErrBackend, err))
 	}
 	e := &Engine{p: p, done: make(chan struct{}), id: id, key: opts.Key, session: opts.Session, role: opts.Role, openedAt: time.Now(), live: true}
 	liveEngine.Add(1)
@@ -280,18 +355,18 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 	}
 	if opts.StartSilent {
 		if err := p.SetVolume(0); err != nil {
-			p.Close()
+			e.abandon()
 			return fail("volume", fmt.Errorf("%w: %v", ErrUnsupported, err))
 		}
 	}
 	if err := p.Load(upstream); err != nil {
-		p.Close()
+		e.abandon()
 		return fail("load", fmt.Errorf("%w: %v", ErrUnsupported, err))
 	}
 	// 直接播：直播没有「准备好再开始」这一步，loadfile 之后越早开始读，
 	// 首帧越早。暂停着等反而会多一轮状态切换。
 	if err := p.Play(); err != nil {
-		p.Close()
+		e.abandon()
 		return fail("play", fmt.Errorf("%w: %v", ErrUnsupported, err))
 	}
 	diag.L().Info().
@@ -315,12 +390,7 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error) {
 		// 在 video.Player 自己的 goroutine 里。Done 必须等它结束，否则
 		// 「Done 表示这一路彻底停下」这句注释就是假的。
 		<-p.Done()
-		e.mu.Lock()
-		if e.live {
-			e.live = false
-			liveEngine.Add(-1)
-		}
-		e.mu.Unlock()
+		e.release()
 		diag.L().Info().
 			Str(diag.Event, diag.EvEngineDestroy).
 			Uint64(diag.Engine, e.id).
@@ -469,12 +539,11 @@ func (e *Engine) State() (media.State, error) {
 }
 
 // Size 是当前画面的尺寸，还没有画面时返回 0,0。
-func (e *Engine) Size() (int, int) {
-	if f, _ := e.p.Frame(); f != nil {
-		return f.W, f.H
-	}
-	return 0, 0
-}
+//
+// 走 Player.Size（只读尺寸），不走 Player.Frame——后者会刷 lastPull，
+// 而 lastPull 是渲染门控「有没有人在看」的判据。以前这里借道 Frame，
+// 于是只要有人问一次尺寸，没人看的格子就会被当成有人在看、恢复全尺寸渲染。
+func (e *Engine) Size() (int, int) { return e.p.Size() }
 
 // Duration 对直播没有意义。
 func (e *Engine) Duration() time.Duration { return 0 }
@@ -563,11 +632,8 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	e.closed = true
-	if e.live {
-		e.live = false
-		liveEngine.Add(-1)
-	}
 	e.mu.Unlock()
+	e.release()
 	diag.L().Info().
 		Str(diag.Event, diag.EvEngineClose).
 		Uint64(diag.Engine, e.id).

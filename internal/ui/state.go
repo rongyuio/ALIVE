@@ -16,13 +16,15 @@ import (
 
 // danmuPrefs 是弹幕设置的落盘形状，对应 state.json 与数据同步文件里的 danmu。
 type danmuPrefs struct {
-	Font     float32  `json:"font"`
-	DurMs    int64    `json:"durationMs"`
-	Area     float32  `json:"area"`
-	Opacity  float32  `json:"opacity"`
-	Color    [4]uint8 `json:"color"`
-	Stroke   [4]uint8 `json:"stroke"`
-	Colorful bool     `json:"colorful"`
+	Font    float32  `json:"font"`
+	DurMs   int64    `json:"durationMs"`
+	Area    float32  `json:"area"`
+	Opacity float32  `json:"opacity"`
+	Color   [4]uint8 `json:"color"`
+	Stroke  [4]uint8 `json:"stroke"`
+	// Colorful 是指针：区分「文件里没写」和「明确关掉」。缺失时保留默认（开），
+	// 不能因为一个只写了 font 的 danmu 段就把「彩色弹幕」清零。
+	Colorful *bool `json:"colorful,omitempty"`
 }
 
 func colorBytes(c ui.Color) [4]uint8 { return [4]uint8{c.R, c.G, c.B, c.A} }
@@ -103,6 +105,12 @@ var stateMu sync.Mutex
 func (a *App) writeState(data []byte) {
 	path := statePath()
 	if path == "" {
+		// 拿不到配置目录：静默返回等于「设置改了却永远不落盘」，用户在下一次
+		// 启动时只会看到设置全没了。置旗标让界面下一帧变成一条通知，再留一条
+		// 日志。这里在后台 goroutine 上，除了 diag 不能再碰视图状态。
+		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
+			Str(diag.Stage, "path").Msg("拿不到配置目录，状态不会落盘")
+		a.warnStateSave()
 		return
 	}
 	stateMu.Lock()
@@ -140,6 +148,9 @@ func (a *App) warnStateSave() { a.stateSaveFailed.Store(true) }
 // markDirty 记一次状态变更，300ms 内的连续变更合并成一次落盘。
 //
 // 真正的序列化在主线程做（saveState），写文件才放到后台 goroutine。
+//
+// 没有窗口时（测试、启动早期）只置 dirty，不排定时器：定时器得借窗口的
+// Update 回主线程。这一份靠关窗时的 FlushState 兜底落盘。
 func (a *App) markDirty() {
 	a.stateDirty = true
 	if a.stateSavePending || a.Win == nil {
@@ -154,9 +165,19 @@ func (a *App) markDirty() {
 
 // saveState 拍一份当前 UI 状态的快照并异步写盘。
 func (a *App) saveState() {
+	if data, ok := a.stateSnapshot(); ok {
+		go a.writeState(data)
+	}
+}
+
+// stateSnapshot 在主线程拍一份当前 UI 状态的快照；没有待写的改动时 ok=false。
+//
+// 顺带把排定中的定时器标记清掉：调用方既然已经把这一份写出去，定时器再来
+// 一趟看到 stateDirty 也是空的。
+func (a *App) stateSnapshot() ([]byte, bool) {
 	a.stateSavePending = false
 	if !a.stateDirty {
-		return
+		return nil, false
 	}
 	a.stateDirty = false
 
@@ -172,6 +193,7 @@ func (a *App) saveState() {
 	danmuOn := a.DanmuOn
 	// 屏蔽词也要落盘：用户加了一堆词，重启就该还在
 	filters := append([]string(nil), a.DanmuFilters...)
+	colorful := a.DanmuColorful
 	danmu := danmuPrefs{
 		Font:     a.DanmuFont,
 		DurMs:    a.DanmuDur.Milliseconds(),
@@ -179,7 +201,7 @@ func (a *App) saveState() {
 		Opacity:  a.DanmuOpacity,
 		Color:    colorBytes(a.DanmuColor),
 		Stroke:   colorBytes(a.DanmuStroke),
-		Colorful: a.DanmuColorful,
+		Colorful: &colorful,
 	}
 
 	p := persisted{
@@ -201,9 +223,20 @@ func (a *App) saveState() {
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
-		return
+		return nil, false
 	}
-	go a.writeState(data)
+	return data, true
+}
+
+// FlushState 立刻把还没落盘的状态写出去，写完才返回（主线程调用）。
+//
+// 关窗时用（main.go 的 OnClose）：markDirty 的 300ms 合并窗口意味着最后那点
+// 改动还停在定时器上，进程一退就丢。这里既不再排定时器，也不能交给后台
+// goroutine —— OnClose 返回后进程随时可能结束，异步写来不及。
+func (a *App) FlushState() {
+	if data, ok := a.stateSnapshot(); ok {
+		a.writeState(data)
+	}
 }
 
 // restore 把落盘的状态盖回新 App 的默认值上；文件不存在或坏掉就保持默认。
@@ -299,17 +332,27 @@ func (a *App) restore() {
 		if p.Danmu.Opacity > 0 {
 			a.DanmuOpacity = p.Danmu.Opacity
 		}
-		a.DanmuColor = ui.Color{
-			R: p.Danmu.Color[0], G: p.Danmu.Color[1],
-			B: p.Danmu.Color[2], A: p.Danmu.Color[3],
+		// 颜色 / 描边只在文件里真的写了颜色时才覆盖。空段（{"danmu":{}}）
+		// 解出来是全零，alpha 也是 0——无条件覆盖会把弹幕变成全透明，
+		// 用户看到的是「弹幕开着但一条都不显示」。
+		if !zeroColor(p.Danmu.Color) {
+			a.DanmuColor = rgbaColor(p.Danmu.Color)
 		}
-		a.DanmuStroke = ui.Color{
-			R: p.Danmu.Stroke[0], G: p.Danmu.Stroke[1],
-			B: p.Danmu.Stroke[2], A: p.Danmu.Stroke[3],
+		if !zeroColor(p.Danmu.Stroke) {
+			a.DanmuStroke = rgbaColor(p.Danmu.Stroke)
 		}
-		a.DanmuColorful = p.Danmu.Colorful
+		// 同理：没写 colorful 就保留默认（开），不要把「彩色弹幕」清零。
+		if p.Danmu.Colorful != nil {
+			a.DanmuColorful = *p.Danmu.Colorful
+		}
 	}
 }
+
+// zeroColor 报告一份 4 字节颜色是不是全零（含 alpha）。
+//
+// state.json 里没写颜色时解出来就是这个值，所以它同时是「这一项没存过」的
+// 判据。
+func zeroColor(c [4]uint8) bool { return c == [4]uint8{} }
 
 // legacyDemoSubs 是 NewApp 曾经写死的示例订阅。只用来识别被固化进
 // state.json 的脏数据，不参与任何渲染。

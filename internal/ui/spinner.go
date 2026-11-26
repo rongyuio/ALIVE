@@ -21,12 +21,12 @@ func spinner(c *ui.Context, size float32) ui.Element {
 // 一帧里所有 spinner 共用同一个转角。
 //
 // 封面还没到时一屏可能同时挂几十个占位，每个都跑一遍自己的动画时钟既浪费，
-// 视觉上又是各转各的、相位全错开。这里让本帧第一个 spinner 驱动时钟，
-// 其余直接读它的相位：只有一个 Loop，所有环同步转。
-var (
-	spinTurn   float32
-	spinDriven bool
-)
+// 视觉上又是各转各的、相位全错开。这里让本帧第一个 spinner 挂一个 Loop 负责
+// 请求下一帧，转角从视图时钟直接算——不再依赖「第一个元素」的身份。
+var spinDriven bool
+
+// spinPeriod 是一圈的时间，对应 CSS 的 `animation: spin .8s linear infinite`。
+const spinPeriod = 800 * time.Millisecond
 
 // resetSpinFrame 在每次构建视图的开头清掉驱动标记（Shell 里调）。
 func resetSpinFrame() { spinDriven = false }
@@ -37,9 +37,12 @@ func spinnerTint(c *ui.Context, size float32, base ui.Color) ui.Element {
 	// 0.8s linear：对应 CSS 的 `animation: spin .8s linear infinite`
 	if !spinDriven {
 		spinDriven = true
-		spinTurn = el.Loop("spin", 800*time.Millisecond, ui.Linear)
+		// Loop 只负责「请求下一帧」；相位从视图时钟直接算。
+		// 相位挂在第一个 spinner 元素的身份上时，那个元素一换（骨架→封面）
+		// 所有共享相位的环会一起跳回 0°；用 c.Now() 就没有这个问题。
+		el.Loop("spin", spinPeriod, ui.Linear)
 	}
-	phase := spinTurn
+	phase := float32(c.Now().UnixNano()%int64(spinPeriod)) / float32(spinPeriod)
 	stroke := max(2, float32(int(size/10+0.5))) // max(2, round(size/10))
 
 	el.Draw(func(p *ui.Painter, r ui.Rect) {

@@ -53,7 +53,9 @@ type configFile struct {
 	Rooms map[string]roomChoice `json:"rooms"`
 
 	Player filePlayer `json:"player"`
-	Danmu  fileDanmu  `json:"danmu"`
+	// Danmu 是指针：区分「文件里没有弹幕段」和「写了一段弹幕设置」。
+	// 值类型时缺段解出来是全零，导入会把开关关掉、颜色清成全透明。
+	Danmu *fileDanmu `json:"danmu"`
 }
 
 type fileTheme struct {
@@ -71,14 +73,15 @@ type filePlayer struct {
 // 不内嵌 danmuPrefs：匿名内嵌的字段名是小写的 danmuPrefs，encoding/json
 // 会把它当成未导出字段整个跳过，导出时这段会变成空对象。
 type fileDanmu struct {
-	On       bool     `json:"on"`
-	Font     float32  `json:"font"`
-	DurMs    int64    `json:"durationMs"`
-	Area     float32  `json:"area"`
-	Opacity  float32  `json:"opacity"`
-	Color    [4]uint8 `json:"color"`
-	Stroke   [4]uint8 `json:"stroke"`
-	Colorful bool     `json:"colorful"`
+	On      bool     `json:"on"`
+	Font    float32  `json:"font"`
+	DurMs   int64    `json:"durationMs"`
+	Area    float32  `json:"area"`
+	Opacity float32  `json:"opacity"`
+	Color   [4]uint8 `json:"color"`
+	Stroke  [4]uint8 `json:"stroke"`
+	// Colorful 是指针：文件里没写「彩色弹幕」时不该把用户的开关关掉。
+	Colorful *bool    `json:"colorful,omitempty"`
 	Filters  []string `json:"filters"`
 }
 
@@ -91,6 +94,7 @@ func configFileName() string {
 func (a *App) buildConfigFile() configFile {
 	follows := append([]FollowRecord(nil), a.Follows...)
 	subs := append([]Subscription(nil), a.Subs...)
+	colorful := a.DanmuColorful
 
 	wall := make([]watchRecord, 0, len(a.WatchRooms))
 	for _, s := range a.WatchRooms {
@@ -116,7 +120,7 @@ func (a *App) buildConfigFile() configFile {
 		WatchWall:       wall,
 		Rooms:           rooms,
 		Player:          filePlayer{Volume: &volume},
-		Danmu: fileDanmu{
+		Danmu: &fileDanmu{
 			On:       a.DanmuOn,
 			Font:     a.DanmuFont,
 			DurMs:    a.DanmuDur.Milliseconds(),
@@ -124,7 +128,7 @@ func (a *App) buildConfigFile() configFile {
 			Opacity:  a.DanmuOpacity,
 			Color:    colorBytes(a.DanmuColor),
 			Stroke:   colorBytes(a.DanmuStroke),
-			Colorful: a.DanmuColorful,
+			Colorful: &colorful,
 			Filters:  append([]string{}, a.DanmuFilters...),
 		},
 	}
@@ -262,6 +266,11 @@ func (a *App) planImport(name string, f configFile) importPlan {
 		seenFollow[followIdentity(r.Platform, r.RoomID, r.Name)] = true
 	}
 	for _, rec := range f.Follows {
+		// 空平台 / 空昵称的记录认不出是谁，落地后既画不出来也删不掉
+		//（sameFollow 先比平台），只会变成一条幽灵关注。
+		if rec.Platform == "" || rec.Name == "" {
+			continue
+		}
 		key := followIdentity(rec.Platform, rec.RoomID, rec.Name)
 		if seenFollow[key] {
 			continue
@@ -275,6 +284,11 @@ func (a *App) planImport(name string, f configFile) importPlan {
 		seenSub[s.PlatformID+"|"+s.Group+"|"+s.Name] = true
 	}
 	for _, s := range f.Subscriptions {
+		// 订阅同样要有平台和分区名：拉列表要用 PlatformID，chip 显示要用
+		// Name，缺一个就是一枚点了没反应的空 chip。
+		if s.PlatformID == "" || s.Name == "" {
+			continue
+		}
 		key := s.PlatformID + "|" + s.Group + "|" + s.Name
 		if seenSub[key] {
 			continue
@@ -365,28 +379,35 @@ func (a *App) planImport(name string, f configFile) importPlan {
 
 	// 弹幕段总是整段导出，读回来时逐项覆盖：开关、颜色、多彩直接取文件，
 	// 字号 / 停留 / 区域 / 不透明度只认文件里的正数（0 当没写）。
+	//
+	// 文件里没有 danmu 段（指针为 nil）就是「不改弹幕」：以前它是值类型，
+	// 缺段解出来是一份全零的弹幕设置，导入会把开关关掉、颜色清成透明。
 	before := a.danmuState()
 	after := before
-	after.On = f.Danmu.On
-	if f.Danmu.Font > 0 {
-		after.Font = f.Danmu.Font
+	if f.Danmu != nil {
+		after.On = f.Danmu.On
+		if f.Danmu.Font > 0 {
+			after.Font = f.Danmu.Font
+		}
+		if f.Danmu.DurMs > 0 {
+			after.Dur = time.Duration(f.Danmu.DurMs) * time.Millisecond
+		}
+		if f.Danmu.Area > 0 {
+			after.Area = f.Danmu.Area
+		}
+		if f.Danmu.Opacity > 0 {
+			after.Opacity = f.Danmu.Opacity
+		}
+		after.Color = f.Danmu.Color
+		after.Stroke = f.Danmu.Stroke
+		if f.Danmu.Colorful != nil {
+			after.Colorful = *f.Danmu.Colorful
+		}
 	}
-	if f.Danmu.DurMs > 0 {
-		after.Dur = time.Duration(f.Danmu.DurMs) * time.Millisecond
-	}
-	if f.Danmu.Area > 0 {
-		after.Area = f.Danmu.Area
-	}
-	if f.Danmu.Opacity > 0 {
-		after.Opacity = f.Danmu.Opacity
-	}
-	after.Color = f.Danmu.Color
-	after.Stroke = f.Danmu.Stroke
-	after.Colorful = f.Danmu.Colorful
 	p.Danmu = after
 	p.DanmuChanged = after != before
 
-	if len(f.Danmu.Filters) > 0 {
+	if f.Danmu != nil && len(f.Danmu.Filters) > 0 {
 		seen := make(map[string]bool, len(a.DanmuFilters)+len(f.Danmu.Filters))
 		for _, w := range a.DanmuFilters {
 			seen[w] = true
@@ -688,6 +709,32 @@ func (a *App) exportConfig() {
 	}()
 }
 
+// maxConfigFileSize 是导入文件的大小上限（8 MB）。
+//
+// 一份配置就是几百条关注 / 订阅加上几十条房间记录，实测最大几十 KB；8 MB
+// 已经宽松了两个数量级，再大的文件只可能是选错了。
+const maxConfigFileSize = 8 << 20
+
+// readConfigFile 读一份导入文件，超过上限直接拒绝。
+//
+// 不设上限的话，用户手滑选了一个几百 MB 的文件，os.ReadFile 会先把它整个
+// 读进内存再解析——窗口没有任何提示就被撑住。
+func readConfigFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, errors.New("读取文件失败：" + err.Error())
+	}
+	if info.Size() > maxConfigFileSize {
+		return nil, fmt.Errorf("文件太大（%d MB），配置文件上限是 %d MB",
+			(info.Size()+1<<20-1)>>20, maxConfigFileSize>>20)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("读取文件失败：" + err.Error())
+	}
+	return data, nil
+}
+
 // pickImportFile 弹打开对话框读一份配置，算好改动清单等用户确认。
 //
 // 选完不直接落地：文件会覆盖主题、音量、弹幕这些本机正在用的值，先把
@@ -716,9 +763,9 @@ func (a *App) pickImportFile() {
 		var parsed configFile
 		name := ""
 		if err == nil && len(paths) > 0 {
-			data, readErr := os.ReadFile(paths[0])
+			data, readErr := readConfigFile(paths[0])
 			if readErr != nil {
-				err = errors.New("读取文件失败：" + readErr.Error())
+				err = readErr
 			} else {
 				parsed, err = parseConfigFile(data)
 				name = filepath.Base(paths[0])

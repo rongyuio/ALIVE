@@ -18,6 +18,7 @@ import (
 	"image"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -429,6 +430,12 @@ type Renderer struct {
 	// sink, when set, takes the pixels of every frame drawn, read back from
 	// the back buffer before DXGI presents it (capture.go).
 	sink func(pix []byte, w, h, stride int)
+	// captureErrs counts the frames a sink wanted and the read back lost, so a
+	// recording that silently shows fewer frames can say why, and captureLog,
+	// when set, is told of them, the first and then every captureLogEvery'th
+	// (capture.go). Nil, it only counts.
+	captureErrs atomic.Uint64
+	captureLog  func(error)
 }
 
 // redrawn is how much of a frame was drawn.

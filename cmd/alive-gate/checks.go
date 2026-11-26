@@ -69,42 +69,39 @@ func checkChurn(e *env) []string {
 func checkCommits(e *env) []string {
 	const limit = 3
 
-	// 有上游时看未推送的；没有上游（本地仓、这个仓库的 main 就是这样）就看
-	// 最近 10 个提交。用 -10 而不是 `HEAD~10..HEAD`：后者在提交数不足十个的
-	// 仓库里直接报错，门禁会在最小仓库上静默失效。
-	args := []string{"log", "-10", "--pretty=format:@@%h|%s|%b", "--name-only"}
+	// 元信息和文件分开取。`--pretty=format` 里的 %b 是多行的，和 `--name-only`
+	// 的输出混在一份流里就没法可靠切分——旧写法把 body 第 2 行起当成了文件名
+	// （3 个文件的合规提交被报成 4 个），理由写在第二行也永远读不到。
+	//
+	// 有上游时看未推送的；没有上游（本地仓、这个仓库的 main 就是这样）就看最近
+	// 10 个提交。用 -10 而不是 `HEAD~10..HEAD`：后者在提交数不足十个的仓库里
+	// 直接报错，门禁会在最小仓库上静默失效。
+	logArgs := []string{"log"}
 	if strings.TrimSpace(e.git("rev-parse", "--abbrev-ref", "@{u}")) != "" {
-		args = []string{"log", "@{u}..HEAD", "-10", "--pretty=format:@@%h|%s|%b", "--name-only"}
+		logArgs = append(logArgs, "@{u}..HEAD")
 	}
-	raw := e.git(args...)
+	logArgs = append(logArgs, "-10", "--format=%H%x01%s%x01%b%x02")
+	raw := e.git(logArgs...)
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
 
 	var out []string
-	for _, block := range strings.Split(raw, "@@") {
-		if strings.TrimSpace(block) == "" {
+	for _, rec := range strings.Split(raw, "\x02") {
+		rec = strings.Trim(rec, "\n")
+		if strings.TrimSpace(rec) == "" {
 			continue
 		}
-		lines := strings.Split(block, "\n")
-		head := strings.SplitN(lines[0], "|", 3)
-		if len(head) < 2 {
+		// %x01 是字段分隔，%x02 是记录分隔：两者都不可能出现在提交消息里。
+		parts := strings.SplitN(rec, "\x01", 3)
+		if len(parts) < 3 {
 			continue
 		}
-		hash, subject := head[0], head[1]
-		body := ""
-		if len(head) == 3 {
-			body = head[2]
-		}
-		if !strings.HasPrefix(subject, "fix:") {
+		hash, subject, body := parts[0], parts[1], parts[2]
+		if churn.TypeOf(subject) != "fix" {
 			continue
 		}
-		var files []string
-		for _, l := range lines[1:] {
-			if l = strings.TrimSpace(l); l != "" {
-				files = append(files, l)
-			}
-		}
+		files := commitFiles(e.root, hash)
 		if len(files) <= limit {
 			continue
 		}
@@ -125,6 +122,18 @@ func checkCommits(e *env) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// commitFiles 返回一次提交改动的文件：`--format=` 让它只输出文件名。
+func commitFiles(root, hash string) []string {
+	raw := runGit(root, "show", "--name-only", "--format=", hash)
+	var files []string
+	for _, l := range strings.Split(raw, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			files = append(files, l)
+		}
+	}
+	return files
 }
 
 func hasReason(body string) bool {
@@ -174,7 +183,9 @@ func checkEvaluator(e *env) []string {
 		}
 		for _, d := range f.Decls {
 			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil || fd.Recv == nil {
+			// 包级函数也算：R5 说的是「同一个概念只能有一个带判断的函数」，
+			// 不区分方法还是函数。把求值点写成包级 func 一样是第二个求值点。
+			if !ok || fd.Body == nil {
 				continue
 			}
 			for prefix := range families {

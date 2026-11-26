@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -25,6 +26,7 @@ type histogram struct {
 	counts []int64
 	count  int64
 	sum    int64
+	max    int64
 }
 
 func newHistogram() *histogram {
@@ -40,6 +42,9 @@ func (h *histogram) observe(v int64) {
 	h.counts[i]++
 	h.count++
 	h.sum += v
+	if v > h.max {
+		h.max = v
+	}
 }
 
 func (h *histogram) quantile(q float64) int64 {
@@ -54,8 +59,16 @@ func (h *histogram) quantile(q float64) int64 {
 			if i < len(h.bounds) {
 				return h.bounds[i]
 			}
+			// 溢出桶：报真实最大值，而不是「等于上界」。以前一个卡 60 秒的
+			// 首帧会被报成 32000，排障时读成 32 秒，和现场差一倍。
+			if h.max > 0 {
+				return h.max
+			}
 			return h.bounds[len(h.bounds)-1]
 		}
+	}
+	if h.max > 0 {
+		return h.max
 	}
 	return h.bounds[len(h.bounds)-1]
 }
@@ -88,7 +101,11 @@ func (r *registry) counter(key string, delta int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.counters[key]; !ok {
-		if len(r.counters) >= maxSeries {
+		// 只有按实体展开的序列（键里带 '.'，如 wall_open.<room>、mpv_log_module.<mod>）
+		// 才受 maxSeries 约束。固定名的汇总指标（wall_open_total 这类）是代码
+		// 常量、数量有界，绝不能被房间序列挤掉——那会让「少了一个分类指标」
+		// 这种事儿悄无声息地发生。
+		if strings.Contains(key, ".") && len(r.counters) >= maxSeries {
 			return
 		}
 	}
@@ -126,6 +143,7 @@ func (r *registry) snapshot() map[string]any {
 		hists[name] = map[string]any{
 			"count": h.count,
 			"sum":   h.sum,
+			"max":   h.max,
 			"p50":   h.quantile(0.50),
 			"p95":   h.quantile(0.95),
 		}
@@ -169,9 +187,13 @@ func Observe(fields map[string]any) {
 
 	switch event {
 	case "session.first_frame":
-		r.observe("first_frame_ms", ms)
+		if ms > 0 {
+			r.observe("first_frame_ms", ms)
+		}
 	case "wall.first_frame":
-		r.observe("wall_first_frame_ms", ms)
+		if ms > 0 {
+			r.observe("wall_first_frame_ms", ms)
+		}
 	case "wall.open":
 		r.counter("wall_open_total", 1)
 		if room != "" {
