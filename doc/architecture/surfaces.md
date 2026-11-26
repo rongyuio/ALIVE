@@ -1,6 +1,6 @@
 # 四个表面：单直播间 / 后台收听 / 悲鸣观测 / 灵动岛
 
-日期：2026-11-22。状态：模型已定，按阶段落地中。
+日期：2026-11-22。
 取舍与复查条件见 [0012](../decisions/0012-surface-model.md)，
 观测墙本身的规则见 [watch.md](watch.md)，播放链路见 [playback.md](playback.md)。
 
@@ -127,7 +127,7 @@ R   路由与分区   home / follows(streamers|subs|watch) / player
 |---|---|---|
 | 顶栏 tab / 分区之间 | 2026-11-14 `d488013` 关掉路由转场。方向模型与平级路由不匹配，判断正确 | **保持不动**；但当时是全局开关，顺带关掉了播放页那条路 |
 | 卡片网格的进出场 | 2026-11-21 `66a4aae` + [0010](../decisions/0010-switch-content-still.md)。在用户正在读的内容上施加位移，被读成"画面在抖" | **永不恢复**，`TestContentLayerHasNoMotion` 继续守着 |
-| 格子 → 播放页的连续放大 | 2026-11-23 落地（`Match` / `Fly`）。只在该过渡窗口内挂，见下 | **已做**；反向收缩同样在（见下） |
+| 格子 → 播放页的连续放大 | 2026-11-23 落地（`Match` / `Fly`）。身份常挂，只有刚 resize 的几百毫秒例外，见下 | **已做**；反向收缩同样在（见下） |
 
 前两件的结论不能互相牵连：**在内容上动**和**在表面之间换位置**是两件事。
 
@@ -242,6 +242,6 @@ internal/ui/watch_media.go      墙的会话：取流、静音、重连、回收
 internal/ui/player_media.go     焦点会话在播放页时的所有权、弹幕
 internal/ui/island.go           岛的形态推导与热区
 internal/ui/surface.go          纯模型：焦点、呈现、后台收听、岛形态的求值
-internal/ui/surface_motion.go   焦点生命周期：openRoom / setFocus / collapse / closeFocus / 返回过渡
+internal/ui/surface_motion.go   焦点生命周期：openRoom / setFocus / collapsePlayer / closeFocus / 返回过渡
 internal/watch/layout.go        纯布局
 ```

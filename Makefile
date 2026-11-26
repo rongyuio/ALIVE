@@ -50,7 +50,7 @@ TEST_HOME := $(CURDIR)/.mygo/test-home
 TESTENV   = APPDATA="$(TEST_HOME)/Roaming" LOCALAPPDATA="$(TEST_HOME)/Local" GOCACHE="$(shell $(GO) env GOCACHE)" $(RUNENV)
 
 .DEFAULT_GOAL := build
-.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline mock-partial e2e diag tidy tools clean check-mpv
+.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline mock-partial e2e diag tidy tools clean check-mpv gate hooks state symptoms
 
 help:
 	@echo "build         package into $(BUILD_DIR)/<os>-<arch>/ (portable + installer)"
@@ -62,6 +62,9 @@ help:
 	@echo "vet           go build + go vet + mygo vet"
 	@echo "test          go test with mock data, in an isolated APPDATA"
 	@echo "lint          golangci-lint run"
+	@echo "gate          the checks in AGENTS.md that can be automated"
+	@echo "state         regenerate doc/STATE.md from git history"
+	@echo "symptoms      what is burning, by symptom (doc/STATE.md section 2)"
 	@echo "mock          run with mock data layer (online + danmaku)"
 	@echo "mock-offline  run with mock data layer (offline state)"
 	@echo "mock-partial  run with mock feed: 400 rooms, a half chunk at cursor 40"
@@ -69,6 +72,7 @@ help:
 	@echo "diag          build the log reader (cmd/alive-diag)"
 	@echo "tools         install mygo-automation CLI"
 	@echo "tidy          go mod tidy"
+	@echo "hooks         install .githooks (gofmt + gate on commit)"
 	@echo "clean         remove $(BUILD_DIR)/, .mygo/ and built binaries"
 
 # 缺库时提前说清楚，不要等到播放或测试里才看到 dlopen / 找不到文件的错。
@@ -101,6 +105,19 @@ test: check-mpv
 	@$(SH) 'mkdir -p "$(TEST_HOME)/Roaming/alive" "$(TEST_HOME)/Local/alive"'
 	$(TESTENV) $(GO) test -tags mock ./... -count=1
 
+# 现状简报：谁在烧、第几次了。会话开头读它，别从零开始猜。
+state:
+	$(GO) run ./cmd/alive-symptoms
+
+# 只报「已经该停手」的那几条（退出码 3 表示有），给 pre-commit 用。
+symptoms:
+	@$(GO) run ./cmd/alive-symptoms -check -out -
+
+# 工程契约里能自动检查的那几条（cmd/alive-gate）。单独跑用它，提交前更快。
+# 检查什么、为什么，见 `go run ./cmd/alive-gate -list`。
+gate:
+	$(GO) run ./cmd/alive-gate
+
 # 和 vet / test 一样带 -tags mock：假数据层和它的测试也要检查。
 # 二进制要用官方 release，`go install` 装的版本官方不保证可用（见 .golangci.yml）。
 lint:
@@ -112,7 +129,7 @@ lint:
 test-mygo: check-mpv
 	cd third_party/mygo && $(GO) test ./plugins/video/ -count=1
 
-check: fmt-check vet lint test test-mygo
+check: fmt-check vet lint test test-mygo gate
 	@echo "all checks passed"
 
 # mock 走 -tags mock：整个假数据层（internal/live/mock.go）只在这个构建里存在，
@@ -144,9 +161,16 @@ e2e: check-mpv
 tools:
 	$(GO) install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation
 
+hooks:
+	git config core.hooksPath .githooks
+	@echo "hooks installed: .githooks"
+
 tidy:
 	$(GO) mod tidy
 
 clean:
 	@$(SH) 'rm -rf "$(BUILD_DIR)" .mygo'
 	@$(SH) 'rm -f ALIVE ALIVE.exe alive-e2e mygo_windows_*.syso'
+
+
+

@@ -7,6 +7,9 @@
 两次都错：一次猜成「B 站没有这一层」，一次猜成「每帧实时模糊视频帧」。
 第三版把播放器的 bundle 下载下来读了原文。
 
+**这条线**：不在任何一条线上——一天解决，之后没回头（见
+[evolution.md](../evolution.md) 末尾）。它的用处是方法：**参数别猜，去读实现**。
+
 ## 原始材料
 
 ```sh
@@ -70,8 +73,9 @@ backgroundImage: "url(" + e.bgUrl + ")"
 - **绘制**：`internal/ui/player.go` 的 `stageBackdrop`。图片按舞台尺寸外扩
   20% 铺 `Fit(Cover)`，整个容器 `.Blur(35)`，上面压 `MediaBackdropScrim`。
 - **令牌**：`internal/theme` 的 `MediaBackdropBlur` / `MediaBackdropOverscan` /
-  `MediaBackdropScrim`，三个值逐条对应上面的源码，由
-  `TestBackdropTokensMatchBilibili` 钉住。
+  `MediaBackdropScrim`，三个值逐条对应上面的源码。`player_backdrop_test.go` 里有一条
+  把它们和 B 站的数比对的测试——那属于 `AGENTS.md` §4.4 点名的「常量对照常量」，
+  删不删由那条规则定；这里的保证是**值本身和出处**，不是某条测试还在。
 - **只在有黑边时画**：`letterbox()` 算四边宽度，≥2 DIP 才开。
 - **窗口刚变过的那一帧无条件画**：`LayoutBounds` 是上一帧的布局，按它判会
   晚一帧，黑边区闪一下纯黑。

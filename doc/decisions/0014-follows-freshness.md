@@ -5,6 +5,8 @@
 - **影响**：`internal/ui/follow.go`、`internal/ui/home.go`（`App` 字段 + Shell 的路由边沿）、
   `internal/ui/watch_media.go`（`windowHidden` 的写者）、`internal/ui/player_media.go`（取流回写）、
   `main.go`（心跳定时器、`OnRestore`）、`internal/diag/diag.go`（`follows.*` 两个事件）
+- **这条线**：不在 [evolution.md](../evolution.md) 的五条线上——它 2026-11-25 才定，
+  只经过一轮就落地。如果后面又出现「绿点停在早上」，那就是第六条线的起点
 
 ## 问题
 
@@ -113,7 +115,7 @@ heartbeat / manual）和 `rooms` / `updated` / `failed` / `retry_ms`。绿点是
   真流下跑一整天看看有没有风控，比现在调参重要。
 - 抖音的风控窗口没读，`limiter.block` 的冷却时长如果远大于 90s，心跳会在冷却期
   空转（`acquire` 会等冷却，不报错，只是慢）。
-- 面板上不显示"上次刷新于几点"：按钮的 aria-label 就是自动化与读屏的定位入口，
+- 面板上不显示"上次刷新于几点"：按钮的 `.Label()` 就是自动化与读屏的定位入口，
   把它做成随时间变化的字符串会同时打断 `tt.Click("刷新关注状态")` 和读屏节奏。
   陈旧度由日志和三个门槛承担。
 - 关注页的刷新只覆盖「关注主播」那一屏；订阅分区的房间列表沿用 `feedTTL`，

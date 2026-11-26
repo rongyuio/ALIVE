@@ -7,8 +7,8 @@ CDN 还是接口本身"，以及各个字段在实测里长什么样。平台的
 长期有效。
 
 最重要的一条结论：**平台的取流接口和网页端的登录门槛不是一回事。**
-下面 B 站部分是 2026-11 在本地浏览器里观察网页端请求后复现的实测；其他平台只做了
-代码层检查，标为待验证。
+下面 B 站部分是 2026-11 在本地浏览器里观察网页端请求后复现的实测；虎牙与抖音后来逐档
+实测过（见 §六、§七），斗鱼至今没有（见 §二）。
 
 播放链路怎么用这些数据见 [playback.md](playback.md)。
 
@@ -18,7 +18,7 @@ CDN 还是接口本身"，以及各个字段在实测里长什么样。平台的
 
 | 入口 | 行为 |
 |---|---|
-| `xlive/web-room/v2/index/getRoomPlayInfo` | **单档下发**。未登录会话无论 `qn` 传什么，`expected_quality.qn` 恒为 250，所有 codec 的 `current_qn` 恒为 250（另有一条 `hdr_type=1` / `suffix=prohdr` 的 10000 壳子，其 `expected_qn` 仍是 250）。菜单只发一次 `qn=0` 探档；真正播放时再按选中的档位解析一次，拿不到该档就退到平台给的第一档。 |
+| `xlive/web-room/v2/index/getRoomPlayInfo` | **单档下发**。未登录会话无论 `qn` 传什么，`expected_quality.qn` 恒为 250，所有 codec 的 `current_qn` 恒为 250（另有一条 `hdr_type=1` / `suffix=prohdr` 的 10000 壳子，其 `expected_qn` 仍是 250）。菜单只发一次 `qn=0` 探档；真正播放时再按选中的档位解析一次，服务端不给这一档就往下逐档试（`biliResolveDown`）。 |
 | `xlive/play-gateway/master/url` | 网页播放器实际使用的入口。返回多码率 master m3u8，**一次给出全部档位**：`BILI-QN`、`BILI-DISPLAY`（官方中文名）、`RESOLUTION`、`BANDWIDTH`、`PATHWAY-ID`。 |
 
 `master/url` 不需要签名。未登录请求只带 `Referer` 和 `User-Agent`；登录态下走
@@ -247,10 +247,6 @@ B 站的 `getDanmuInfo` 会按请求时的登录态签发 token：登录时把�
 auth 里的 uid 因此不能写死 0，要从会话 cookie 的 `DedeUserID` 取
 （`biliLoginUID`），未登录时才是 0。2026-11-16 实测：同一个 token，uid=0 立刻
 EOF，uid=\<登录 uid\> 正常收到认证回复。`TestBiliDanmuLoginUID` 看住这条。
-
-日志用 `id` 关联一轮起播，`ms` 相对本轮起点，包含取流、传输就绪、播放器打开和
-「首帧可用」。首帧可用表示播放器 `Ready()`，不是精确的屏幕呈现时刻。
-首帧记录实际传输模式、编码、上游声明规格和解码尺寸，不记录签名 URL 或请求头。
 
 ## 六、登录 cookie 续期
 

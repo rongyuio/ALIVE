@@ -11,8 +11,8 @@ MyGo 一致，升级 MyGo 之后在模块目录里重装一次。
 
 ```sh
 make e2e                                          # automation_e2e.go 只在 e2e 构建里存在
-MYGO_AUTOMATION=/d/tmp/alive-e2e.sock build/e2e/alive-e2e.exe &
-mygo-automation open --socket /d/tmp/alive-e2e.sock --session alive-e2e
+MYGO_AUTOMATION=.tmp/alive-e2e.sock build/e2e/alive-e2e.exe &
+mygo-automation open --socket .tmp/alive-e2e.sock --session alive-e2e
 
 mygo-automation snapshot -i                  # 带 ref 的元素列表，元素太多就 | head
 mygo-automation snapshot --full | grep 斗鱼   # 带 bounds，坐标从这儿拿
@@ -20,10 +20,13 @@ mygo-automation press @e2                    # 按 ref 点，不用坐标
 mygo-automation fill @e3 "英雄联盟"            # 填输入框，不用先点
 mygo-automation wait --text "已显示最近"       # 等内容出现，不要 sleep
 mygo-automation wheel 700 700 0 3000         # 滚动，单位 DIP，dy 正数向下
-mygo-automation screenshot /d/tmp/x.png
+mygo-automation screenshot .tmp/x.png
 mygo-automation close                        # 只断会话，app 还在跑
 taskkill //F //IM alive-e2e.exe              # 收尾
 ```
+
+`.tmp/` 已被 `.gitignore` 挡着，socket 和截图都放这里——不要用外部绝对路径，
+换台机器、换个盘就失效了。
 
 ## 这个项目踩过的坑
 
@@ -34,7 +37,7 @@ taskkill //F //IM alive-e2e.exe              # 收尾
   ref 失效会明确报 `stale ref`，不会点错东西。
 - **自绘元素读不出来**：只有带 Role/Label 的元素进无障碍树。卡片、按钮都是自绘 Box，
   snapshot 里没有，只能按坐标 `click`——给控件补 `.Label()` 才能用 ref 驱动，见根目录
-  `AGENTS.md` 的「无障碍标签」。
+  `AGENTS.md` §3.3「自绘控件是常态」。
 - **一个 agent 一个 session**（`--session <名字>`）：ref 存在各自的文件里，互不干扰；
   同一个 session 同时只跑一条命令。
 - 右键菜单别用 `click --button right` 开：插件选不了系统菜单。测右键菜单用 Tester 的
@@ -43,4 +46,3 @@ taskkill //F //IM alive-e2e.exe              # 收尾
   上一轮就是这么踩到的。
 - 坐标是 DIP，从内容区左上角算，和 `--full` 的 `bounds=` 同一套。
 - 量内存：`pwsh -NoProfile -Command 'Get-Process alive-e2e | Select-Object -ExpandProperty WorkingSet64'`。
-- 收尾要真的收：`close` 只断会话，app 还在跑；再 `taskkill` 掉自己起的那个 exe，不留后台进程和 socket。

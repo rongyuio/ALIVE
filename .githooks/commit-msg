@@ -1,0 +1,36 @@
+#!/bin/sh
+# 提交信息挂钩：一次提交只做一件事。
+#
+# 为什么这条不在 pre-commit：判据要读提交信息的 type，而 pre-commit 那一刻
+# 信息还没写。commit-msg 是唯一同时拿得到「暂存了什么」和「说了什么」的地方。
+#
+# 为什么只管 fix：`feat:` 一次动十几个文件是常态（新功能本来就横跨几层）；
+# `fix:` 跨很多文件几乎必然是几件事塞在一起——5b129a9 那次 46 个文件，把
+# 表面过渡、起播音量、列表续取合成了一个提交。
+#
+# 拆不开就写「拆不开：<为什么>」，这条要拦的是「没想过」，不是「真拆不开」。
+
+msg_file=$1
+subject=$(head -1 "$msg_file")
+
+case "$subject" in
+fix:*) ;;
+*) exit 0 ;;
+esac
+
+files=$(git diff --cached --name-only | wc -l | tr -d ' ')
+if [ "$files" -le 3 ]; then
+	exit 0
+fi
+
+if grep -q "拆不开" "$msg_file"; then
+	exit 0
+fi
+
+echo "fix: 动了 $files 个文件（上限 3）。" >&2
+echo "" >&2
+git diff --cached --name-only | sed 's/^/  /' >&2
+echo "" >&2
+echo "拆开提交；确实拆不开就在 body 里写一行「拆不开：<为什么>」。" >&2
+echo "（alive-gate 的 commits 那条守的是同一件事，这里只是让它早一步发生。）" >&2
+exit 1

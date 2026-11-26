@@ -425,6 +425,10 @@ type Renderer struct {
 	part      gpu.Part
 	params    presentParameters
 	redrew    redrawn
+
+	// sink, when set, takes the pixels of every frame drawn, read back from
+	// the back buffer before DXGI presents it (capture.go).
+	sink func(pix []byte, w, h, stride int)
 }
 
 // redrawn is how much of a frame was drawn.
@@ -1090,7 +1094,9 @@ func (r *Renderer) drawFrame(s *scene.Scene) (bool, error) {
 	known := false
 	if r.ctx1 != 0 {
 		damage, known = r.diff.Diff(s)
-		known = known && r.held
+		// A sink reads the whole back buffer back (capture.go): what a part
+		// left undrawn holds an older frame until Present makes up the rest.
+		known = known && r.held && r.sink == nil
 		if known && len(damage) == 0 {
 			// The swap chain shows the frame already.
 			r.redrew = redrewNothing
@@ -1135,6 +1141,9 @@ func (r *Renderer) drawFrame(s *scene.Scene) (bool, error) {
 		r.diff.Remember(s)
 		r.pipelines.Remember()
 	}
+	// The frame is drawn whole in the back buffer now, and DXGI has not
+	// presented it yet: what a sink reads is this frame (capture.go).
+	r.captureFrame()
 	return true, nil
 }
 

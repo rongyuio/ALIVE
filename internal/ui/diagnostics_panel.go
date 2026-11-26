@@ -63,6 +63,8 @@ func (a *App) syncDiagBody(c *ui.Context) {
 		Gap(theme.Space3).Children(func() {
 		a.syncHint(c, "导出日志、最近事件、崩溃/卡死现场、环境指纹和指标。不包含登录态和 state.json。")
 
+		a.updateLine(c)
+
 		a.diagCard(c)
 
 		ui.Row(c).Gap(theme.Space2).AlignItems(ui.Center).Children(func() {
@@ -335,6 +337,35 @@ func diagVersion() string {
 		return v
 	}
 	return "unknown"
+}
+
+// appVersionText 是屏幕上显示的版本。空版本说「本地构建」而不是留白：
+// go run 出来的二进制没有版本号，写 unknown 会让人以为版本信息坏了。
+//
+// 和 diagVersion 分两个函数：那个的值进导出的诊断包，脚本要能解析，所以用
+// 一个稳定的英文词；这里给人看。
+func appVersionText() string {
+	if v := mygo.App.Version(); v != "" {
+		return "ALIVE " + v
+	}
+	return "ALIVE 本地构建"
+}
+
+// updateLine 是诊断页上的版本行 + 手动「检查更新」。
+//
+// 更新本身归 mygo 的更新插件：它在后台按天自己查一次，有新版本自己弹窗。
+// 这一行只是让用户能主动问一次，顺带告诉他现在跑的是哪一版——诊断页是
+// 顶栏那唯一一个应用级入口，版本属于这里。
+func (a *App) updateLine(c *ui.Context) {
+	ui.Row(c).Gap(theme.Space2).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "版本").FontSize(theme.Text2XS).FontWeight(600).
+			TextColor(theme.TextMeta).Width(diagLabelW).SingleLine()
+		ui.Text(c, appVersionText()).FontSize(theme.TextXS).
+			TextColor(theme.TextSecondary).Grow(1).SingleLine()
+		if a.CheckUpdates != nil {
+			a.diagTextAction(c, "检查更新", a.CheckUpdates)
+		}
+	})
 }
 
 // diagnosticMeta 是 bundle 里 meta.json 的内容。只放身份和计数，不放内容。

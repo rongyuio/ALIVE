@@ -110,16 +110,12 @@
 **避免**：旧玫瑰（压深会老气）、品红（H350 会发土）、大面积粉。
 **取舍**：日间用 B 站同色相深一档的粉（`#f25c86`，白字 3.16），不再压成旧玫瑰；夜间保留更亮的 `#fd7795` + 深字。大面是冷灰（夜）和干净浅粉（日），否则整屏会腻。
 
-## 草案验证
+## 验证
 
 生产验证：`internal/theme/comfort_test.go`、`status_test.go`、`srgb_test.go`、
-`internal/ui/overlay_contrast_test.go`。`make check` 全绿。
+`internal/ui/overlay_contrast_test.go`。
 
 负参考与状态色的结论在 [0008](../decisions/0008-palette-system.md#落地2026-11-20)。
-
-## 下一步
-
-- 功能性描边：`BorderFunctional` 已落地并用于未订阅的「订阅分区」（对卡片 3.2:1）。
-- 真窗口截图矩阵：六套 × 日夜 × 高对比 × 100/125/150%。
-- 主题切换是否整屏亮度突变；需要就给 190–280ms 过渡。
-- APCA 门禁与深色元数据小字是否加严。
+功能性描边 `BorderFunctional` 已落地，用于未订阅的「订阅分区」（对卡片 3.2:1）。
+主题切换的 190ms 颜色过渡也已落地（`internal/ui/theme_transition_test.go`）。
+APCA 在 0008 里定的是「报告，不门禁」。

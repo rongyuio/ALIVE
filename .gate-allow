@@ -1,0 +1,23 @@
+# alive-gate 的豁免清单。
+#
+# 每行：<检查名> <目标片段>  # <理由>
+#
+# 写法上故意要求把「当时的值」一起写进去（比如「13 次」）。门禁按子串匹配，
+# 所以数字一变就不匹配、自动恢复报警——**豁免的是存量，不是增量**。
+# 想长期豁免一条检查，就把它从 AGENTS.md 里删掉，别在这里堆白名单。
+
+# 四个核心战场文件：7 天内 fix 次数已超阈值，且 24 小时内还在动。
+# 这不是「可以继续打补丁」，是「重构还没排上」。范围与根因见
+# doc/evolution.md 第四条线（谁活着、谁在响、画面多大）。
+churn internal/ui/player.go 13 次 fix / 7 天 # 战场文件，写者收口未完成
+churn internal/ui/player_media.go 18 次 fix / 7 天 # 同上
+churn internal/ui/surface.go 4 次 fix / 7 天 # 同上
+churn internal/ui/surface_motion.go 6 次 fix / 7 天 # 同上（「飞回格子」修了 6 次）
+# 历史里的多文件 fix：规则落地之前就存在的，改不了。只豁免这几个具体提交，
+# 新提交照拦（commit-msg 钩子在第一道就拦）。
+commits 356a0dc # 11 个文件，规则落地前
+commits 63a7613 # 27 个文件，规则落地前
+commits 775fa3e # 22 个文件，规则落地前
+commits 9f86a4b # 11 个文件，规则落地前
+commits df1a37e # 5 个文件，规则落地前
+commits fd52e01 # 13 个文件，规则落地前

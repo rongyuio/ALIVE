@@ -6,6 +6,8 @@ mygo_windows_*.syso
 # `go build .` 会在仓库根产出同名二进制
 /ALIVE
 /ALIVE.exe
+# go build ./cmd/<工具> 在仓根产出的二进制
+/alive-*.exe
 
 # 本地临时文件
 /.task/
@@ -16,5 +18,10 @@ mygo_windows_*.syso
 *_probe_test.go
 zz_*_test.go
 
+# 更新签名私钥：任何情况下都不进仓库。公钥在 mygo.json 的 updates.publicKey，
+# 私钥按 doc/decisions/0015-self-update.md 放在仓库外，构建时走环境变量。
+mygo-update.key
+
 # README 等 owner 验收后再入库。
 /README.md
+

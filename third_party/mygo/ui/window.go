@@ -148,6 +148,8 @@ type windowHost struct {
 	told, asked bool
 	// path is how the last frame was drawn, for MYGO_FRAME_STATS.
 	path string
+	// frames counts the frames drawn on the GPU, for FrameSink (record.go).
+	frames uint64
 	// background is the scene's Background the surface was last told
 	// (platform.BackgroundSurface).
 	background scene.Color
@@ -673,6 +675,11 @@ func (h *windowHost) makeGPU() {
 	}
 	h.gpu, h.gpuSince = r, time.Now()
 	h.wide = false // the renderer draws sRGB until told otherwise
+	if s, ok := r.(frameSinkSetter); ok && FrameSink != nil {
+		// A recorder reads the frames the GPU draws (record.go). Set before
+		// the first frame, so the renderer's first one has it.
+		s.SetFrameSink(h.framed)
+	}
 	if p, ok := r.(interface{ SetPost(func(func())) }); ok && h.conn.Post != nil {
 		// Frames waiting for the display draw through the main thread.
 		p.SetPost(h.conn.Post)

@@ -1,38 +1,17 @@
 # MyGo 速查
 
 框架层面的版本演进、能力边界和踩过的坑。写 UI 的硬规则在根目录 `AGENTS.md`，
-这里只记那些"看代码看不出来"的部分。
+这里只记那些"看代码看不出来"的部分。上游的更新日志不抄到这里——那是第二份，
+升一次版就会过期；看 release notes。
 
 ## 当前版本
 
 `github.com/egoist/mygo v0.10.0`（2026-11-18 从 v0.9.1 升级）
 
-## v0.10.0 带来的变化
+## 一个本地判断
 
-对这里有影响的：
-
-- 布局快约 12%（arewelayoutyet 基准），灵活行与折行最多快 20%——列表滚动直接受益
-- 附着的弹出层（`SelectBase` / `ComboboxBase` / `PopoverBase` 的面板）不再超出窗口高度，
-  内容多就在面板内滚动
-- Windows 触摸屏单指滚动（此前单指是「按下并选择」）
-- 三击选中整段，拖动按段落扩展（多行输入框和可选文本）
-- `mygo dev` 重启后恢复滚动位置、`ui.Router` 的位置和 `ui.Local` 的值
-- 新增 `ui/netimage`（认 `Last-Modified` / `ETag` 的内存与磁盘缓存）——我们用自己的
-  `internal/media`，没采用
-- 手机/平板（iOS / Android）：桌面构建完全不受影响，不启用
-
-v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touches()`、菜单可保持打开
-并带彩色徽章、页面可中止 Go 调用）。
-
-## v0.9.1 带来的变化（历史）
-
-- Windows 上非 ASCII 目录里的视频可以播（此前路径含中文会失败）
-- 构造过程中修改窗口尺寸不再画一帧拉伸的画面
-- 布局快 8–23%
-- SVG 支持 CSS 变量、文本、marker
-- **破坏性变更**：新增 `Context.Key`（有状态控件用）；`Element.Key` 保留，仍用于容器
-- `ui.NewTester` 的默认外观随版本变化，依赖配色的测试要显式设置
-  （`internal/ui/app_test.go` 的 `TestPaletteSwitch` 因此改成显式 `ThemeMode = "light"`）
+`ui/netimage`（认 `Last-Modified` / `ETag` 的内存与磁盘缓存）我们没采用，封面走自己的
+`internal/media`：它要跟 libmpv 的帧路径共用窗口和重绘节奏，框架的图片缓存接不进去。
 
 ## 通知
 
@@ -52,7 +31,7 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
 
 ## 能力边界
 
-这些不是 bug，是当前版本的设计边界。ALIVE 现在的播放主路径是
+这些不是 bug，是当前版本的设计边界。ALIVE 的播放主路径是
 [0004](../decisions/0004-libmpv.md) 的 libmpv，下面与 `ui/video` / `UpdateYUV`
 相关的行只描述框架自带的那套播放器，不是我们的主路径：
 
@@ -64,8 +43,11 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
 | `Bitmap.UpdateYUV` 支持 NV12 + `BT709`，色彩转换在 GPU 做 | 框架自带的自解码走这条；ALIVE 的 libmpv 引擎走 `scene.SurfaceBGRA`，观测墙再走 D3D11 共享纹理 |
 | `platform.ViewSurface.EmbedView` 只有 darwin / mobile 实现 | Windows 不能嵌原生播放视图 |
 | `ui.NewEngineVideoPlayer` 依赖内部包 `internal/media.Engine` | 上游未导出；ALIVE 用 `media/`、`scene/` 别名包 + `ui/engine_export.go` 把这层打开，自研引擎就是这样接进去的 |
+| `ui.NewTester` 的默认外观随版本变化 | 依赖配色的测试要显式设置（`internal/ui/app_test.go` 的 `TestPaletteSwitch` 因此显式 `ThemeMode = "light"`） |
 
 ## 上游状态
+
+状态以 GitHub 为准，这里记的是它对我们意味着什么：
 
 - `#789`（已关闭）：`ui/video` 用系统媒体引擎实现
 - `#973`（开放）：硬件帧直通未做，作者原话是"暂时只能 `av_hwframe_transfer_data` 到 bgra 再 `Bitmap.Update`"
@@ -73,17 +55,6 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
   `third_party/mygo/plugins/video` 以这一份为骨架，另加了渲染门控、零拷贝 D3D11
   和连续性诊断等本地补丁，不是原样
 - `#105`（路线图）：第 16 条「Native-view hosting」未勾选
-
-## 自动化验收的坑
-
-`ui.NewTester` 验不到真实渲染、滚动、图片加载和内存，真实窗口验收用
-`mygo-automation`（命令见 [reference/acceptance.md](acceptance.md)）。两个必须知道的行为：
-
-- **`--settle` 在本应用里基本等不到。** 灵动岛有常驻动画，窗口一直请求帧，
-  settle 会一路超时到 `--timeout`。要等具体内容用 `wait --text` / `wait <sel>`，
-  或者直接 `snapshot` 看当前状态。
-- **自绘元素读不出来。** 只有带 Role/Label 的元素进无障碍树。卡片、按钮都是自绘 Box，
-  snapshot 里没有，只能按坐标 `click`。给控件补 `.Label()` 才会出现。
 
 ## 升级流程
 
@@ -94,7 +65,8 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
    `$(go env GOMODCACHE)/github.com/egoist/mygo@vX.Y.Z`
 2. `diff -rq third_party/mygo <新版本>`，把差异分成两类：
    - **我们的改动**：`media/`、`scene/`、`plugins/video/`、`plugins/internal/`、
-     `ui/engine_export.go`、`internal/scene/surface_id.go`（Surface 发号，上游只有
+     `ui/engine_export.go`、`ui/record.go`（逐帧录制）、`internal/gpu/d3d11/capture.go`、
+     `internal/scene/surface_id.go`（Surface 发号，上游只有
      约定）、`cmd/mygo/nsis.go`、`cmd/mygo/languages.go`（安装器里「应用正在运行」
      的两句提示改成 LangString——上游写死英文，声明了语言的安装包只有向导是中文）
    - **旧版遗留**：上游新版本已删掉的文件（比如 `website/showcase`），丢掉即可
@@ -111,5 +83,27 @@ v0.9.2 的内容也一并包含（单实例锁等旧进程退出、`Element.Touc
   `nsisLanguageMacros` 的签名改了，`languages_test.go` 没跟着改。这是本地补丁
   留下的，不是上游未发布 API（`PopoverMenuOptions` 在上游已定义，`ui` 包能编译）。
 - 上游发布说明写 "No breaking changes to the Go API" 也要自己验：v0.10.0 这次 ALIVE
-  一行没改就过了 `make check`，但 `internal/raster` 的重叠区像素修复上游已经合进去了，
-  本地的补丁要删掉，否则会重复。
+  一行没改就过了 `make check`，但那次是运气，不是承诺。
+
+## 真实窗口验收
+
+`ui.NewTester` 验不到真实渲染、滚动、图片加载和内存。真实窗口的两个坑
+（`--settle` 基本等不到、自绘元素读不出来）和完整命令见
+[reference/acceptance.md](acceptance.md)。逐帧（1–2 帧）的闪和跳要用
+[reference/frame-recording.md](frame-recording.md) 那套录制 + 比对，`screenshot` 抓不到。
+
+## 本地补丁：逐帧录制（`ui.FrameSink`）
+
+`ALIVE_RECORD` 那一套要的是「窗口真正画出来的像素」，而框架原样只能给
+`Window.CapturePage()`（CPU 光栅重画最后一帧）。所以加了一个**默认不启用、启用时才有成本**的钩子：
+
+| 文件 | 改动 |
+|---|---|
+| `internal/gpu/d3d11/capture.go`（新增） | `Renderer.SetFrameSink`：`Present` 之前把后缓冲经 staging texture 回读成 BGRA 交给 sink |
+| `internal/gpu/d3d11/d3d11.go` | `Renderer.sink` 字段；`drawFrame` 末尾调 `captureFrame()`；**装了 sink 时每帧整帧重画**（脏矩形留下的旧内容会混进回读） |
+| `ui/record.go`（新增） | `ui.PresentedFrame` + `ui.FrameSink` 变量 + `windowHost.framed`（主线程回调，带窗口内帧序号） |
+| `ui/window.go` | `windowHost.frames` 字段；`makeGPU` 建好渲染器时，若 `FrameSink != nil` 就把 sink 装上去 |
+
+代价：`FrameSink` 为 nil 时每帧多一次指针判空，其余不变。装了 sink 时每帧一次
+`CopyResource`+`Map`（实测 2138×1339 @60fps 不掉帧）并整帧重画。改这几个文件要读
+[frame-recording.md](frame-recording.md) 的两条实现细节。

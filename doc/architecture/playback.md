@@ -133,7 +133,7 @@ mpv 连接/探流/第一声（0.35–1.29s），等关键帧只有 2–3ms——
 [decisions/0009](../decisions/0009-live-continuity.md) 与
 [measurements.md](../reference/measurements.md)。
 
-实测（2026-11-16，本机，四个平台 49 个档位）：
+实测（2026-11-16，Ryzen 7 9700X + RX 9070 XT，四个平台 49 个档位）：
 
 | 场景 | 首帧 |
 |---|---:|
@@ -240,7 +240,7 @@ demuxer 缓存并等 live 边缘的**下一个**关键帧，实测 0.08–5.2 �
 | 影子引擎（`ao=null` 预热） | +10% 以上，且两条连接 | ~5ms | 无（两套时钟） |
 
 这张表就是取舍：**要保证画面 <1 秒，后台就得付解码的钱**。5% 的后台预算在这条
-流上做不到——硬解 6.4–8.9% 已经是这台机器 + 这块 GPU 的地板，软件解码是
+流上做不到——硬解 6.4–8.9% 已经是 Ryzen 7 9700X + RX 9070 XT 的地板，软件解码是
 21.7–33.4%。判据与全部否证数据见
 [decisions/0009](../decisions/0009-live-continuity.md)。
 
@@ -333,9 +333,9 @@ demuxer 缓存并等 live 边缘的**下一个**关键帧，实测 0.08–5.2 �
 
 ## 日志
 
-- 用 `id` 关联一轮起播，`ms` 相对本轮起点。
+- `ms` 相对本轮起播的起点。关联字段（run / room / session / engine）的权威表在
+  [diagnostics.md](diagnostics.md) §1。
 - 首帧可用表示第一帧交给呈现端，不是精确的屏幕呈现时刻。
-- 签名地址与本地令牌不进入诊断。
 
 ## 验收要求
 
@@ -353,7 +353,7 @@ make check        # gofmt + build + vet + mygo vet + lint + test + test-mygo
 ```
 
 跨平台矩阵与上游对照（都要连公网）。这两条探针不进仓库，也不在 `make check`
-里；需要时在 `.tmp/probes/playback/` 里重写，跑之前拷回 `internal/playback/`。
+里；需要时重新写一个，跑之前拷回 `internal/playback/`。
 命令形状如下（当前仓库内没有 `TestMatrix` / `TestFfmpegControl`，不要直接复制
 执行）：
 

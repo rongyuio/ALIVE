@@ -91,6 +91,17 @@ func pageKey(platform, route string, section int) string {
 // 卡片只在记下过它矩形的那一页上算数：列表是虚拟化的，滚出屏幕的卡片
 // 不在树上，拿旧矩形当落点会飞到一片空白里。
 func (a *App) pictureOn(key, route string, section int, keepsFocus bool) picture {
+	return a.pictureAt(key, route, section, keepsFocus, true)
+}
+
+// pictureAt 是画面归属**唯一**的求值点。上面几个 picture* 都只是它的包装：
+// 同一件事多一份判断，两份就会不同步（曾经 pictureFromIsland 自己算了
+// 一遍，注释说「只差一条」，实际差了两条）。
+//
+// allowCard 决定要不要把列表卡片当落点：点岛进播放页时不认卡片——用户点的
+// 是屏幕正中的岛，画面却从同一页上某张卡片长出来，读起来就是「不知道从哪
+// 冒出来一块封面」。
+func (a *App) pictureAt(key, route string, section int, keepsFocus, allowCard bool) picture {
 	if key == "" {
 		return pictureNone
 	}
@@ -103,8 +114,10 @@ func (a *App) pictureOn(key, route string, section int, keepsFocus bool) picture
 	if route == routeFollows && section == followsSectionWatch && a.watchHas(key) {
 		return pictureTile
 	}
-	if r := a.cardRectFor(key, route, section); r.W > 0 && r.H > 0 {
-		return pictureCard
+	if allowCard {
+		if r := a.cardRectFor(key, route, section); r.W > 0 && r.H > 0 {
+			return pictureCard
+		}
 	}
 	// 岛是声音的家：只有这一间离开播放页之后还会出声（引擎在、或者正在来），
 	// 才是一个落点。没有引擎又没有取流的焦点，离开就会被收掉，岛变回时钟——
@@ -127,21 +140,13 @@ func (a *App) pictureNow(key string) picture {
 
 // pictureFromIsland 求「点岛进播放页」的画面起点。
 //
-// 和 pictureNow 只差一条：不认卡片。用户点的是屏幕正中的岛，画面却从同一页
-// 上某张卡片长出来，读起来就是「不知道从哪冒出来一块封面」。墙格仍然优先——
+// 和 pictureNow 只差 allowCard：点的是岛，落点不该是卡片。墙格仍然优先——
 // 在观测墙上，这一间的画面确实在那一格里。
 func (a *App) pictureFromIsland(key string) picture {
-	if key == "" {
+	if a.Router == nil {
 		return pictureNone
 	}
-	if a.onWatchWall() && a.watchHas(key) {
-		return pictureTile
-	}
-	if a.focusKey() == key && a.focus != nil &&
-		(a.focus.player != nil || a.focus.loading) {
-		return pictureIsland
-	}
-	return pictureNone
+	return a.pictureAt(key, a.Router.Path(), a.FollowsSection, a.focusKey() == key, false)
 }
 
 // readyPicture 报告这一间此刻是不是已经在出画面。

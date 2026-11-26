@@ -334,6 +334,14 @@ type App struct {
 	DiagGroups []diagGroup
 	DiagEmpty  bool
 
+	// CheckUpdates 是诊断页「检查更新」按钮的动作，由 main 注入 mygo 的更新插件。
+	//
+	// 走注入而不是在这里 import 插件：插件只在 main 里 mygo.Use 之后才活着
+	// （updater 包里取不到实例会 panic），而这一包的测试直接 NewMockApp，
+	// 从不 Use 任何插件。nil 表示这个构建没有更新能力——按钮就不出现，
+	// 而不是画一个点了会 panic 的按钮。
+	CheckUpdates func()
+
 	// 播放页悬浮 chrome（顶栏 / 控制条 / 窗口按钮）的自动隐藏，
 	// 指针静止 2.8 秒后淡出，一动就回来。
 	ChromeHidden  bool

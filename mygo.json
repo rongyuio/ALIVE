@@ -8,5 +8,9 @@
   ],
   "i18n": {
     "source": "zh-Hans"
+  },
+  "updates": {
+    "publicKey": "jRxZkBoi6CYry2Z5vj2n2wX/LG3ptxNbdHvuWmttrIE=",
+    "github": "rongyuio/ALIVE"
   }
 }

@@ -1,0 +1,42 @@
+#!/bin/sh
+# 提交前两道：gofmt（只检查、不改文件）和 alive-gate。
+#
+# 为什么不在钩子里顺手 gofmt -w：自动改写暂存区会让人看不到本该看到的 diff。
+# 拒绝提交、让人自己跑 make fmt 再确认一遍，才对得上「提交前看 diff」这条。
+#
+# 安装：make hooks（把 core.hooksPath 指到 .githooks）。钩子本身进仓库，
+# 否则换一台机器就没了——规则靠人想起来装，等于没有规则。
+
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+if [ -n "$files" ]; then
+	bad=$(gofmt -l $files 2>/dev/null)
+	if [ -n "$bad" ]; then
+		echo "gofmt 未通过，先跑 make fmt：" >&2
+		echo "$bad" >&2
+		exit 1
+	fi
+fi
+
+# gate 要读 git 历史（churn / commits），而未提交的改动就在工作区里，
+# 所以放在最后跑，且只在有暂存内容时跑。
+if ! go run ./cmd/alive-gate; then
+	echo "" >&2
+	echo "alive-gate 未通过。它守的是 AGENTS.md 里能自动检查的那几条：" >&2
+	echo "  go run ./cmd/alive-gate -list   # 看是哪几条" >&2
+	echo "  真要先提交，用 git commit --no-verify（并在 PR 里说明为什么）" >&2
+	exit 1
+fi
+
+# 症状账本是信息，不是闸门：它回答「这是第几次」，该不该停由人判断。
+# 所以这里只打印，不改退出码——把它变成拦截等于让一条启发式判据替你决定。
+if out=$(go run ./cmd/alive-symptoms -check -out - 2>/dev/null); then
+	:
+else
+	if [ -n "$out" ]; then
+		echo "" >&2
+		echo "症状账本（doc/STATE.md，make state 重算）：" >&2
+		echo "$out" >&2
+		echo "→ 第 3 次以上先写「前几次为什么没修对」，再动代码" >&2
+	fi
+fi
+exit 0

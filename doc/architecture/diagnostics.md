@@ -30,7 +30,7 @@
 ## 1. 关联模型
 
 ```
-run   = 20261125-013933-4821-1        一次进程启动（也是日志文件名）
+run   = <日期>-<时刻>-<pid>-<进程内序号>   一次进程启动（也是日志文件名）
   room    = huya|485503               一间房，跨 run 稳定
     session = watch#17                 这一格的第 17 次起播（墙）
     session = 取流#8                   播放页的第 8 轮起播
@@ -248,9 +248,8 @@ alive-diag bundle <日志目录> <out.zip>        # 收集证据（日志/recent
 3. **隐私**：`internal/applog/applog_test.go` 喂入带 `?token=`、`C:\Users\<名>`
    的错误，断言落盘内容不含 token/用户名、但保留 host。
 4. **性能与热路径**：分两层看。
-   - `BenchmarkEmit`（`internal/diag`）**74.9 ns/op、0 B/op、0 allocs/op**：
-     只算 zerolog 构造一条事件，不含 applog 的任何处理。它说明事件 DSL 的开销，
-     不是「写一行日志」的开销。
+   - `BenchmarkEmit`（`internal/diag`）测的是 zerolog 构造一条事件，
+     不含 applog 的任何处理；它说明事件 DSL 的开销，不是「写一行日志」的开销。
    - 真实落盘（`applog.L().Info()…Msg()`，2026-11-25，Ryzen 7 9700X）：
      **1.0 µs/op、910 B/op、14 allocs/op**；带 `diag.Err` 的错误路径
      **2.6 µs/op、1674 B/op、44 allocs/op**。这是调用方真正付的钱：一次拷贝、
@@ -272,8 +271,9 @@ alive-diag bundle <日志目录> <out.zip>        # 收集证据（日志/recent
 
 ### 7.1 一次真实运行的证据
 
-**2026-11-25，换 JSON 之后**：隔离 `APPDATA`/`LOCALAPPDATA` 启动 e2e 构建，
-`alive-<run>.log` 的实际内容（原样，未编辑）：
+**2026-11-25，换 JSON 之后**：隔离 `APPDATA`/`LOCALAPPDATA` 启动 e2e 构建。
+下面是 `alive-<run>.log` 的形状照抄，路径和 `source` 的行号已隐——行号随代码移动，
+抄进来第二天就不对了：
 
 ```json
 {"components":"","event":"log.start","keep":5,"level":"info","max_bytes":8388608,"msg":"日志就绪","path":"…\\alive\\logs\\alive-20261125-124609-10660-1.log","run":"20261125-124609-10660-1","source":"applog/applog.go:162","time":"2026-11-25T12:46:09.2432538+08:00"}
@@ -382,8 +382,7 @@ event=run.stop reason=quit uptime_ms=30140
 - **不按帧写**：任何 `Frame`/`Layout`/`Paint` 路径不写日志。状态翻转才写。
 - **不记原始 URL**：只记 `scheme://host`；query 就是签名。
 - **不记 cookie/token/响应体全文**：`err.text` 只留首行、脱敏、截断。
-- **不把日志当指标**：重连率、首帧分位数走指标（下一批），日志只回答「为什么」。
-- **不按帧写**、**不记原始 URL**、**不记 cookie/token/响应体全文**：见上三条。
+- **不把日志当指标**：重连率、首帧分位数走指标，日志只回答「为什么」。
 
 ## 10. 为什么是 zerolog（2026-11-25）
 

@@ -6,6 +6,7 @@
   换掉的是引擎：cgo 直调 libav 自己写调度 → libmpv。
 - **影响**：`internal/playback`、`third_party/mygo/plugins/video`、`third_party/mpv`、
   `third_party/mygo/internal/raster`、`mygo.json`、`Makefile`
+- **这条线**：[evolution.md](../evolution.md) 第一条，也是它的终点。
 
 ## 背景
 
@@ -79,7 +80,7 @@ ry 的判断在这件事上是对的：**Go 不好做的、或者有更成熟更
 
 `render.h` 写得很明确，`MPV_RENDER_PARAM_SW_FORMAT` 只认 `rgb0`/`bgr0`/`0bgr`/`0rgb`
 以及「internally marked as RGB, has exactly 1 plane」的其他格式。**NV12 两个平面，
-传过去直接 `MPV_ERROR_NOT_SUPPORTED`**（我试过）。
+传过去直接 `MPV_ERROR_NOT_SUPPORTED`**。
 
 我们最终选 `bgr0`（单平面，4 字节/像素），通过 `scene.SurfaceBGRA` 上屏。
 
@@ -105,12 +106,12 @@ ry 的判断在这件事上是对的：**Go 不好做的、或者有更成熟更
   这是意外收获——换掉 libav 之后 `third_party/ffmpeg` 的头文件与导入库成了死重量，
   已于 2026-11-16 从仓库删除，仓库瘦 143MB。
 - 我们仍然要为「流给不给得动」负责：高码率档位上游慢时，mpv 会 `buffering=true` 慢放。
-  这是真实行为，不是 bug，但需要能诊断——`TestFfmpegControl` 就是为此留的对照组
-  （该测试后来随探针移出仓库，现在是一次手工对照）。
+  这是真实行为，不是 bug，但需要能诊断——对照组是一次手工对照
+  （`TestFfmpegControl` 已随探针移出仓库）。
 
 ## 复查条件
 
-- 上游 mygo 开放 GPU 渲染上下文或原生视图托管，能走 `MPV_RENDER_API_TYPE_OPENGL`
+- 上游 mygo 开放 OpenGL 渲染上下文（D3D11 共享纹理那条 2026-11-23 已通，只用于观测墙）
 - 需要把每帧约 27ms 的 CPU 开销拿掉（省电、风扇、弱机余量）。**4K60 本身软件渲染已经
   跑满**，GPU 互操作是优化项，不是「跑不动」的补救，依据见
   [measurements](../reference/measurements.md) 的「4K60 与 CPU 敏感度」

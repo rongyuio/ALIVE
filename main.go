@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
+	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 	"github.com/rs/zerolog"
 
@@ -96,7 +98,19 @@ func main() {
 		media.Default.SetDiskDir(filepath.Join(dir, "alive", "images"))
 	}
 
+	// 自更新：签名发布在 GitHub release 上的版本，由这枚插件在后台按天查一次，
+	// 有新版本自己弹一个原生窗口（native.Plugin 是同一套东西的自绘版，和这个
+	// 应用一样不碰 webview——用 updater.Plugin 会为了一个更新对话框把 WebView2
+	// 拖进来）。
+	//
+	// 必须在 App.Run 之前：插件在 Setup 里登记自己，等 App 就绪才开始排检查。
+	// 没配 updates 的构建里它什么也不做（mygo.json 配了，见
+	// doc/decisions/0015-self-update.md）。
+	mygo.Use(native.Plugin)
+
 	app := appui.NewApp()
+	// 诊断页的「检查更新」走这一条：界面不认识更新插件，只认识这个函数。
+	app.CheckUpdates = updater.CheckForUpdates
 
 	var win *mygo.Window
 	var watcher *hang.Watcher
