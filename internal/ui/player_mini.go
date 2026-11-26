@@ -21,12 +21,23 @@ const (
 	miniMinH = 135
 )
 
+// newMiniWindow 开一个小窗。
+//
+// 抽成变量只为一件事：`mygo.NewWindow` 在 `ui.Tester` 里会一直等平台就绪
+// （实测把测试挂到 3 分钟超时），于是"小窗开着"这件事从来没被断言过——
+// 也就没人知道主窗口藏起来之后画面还在不在走。多这一行间接之后，测试可以
+// 把真窗口换成 nil，只验小窗的行为。生产路径永远是 mygo.NewWindow。
+var newMiniWindow = mygo.NewWindow
+
 // miniOpen 报告小窗是否还活着。
 //
 // 不依赖「关窗时清指针」的回调：窗口可能是被 Alt+F4 或系统关掉的，
 // 每次直接问窗口自己有没有被销毁，指针就永远不会指向一个死窗口。
 func (a *App) miniOpen() bool {
-	return a.Mini != nil && !a.Mini.IsDestroyed()
+	if !a.pipOn {
+		return false
+	}
+	return a.Mini == nil || !a.Mini.IsDestroyed()
 }
 
 // togglePip 开关小窗播放。
@@ -38,17 +49,17 @@ func (a *App) miniOpen() bool {
 // 关掉小窗（点叉、Alt+F4、系统菜单都算）再把主界面还回来。
 func (a *App) togglePip() {
 	if a.miniOpen() {
-		a.Mini.Close()
+		a.closePip()
 		return
 	}
 	// 主窗口要是正全屏着，先退出来：隐藏一个全屏窗口，恢复时的窗口状态不可预期
 	if a.Win != nil {
 		a.WinFull = false
 		if windowFullScreen(a.Win) {
-			a.Win.SetFullScreen(false)
+			windowSetFullScreen(a.Win, false)
 		}
 	}
-	mini := mygo.NewWindow(mygo.WindowOptions{
+	mini := newMiniWindow(mygo.WindowOptions{
 		Title:     "ALIVE 小窗",
 		Width:     miniW,
 		Height:    miniH,
@@ -61,9 +72,12 @@ func (a *App) togglePip() {
 		Content:         ui.View(a.MiniPlayer),
 	})
 	a.Mini = mini
+	a.pipOn = true
 	// 还原挂在窗口的关闭事件上，而不是只挂在自己的关闭按钮上：
 	// 用户 Alt+F4 关掉小窗时，主界面一样得回来。
-	mini.OnClosed(func() { a.showMain() })
+	if mini != nil {
+		mini.OnClosed(func() { a.showMain() })
+	}
 	if a.Win != nil {
 		a.Win.Hide()
 	}
@@ -71,6 +85,19 @@ func (a *App) togglePip() {
 	// watchHide，所以这里主动标一次——回来时「刚回到墙上」的收尾（离线格
 	// 立刻重探、补一条隐藏/显示日志）才知道墙离开过。
 	a.WatchHidden()
+}
+
+// closePip 关掉小窗并把主界面还回来。窗口可能是 nil（测试里不开真窗口）。
+func (a *App) closePip() {
+	if !a.pipOn {
+		return
+	}
+	a.pipOn = false
+	if mini := a.Mini; mini != nil {
+		a.Mini = nil
+		mini.Close()
+	}
+	a.showMain()
 }
 
 // showMain 把主窗口重新显示出来并聚焦。
@@ -154,11 +181,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 
 			ui.Box(c).Grow(1)
 
-			a.miniBtn(c, iconPlayerBack, "关闭小窗", 16, func() {
-				if a.Mini != nil {
-					a.Mini.Close()
-				}
-			})
+			a.miniBtn(c, iconPlayerBack, "关闭小窗", 16, a.closePip)
 		})
 	})
 
@@ -188,11 +211,14 @@ func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, label string, size float32, on
 }
 
 // invalidateWindows 让主窗口和小窗都重画一遍：两边读的是同一份播放状态。
+//
+// 判据是「有没有窗口」，不是「小窗模式开没开」：miniOpen 回答的是后者
+// （测试里没有真窗口但小窗模式是开的），拿它去取 a.Mini 就是空指针。
 func (a *App) invalidateWindows() {
 	if a.Win != nil {
 		a.Win.Invalidate()
 	}
-	if a.miniOpen() {
+	if a.Mini != nil && !a.Mini.IsDestroyed() {
 		a.Mini.Invalidate()
 	}
 }
@@ -231,7 +257,7 @@ func (a *App) playerCaption(c *ui.Context) {
 	if !a.playerFullscreen() || a.Win == nil {
 		return
 	}
-	maximized := a.Win.IsMaximized()
+	maximized := windowMaximized(a.Win)
 
 	row := ui.Row(c).Absolute().Top(0).Right(0).Height(32)
 	a.chromeFade(row)

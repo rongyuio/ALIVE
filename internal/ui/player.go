@@ -150,7 +150,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 					case a.WinFull:
 						a.WinFull = false
 					case windowFullScreen(a.Win):
-						a.Win.SetFullScreen(false)
+						windowSetFullScreen(a.Win, false)
 					default:
 						a.WinFull = true
 					}
@@ -283,6 +283,24 @@ var windowFullScreen = func(w *mygo.Window) bool {
 	return w != nil && w.IsFullScreen()
 }
 
+// windowMaximized 同理：全屏时画面右上角那三个窗口按钮要按「现在是不是
+// 最大化」画图标，而 IsMaximized 在 Tester 里一样会等主线程。测试要验
+// 「系统全屏时那三个按钮在不在」，就得能替换它。
+var windowMaximized = func(w *mygo.Window) bool {
+	return w != nil && w.IsMaximized()
+}
+
+// windowSetFullScreen 进 / 退系统全屏。
+//
+// 同样是为了能在 Tester 里验：SetFullScreen 走 onMain，测试里会永久阻塞。
+// 换掉它之后，「Esc 只退全屏、不把用户踢出直播间」这条规则才测得到——
+// 它是 shell_keys.go 里写明的意图，也是用户按 Esc 时最容易踩错的一处。
+var windowSetFullScreen = func(w *mygo.Window, on bool) {
+	if w != nil {
+		w.SetFullScreen(on)
+	}
+}
+
 // leavePlayer 收掉播放页留下的窗口级与界面级状态，离开播放页时调用。
 //
 // 两种全屏必须在这里退出。系统全屏留着不走，窗口回到首页时还是整屏、
@@ -297,7 +315,7 @@ var windowFullScreen = func(w *mygo.Window) bool {
 func (a *App) leavePlayer() {
 	a.WinFull = false
 	if windowFullScreen(a.Win) {
-		a.Win.SetFullScreen(false)
+		windowSetFullScreen(a.Win, false)
 	}
 	a.ChromeHidden = false
 	a.chromeIdleAt = time.Time{}
@@ -853,8 +871,27 @@ func (a *App) volumeControlFor(c *ui.Context, m controlMetrics, name string) {
 		}
 		a.iconBtnSized(c, muteIcon, m.iconSize, m.iconHit, false, muteLabel, a.toggleMute)
 
+		// 音量条是**滑块**，不是一块会发光的装饰：读屏要念得出当前值，
+		// 也要知道方向键可以调。只挂 Label 的话，无障碍树里 role 是普通
+		// 分组、value 是空字符串——读屏只会说「音量」，念不出 60%，
+		// 而得靠屏幕上那个 "60%" 文本去猜。MyGo 的写法是
+		// Role(RoleSlider) + Range，后者进 aria-valuemin/valuemax/valuenow
+		// （third_party/mygo/ui/access.go:998）。
 		hot := ui.Box(c).Width(m.volumeW).Height(18).Center().
-			Cursor(ui.CursorPointer).Label("音量" + suffix)
+			Cursor(ui.CursorPointer).Label("音量"+suffix).
+			Role(ui.RoleSlider).
+			Range(0, 100, math.Round(float64(a.focusVolume())*100)).
+			Step(volumeKeyStep * 100).
+			Focusable()
+		// 读屏的「增大/减小」（AccessIncrement/Decrement）在 MyGo 里被换成
+		// 方向键交给这个元素（third_party/mygo/ui/access.go:1240），Tab 也能
+		// 停在这儿。两条路都得有人接，否则滑块只是"读得出、调不动"。
+		if hot.Shortcut(0, ui.KeyLeft) {
+			a.setVolume(max(0, a.focusVolume()-volumeKeyStep))
+		}
+		if hot.Shortcut(0, ui.KeyRight) {
+			a.setVolume(min(1, a.focusVolume()+volumeKeyStep))
+		}
 		// 悬停在音量条上滚轮调音量。挂在这条热区上而不是控制条或画面：
 		// MyGo 的滚轮按指针位置找接收者，只有指针真在这 18px 高的一条上
 		// 才收得到，所以「悬停才生效」是结构保证的。
@@ -1107,6 +1144,11 @@ func playerIconColor(btn ui.Element, active bool) ui.Color {
 // 滚轮调音量的灵敏度：一格滚轮（Windows 默认 3 行 × 33 DIP ≈ 100 DIP）5%，
 // 触控板的精确滚动按同一比例折算成更细的步进。
 const volumeWheelPerDIP = 0.0005
+
+// volumeKeyStep 是方向键和读屏「增大/减小」跨一步的音量：和滚轮一格一致（5%）。
+// 滑块的无障碍步长（aria-valuetext 的 step）也用它，读屏念的步进和实际步进
+// 必须是同一个数，否则读屏说"涨了 1%"而实际涨了 5%。
+const volumeKeyStep = 0.05
 
 // wheelVolume 把滚轮位移折算成音量，余量攒着下一次用。
 //

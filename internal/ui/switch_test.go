@@ -66,11 +66,6 @@ func TestStaleCacheRefreshKeepsListOnScreen(t *testing.T) {
 	}
 }
 
-// 首屏封面还没解码完，不该拦住切平台。
-//
-// 卡片的封面位本来就有同尺寸的渐变占位（coverArt），图晚到只是从渐变
-// 换成真图，版式不跳。platformSwitchReady 却要求首屏每一张封面都有纹理，
-// 只要有一张在路上就白等满 700ms：点完 tab 滑块已经过去了，内容一动不动。
 func TestPlatformSwitchDoesNotWaitForCovers(t *testing.T) {
 	a := NewMockApp()
 	a.LiveMode = true

@@ -102,7 +102,7 @@ func (a *App) handleEscape() {
 	}
 	// 全屏时 Esc 只退出全屏，绝不顺手把用户踢出直播间
 	if windowFullScreen(a.Win) {
-		a.Win.SetFullScreen(false)
+		windowSetFullScreen(a.Win, false)
 		a.lastFullscreenExit = time.Now()
 		return
 	}
@@ -126,7 +126,7 @@ func (a *App) toggleWinFull() {
 		return
 	}
 	if windowFullScreen(a.Win) {
-		a.Win.SetFullScreen(false)
+		windowSetFullScreen(a.Win, false)
 	}
 	a.WinFull = true
 }
@@ -143,7 +143,7 @@ func (a *App) toggleFullscreen() {
 	if !full {
 		a.WinFull = false
 	}
-	a.Win.SetFullScreen(!full)
+	windowSetFullScreen(a.Win, !full)
 }
 
 // toggleMute 静音 / 取消静音：记住静音前的音量，恢复时回到那个值。

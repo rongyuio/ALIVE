@@ -134,6 +134,12 @@ type App struct {
 	LineHover    hoverClose
 	// Mini 是小窗播放的独立窗口；nil 表示没开小窗
 	Mini *mygo.Window
+	// pipOn 是小窗模式本身，和窗口指针分开。
+	//
+	// 分开的理由是测试：ui.Tester 里开不出真窗口（mygo.NewWindow 会一直等
+	// 平台就绪），而"主窗口藏起来之后画面还在不在走"必须能被断言。窗口为
+	// nil 但 pipOn 为真，就是"小窗开着但这一帧没有真窗口"。
+	pipOn bool
 	// media 是播放页的媒体层：转封装 + 播放器 + 弹幕连接。
 	// 它们要跨帧活着，所以挂在 App 上而不是视图里。
 	media playerMedia

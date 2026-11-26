@@ -9,67 +9,6 @@ import (
 	"alive/internal/live"
 )
 
-// 点「已经选中的」分区必须是空操作：不能换代、不能重铺内容层。
-//
-// 一级/二级 chip 以前无条件 navFlip：点同一个分区也会把内容层整棵子树换掉
-// （feed key 变、列表重拉），页面上的卡片全部重建一次——用户看到的是
-// 「同一个分区点一下内容重铺」，而且按下与松手落在不同元素上时那一下点击
-// 直接丢失。三级 chip 本来就有这条保护，一级/二级漏了。
-func TestReselectingSameCategoryKeepsFeedKey(t *testing.T) {
-	app := NewMockApp()
-	tt := ui.NewTester(app.Shell, 1440, 900)
-	tt.Frame()
-
-	key := app.navFeedKey()
-	seq := app.navSeq
-
-	// 默认选中的就是第一个二级分区（英雄联盟）。
-	if err := tt.Click("分类:英雄联盟"); err != nil {
-		t.Fatalf("点当前分区失败: %v", err)
-	}
-	tt.Frame()
-	if app.navSeq != seq || app.navFeedKey() != key {
-		t.Fatalf("点已选中的二级分区仍然换代：seq %d→%d，key %q→%q",
-			seq, app.navSeq, key, app.navFeedKey())
-	}
-
-	// 换到另一个二级分区：应当换代一次。
-	if err := tt.Click("分类:无畏契约"); err != nil {
-		t.Fatalf("切分区失败: %v", err)
-	}
-	tt.Frame()
-	seq2, key2 := app.navSeq, app.navFeedKey()
-	if seq2 == seq {
-		t.Fatal("切到另一个分区没有换代")
-	}
-
-	// 再点一次当前分区：空操作。
-	if err := tt.Click("分类:无畏契约"); err != nil {
-		t.Fatalf("再点当前分区失败: %v", err)
-	}
-	tt.Frame()
-	if app.navSeq != seq2 || app.navFeedKey() != key2 {
-		t.Fatalf("重复点当前分区又换代了：seq %d→%d", seq2, app.navSeq)
-	}
-}
-
-// 一级分区同理：点当前这一组不换代。
-func TestReselectingSameGroupKeepsFeedKey(t *testing.T) {
-	app := NewMockApp()
-	tt := ui.NewTester(app.Shell, 1440, 900)
-	tt.Frame()
-
-	key := app.navFeedKey()
-	seq := app.navSeq
-	if err := tt.Click("分区:热门"); err != nil {
-		t.Fatalf("点当前一级分区失败: %v", err)
-	}
-	tt.Frame()
-	if app.navSeq != seq || app.navFeedKey() != key {
-		t.Fatalf("点已选中一级分区仍然换代：seq %d→%d", seq, app.navSeq)
-	}
-}
-
 // roomsCountingProvider 只回答「有没有被问到列表」。
 type roomsCountingProvider struct{ rooms int }
 

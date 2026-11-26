@@ -25,7 +25,11 @@ const (
 //
 // 与 currentAuth 的区别只在于平台由调用方给：切平台时要预取的是
 // 「所有平台」的头像，而不只是当前这个。
-func authFor(platform string) live.Authenticator {
+//
+// 抽成变量是为了能在测试里验登录界面：真实实现会去问平台、发网络请求，
+// 而「点登录之后屏幕上出现什么」是纯界面的事，不该依赖网络。测试注入一个
+// 假的 Authenticator，界面那条路一行都不用改。
+var authFor = func(platform string) live.Authenticator {
 	auth, _ := live.AuthFor(live.Platform(platform))
 	return auth
 }

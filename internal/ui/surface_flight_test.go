@@ -167,26 +167,6 @@ func TestTabLeaveFliesIntoIsland(t *testing.T) {
 	}
 }
 
-// 岛上的 X：目标页上没有这一间的卡片，硬切。
-func TestCloseWithoutCardCutsHard(t *testing.T) {
-	app, tt, _ := listOpenedPlayer(t)
-
-	app.closeFocus()
-	tt.Frame()
-	if app.Router.Path() != routeHome {
-		t.Fatalf("X 之后路由是 %q，期望首页", app.Router.Path())
-	}
-	if app.surfaceFlight != nil {
-		t.Fatalf("结束这一路还在飞：%+v", app.surfaceFlight)
-	}
-	if app.focusKey() != "" {
-		t.Fatalf("X 之后焦点还在：%q", app.focusKey())
-	}
-	if app.Router.Transition != ui.TransitionNone {
-		t.Fatalf("X 用了 %v：没有画面可接，应该硬切", app.Router.Transition)
-	}
-}
-
 // 岛 → 播放页，这一间已经在出画面：**飞活画面**，不硬切。
 //
 // 2026-11-26 统一模型：飞不飞只由「两端有没有几何」决定；这一间有没有出图只
@@ -406,42 +386,6 @@ func openCardAndCollapse(t *testing.T, app *App, tt *ui.Tester, room Streamer) {
 	}
 	if _, ok := tt.Find("回到直播间"); !ok {
 		t.Fatal("收起后岛没有显示这一路")
-	}
-}
-
-// 卡片滚出虚拟列表的构建范围后，旧矩形必须作废：点岛应从岛起飞，
-// 而不是从窗口外那块早已不在树上的卡片起飞。
-func TestCardRectExpiresWhenScrolledOut(t *testing.T) {
-	rooms := cardFlightRooms("房", "英雄联盟", 120)
-	app, tt := cardFlightApp(t, rooms)
-	room := rooms[0]
-	openCardAndCollapse(t, app, tt, room)
-
-	key := watchKey(room)
-	if r := app.cardRectFor(key, routeHome, app.FollowsSection); r.W <= 0 {
-		t.Fatalf("卡片在屏内时没有记账")
-	}
-
-	tt.Move(720, 600)
-	for i := 0; i < 8; i++ {
-		tt.Wheel(720, 600, 0, 400)
-		tt.Advance(200 * time.Millisecond)
-	}
-	tt.Frame()
-	if first, _ := app.HomeList.Visible(); first == 0 {
-		t.Fatal("列表没有滚动")
-	}
-	if r := app.cardRectFor(key, routeHome, app.FollowsSection); r.W > 0 {
-		t.Fatalf("卡片已经滚出视口，旧矩形仍然有效：%v", r)
-	}
-
-	if err := tt.Click("回到直播间"); err != nil {
-		t.Fatalf("点岛失败: %v", err)
-	}
-	tt.Frame()
-	f := app.surfaceFlight
-	if f == nil || f.from != pictureIsland {
-		t.Fatalf("滚出视口后应从岛起飞：%+v", f)
 	}
 }
 

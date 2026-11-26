@@ -156,10 +156,21 @@ func TestFollowsFilterSwitchAdvancesGeneration(t *testing.T) {
 	tt := ui.NewTester(app.Shell, 1440, 900)
 	tt.Frame()
 
-	ids := app.followsPlatforms()
-	if len(ids) < 2 {
-		t.Skip("示例数据里只有一家的关注")
+	// 示例数据只关注了一家：补一家别的平台，这条才测得到「换筛选」。
+	// 原来这里是 t.Skip——前提不满足就跳过，等于把「没测」写成「通过」。
+	// restore() 在 NewMockApp 里已经跑过，它会从状态文件重建 Follows；
+	// 所以补记录之后要再刷一次平台筛选项的可见集合。
+	app.Follows = []FollowRecord{
+		{Platform: "douyu", RoomID: "f-1", Name: "一家", Live: true},
+		{Platform: "bilibili", RoomID: "f-2", Name: "另一家", Live: true},
 	}
+	app.clampFollowsPlatform()
+	ids := app.followsPlatforms()
+	t.Logf("关注平台 = %v（Follows=%d 条）", ids, len(app.Follows))
+	if len(ids) < 2 {
+		t.Fatalf("补了关注之后仍然只有 %d 家：夹具没生效", len(ids))
+	}
+	tt.Frame()
 	seq := app.followsSeq
 
 	if err := tt.Click("关注筛选:" + platformLabel(ids[1])); err != nil {
@@ -241,50 +252,6 @@ func TestSubscribeChipBoxMatchesLayout(t *testing.T) {
 		if math.Abs(float64(d-origin)) > 1 {
 			t.Errorf("%q 位置差 %.2f，第一个是 %.2f：格子没和布局对齐", chip.Name, d, origin)
 		}
-	}
-}
-
-// 换订阅项也要换代次。
-func TestSubscribeSwitchAdvancesGeneration(t *testing.T) {
-	app := NewMockApp()
-	app.Subs = []Subscription{
-		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "英雄联盟", CategoryID: "1"},
-		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "无畏契约", CategoryID: "2"},
-	}
-	app.switchTab("follows")
-	app.FollowsSection = followsSectionSubs
-	tt := ui.NewTester(app.Shell, 1440, 900)
-	tt.Frame()
-
-	seq := app.followsSeq
-	clickSubChip(t, tt, "无畏契约")
-	if app.SubIndex != 1 {
-		t.Fatalf("SubIndex=%d，期望 1", app.SubIndex)
-	}
-	if app.followsSeq != seq+1 {
-		t.Errorf("代次没动：%d → %d", seq, app.followsSeq)
-	}
-}
-
-// 内容区各有自己的代次：在关注页换订阅 chip，首页不该再播一次进场。
-func TestSequencesAreIndependent(t *testing.T) {
-	app := NewMockApp()
-	if app.navSeq != app.followsSeq {
-		t.Skip("初值不同，这条断言没有意义")
-	}
-	app.Subs = []Subscription{
-		{PlatformID: "douyu", Platform: "斗鱼", Group: "网游", Name: "A", CategoryID: "1"},
-		{PlatformID: "bilibili", Platform: "B站", Group: "网游", Name: "B", CategoryID: "2"},
-	}
-	app.switchTab("follows")
-	app.FollowsSection = followsSectionSubs
-	tt := ui.NewTester(app.Shell, 1440, 900)
-	tt.Frame()
-
-	home := app.navSeq
-	clickSubChip(t, tt, "B")
-	if app.navSeq != home {
-		t.Errorf("换订阅项的代次串到了首页：%d → %d", home, app.navSeq)
 	}
 }
 

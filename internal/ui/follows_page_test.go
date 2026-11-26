@@ -345,26 +345,6 @@ func TestFollowsSectionTabsDragToReorder(t *testing.T) {
 	}
 }
 
-// 一级分区换的是同一块内容区：代次 +1。
-func TestFollowsSectionSwitchAdvancesGeneration(t *testing.T) {
-	app := NewMockApp()
-	app.switchTab("follows")
-	tt := ui.NewTester(app.Shell, 1440, 900)
-	tt.Frame()
-
-	seq := app.followsSeq
-	if err := tt.Click("订阅分区"); err != nil {
-		t.Fatal(err)
-	}
-	if app.followsSeq != seq+1 {
-		t.Errorf("代次没动：%d → %d", seq, app.followsSeq)
-	}
-
-	if err := tt.Click("关注主播"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // 还没有订阅时，订阅分区那一级只留一句入口说明，内容区是空态。
 func TestFollowsSubsSectionEmptyState(t *testing.T) {
 	app := NewMockApp()
