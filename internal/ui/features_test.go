@@ -522,31 +522,16 @@ func TestFeatureFollowNeedsHover(t *testing.T) {
 	mustFind(t, tt, "取消关注:"+room.Name)
 }
 
-// ---------------------------------------------------------------- 验不了的
-
-// 这四条在 ui.Tester 里无法验，原因写在这里，不假装验过：
-//
-//	切平台      mock 的四个平台用同一份假数据，切过去屏幕上什么都不变，
-//	            断言没有可观察的差异。要验得让假数据按平台不同。
-//	系统全屏    Tester 没有真的窗口系统。
-//	小窗播放    togglePip 会 mygo.NewWindow 并等窗口就绪，Tester 里永久阻塞
-//	            （实测挂到 3 分钟超时）。这一条从没被断言过，正是因为一测就卡。
-//	登录        mock 构建里点「登录」会发起真实的扫码网络请求。
-func TestFeatureUntestableHere(t *testing.T) {
-	t.Skip("切平台 / 系统全屏 / 小窗 / 登录 在 ui.Tester 里验不了，见注释")
-}
-
 // 卡片滚出虚拟列表之后点岛：画面从岛起飞，不是从屏幕外那块卡片。
 //
-// 这条以前断言 app.cardRectFor(key) 返回零矩形——私有 map，重构一动就红。
-// 换成看得见的：飞行块的起点必须落在岛的中心。屏幕外的卡片不在树上，它的
-// 矩形不该成为起点。
+// 原来断言 app.cardRectFor(key) 返回零矩形——私有 map，重构一动就红。
+// 换成看得见的：飞行块的起点中心必须落在岛里。屏幕外的卡片不在树上，
+// 它的矩形不该成为起点。
 func TestFeatureIslandFlightStartsFromTheIslandAfterScrolling(t *testing.T) {
 	rooms := cardFlightRooms("房", "英雄联盟", 120)
 	app, tt := cardFlightApp(t, rooms)
 	openCardAndCollapse(t, app, tt, rooms[0])
 
-	// 滚到看不见那张卡。
 	tt.Move(720, 600)
 	for i := 0; i < 8; i++ {
 		tt.Wheel(720, 600, 0, 400)
@@ -563,11 +548,10 @@ func TestFeatureIslandFlightStartsFromTheIslandAfterScrolling(t *testing.T) {
 	if !ok {
 		t.Fatal("找不到岛")
 	}
-	// 起点中心要落在岛的范围内。
 	cx := flight.X + flight.W/2
 	cy := flight.Y + flight.H/2
 	if cx < island.X || cx > island.X+island.W || cy < island.Y || cy > island.Y+island.H {
-		t.Fatalf("飞行块从 (%0.f,%0.f) 起飞，不在岛 %v 上：滚出去的卡片被当成了起点", cx, cy, island)
+		t.Fatalf("飞行块从 (%.0f,%.0f) 起飞，不在岛 %v 上：滚出去的卡片被当成了起点", cx, cy, island)
 	}
 }
 
@@ -593,12 +577,12 @@ func TestFeaturePlatformSwitchDoesNotWaitForCovers(t *testing.T) {
 
 	a.switchTab("douyu")
 
-	// 不等：同一帧内容就该是 douyu 那两间，而不是先挂起 700ms。
 	waitFor(t, func() bool {
 		tt.Frame()
 		return len(cardLabels(tt)) > 0
 	})
-	if got := strings.Join(cardLabels(tt), "|"); !strings.Contains(got, "甲") || !strings.Contains(got, "乙") {
+	got := strings.Join(cardLabels(tt), "|")
+	if !strings.Contains(got, "甲") || !strings.Contains(got, "乙") {
 		t.Fatalf("切平台后卡片是 %v，期望斗鱼那两间", cardLabels(tt))
 	}
 }

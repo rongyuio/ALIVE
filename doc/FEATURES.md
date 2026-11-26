@@ -28,32 +28,51 @@ tt.Find("播放画面（双击全屏）")              // 用户的眼睛
 go test -tags mock ./internal/ui -run TestFeature
 ```
 
-| # | 用户做什么 | 应该看到什么 | 状态 |
-|---|---|---|---|
-| 1 | 启动 | 首页出卡片 | ✓ |
-| 2 | 点一级分区 | 卡片换一批 | ✓ |
-| 3 | 点二级分类 | 卡片换一批 | ✓ |
-| 4 | 点三级子分区 | 卡片换一批 | ✓ |
-| 5 | 点「订阅分区」 | 变成「已订阅」 | ✓ |
-| 6 | 点顶栏搜索 | 出「搜索直播间」浮层 | ✓ |
-| 7 | 点卡片 | 进播放页，画面在 | ✓ |
-| 8 | Esc | 回列表，画面消失 | ✓ |
-| 9 | 播放页 X | 回列表，画面消失 | ✓ |
-| 10 | 双击画面 | 进窗口全屏（顶栏让位） | ✓ |
-| 11 | 点暂停 | 按钮变「播放」 | ✓ |
-| 12 | 点静音 → 取消静音 | 音量回静音前的值 | ✓ |
-| 12b | Tab 到音量滑块 → 按 → | 读屏念得出值，音量真的变大 | ✓ |
-| 13 | 点关闭弹幕 | 变成「开启弹幕」 | ✓ |
-| 14 | 点弹幕设置 | 出字体/彩色弹幕/描边 | ✓ |
-| 15 | 点弹幕屏蔽 | 出屏蔽词面板 | ✓ |
-| 16 | 收起弹幕面板 | 出「展开弹幕」 | ✓ |
-| 17 | 点配色面板 | 出 13 个色板 | ✓ |
-| 18 | 点数据同步 | 出「保存到文件…」 | ✓ |
-| 19 | 鼠标移上卡片 → 点左上角星 | 变「取消关注」 | ✓ |
-| — | 同一颗星，**没**悬停时 | 点击穿透给卡片，进播放页 | ✓ |
-| 20 | 点「小窗播放」 | 小窗接管；播放器停了会被下一帧拉回来 | ✓ |
-| 21 | 小窗里点暂停 / 关闭小窗 | 播放状态变；小窗关掉、主界面回来 | ✓ |
+`断言`列是**测试函数名**，`make gate` 的 **features** 检查盯着它：表里出现的函数
+必须真的存在，`features_*.go` 里的 `TestFeature*` 必须真的在表里。两边任缺一个
+就红——这张表不许和代码各说各的。
 
+| # | 用户做什么 | 应该看到什么 | 断言 |
+|---|---|---|---|
+| 1 | 启动 | 首页出卡片 | `TestFeatureHomeHasCards` |
+| 2 | 点平台 tab | 卡片换成该平台的，滑块移过去 | `TestFeaturePlatformSwitch` |
+| 3 | 首屏封面没解码完时切平台 | 内容照样立刻换，不等封面 | `TestFeaturePlatformSwitchDoesNotWaitForCovers` |
+| 4 | 点一级分区 | 卡片换一批 | `TestFeatureGroupSwap` |
+| 5 | 点二级分类 | 卡片换一批 | `TestFeatureCategorySwap` |
+| 6 | 点三级子分区 | 卡片换一批 | `TestFeatureSubCategorySwap` |
+| 7 | 点「订阅分区」 | 变成「已订阅」 | `TestFeatureSubscribeToggle` |
+| 8 | 切订阅项 | 卡片换成那一项的内容 | `TestFeatureSubscribeItemSwitchChangesCards` |
+| 9 | 关注页切一级分区 | 内容区换成那一级 | `TestFeatureFollowsSectionSwitchChangesContent` |
+| 10 | 点顶栏搜索 | 出「搜索直播间」浮层 | `TestFeatureSearchOpens` |
+| 11 | 点卡片 | 进播放页，画面在 | `TestFeatureOpenRoomShowsTheStage` |
+| 12 | 进播放页 | 有一段飞行块，走完消失 | `TestFeatureEnteringARoomAnimates` |
+| 13 | Esc | 回列表，画面消失 | `TestFeatureEscReturnsToList` |
+| 14 | 播放页 X | 回列表，画面消失 | `TestFeatureCloseReturnsToList` |
+| 15 | 播放页 X | **没有收尾动画**（明确关掉，不需要演一遍） | `TestFeatureClosingARoomDoesNotAnimate` |
+| 16 | 卡片滚出列表后点岛 | 画面从岛起飞，不从屏幕外那张卡 | `TestFeatureIslandFlightStartsFromTheIslandAfterScrolling` |
+| 17 | 双击画面 | 进窗口全屏（顶栏让位） | `TestFeatureDoubleClickGoesFullscreen` |
+| 18 | 系统全屏时按 Esc | 只退全屏，人还在直播间 | `TestFeatureEscLeavesFullscreenBeforeTheRoom` |
+| 19 | 系统全屏 | 画面右上角有最小化/最大化/关闭 | `TestFeatureFullscreenShowsWindowButtons` |
+| 20 | 点暂停 | 按钮变「播放」 | `TestFeaturePause` |
+| 21 | 点静音 → 取消静音 | 音量回静音前的值 | `TestFeatureMuteKeepsTheVolume` |
+| 22 | Tab 到音量滑块 → 按 → | 读屏念得出值，音量真的变大 | `TestFeatureVolumeSliderIsAdjustableWithoutAPointer` |
+| 23 | 切清晰度 | 下拉里两档都在，选了值跟着换 | `TestFeatureQualityDropdown` |
+| 24 | 切线路 | 下拉里两条都在，选了值跟着换 | `TestFeatureLineDropdown` |
+| 25 | 单线路平台 | 不出现「线路」这个控件 | `TestFeatureNoLineDropdownWithoutLines` |
+| 26 | 取流被平台拦下 | 屏幕上出现可读原因和重试入口 | `TestFeatureStreamFailureShowsRetry` |
+| 27 | 点关闭弹幕 | 变成「开启弹幕」 | `TestFeatureDanmuToggle` |
+| 28 | 点弹幕设置 | 出字体/彩色弹幕/描边 | `TestFeatureDanmuSettingsOpens` |
+| 29 | 点弹幕屏蔽 | 出屏蔽词面板 | `TestFeatureDanmuFilterOpens` |
+| 30 | 加一个屏蔽词再删掉 | 计数 0→1→0，列表跟着变 | `TestFeatureDanmuFilterAddAndRemove` |
+| 31 | 收起弹幕面板 | 出「展开弹幕」 | `TestFeatureDanmuPanelCollapse` |
+| 32 | 点配色面板 | 出 13 个色板 | `TestFeaturePalettePanelOpens` |
+| 33 | 点数据同步 | 出「保存到文件…」 | `TestFeatureSyncPanelOpens` |
+| 34 | 鼠标移上卡片 → 点左上角星 | 变「取消关注」；**没**悬停时点击穿透给卡片 | `TestFeatureFollowNeedsHover` |
+| 35 | 点「小窗播放」 | 小窗接管；播放器停了会被下一帧拉回来 | `TestFeaturePipKeepsThePictureMoving` |
+| 36 | 小窗里点暂停 / 关闭小窗 | 播放状态变；小窗关掉、主界面回来 | `TestFeaturePipControlsWork` |
+| 37 | 再点一次「小窗播放」 | 关掉 | `TestFeaturePipToggles` |
+| 38 | 点登录 | 出浮层并开始取码；登录后换成账号名 | `TestFeatureLoginOpensAndShowsTheAccount` |
+| 39 | 点退出登录 | 回到未登录态 | `TestFeatureLogoutReturnsToLogin` |
 ## 一个反例：音量值不读音量条上的文本
 
 音量那条断言原来写的是 `tt.HasText("0%")`。它是子串匹配，`"60%"` 里也含 `"0%"`，

@@ -12,7 +12,7 @@
 churn internal/ui/player.go 14 次 fix / 7 天 # 战场文件，写者收口未完成；+1 来自 a5fd89a（hover 才创建的控件改常驻）
 churn internal/ui/player_media.go 18 次 fix / 7 天 # 同上
 churn internal/ui/surface.go 4 次 fix / 7 天 # 同上
-churn internal/ui/surface_motion.go 6 次 fix / 7 天 # 同上（「飞回格子」修了 6 次）
+churn internal/ui/surface_motion.go 8 次 fix / 7 天 # 已收口：过渡判断收进 surface_plan.go 的唯一求值点（56b94df），这 8 次是历史，不是待办
 # watch.go 从 20 涨到 21 也是 a5fd89a：墙格底栏改成常驻构建属于同一条「交互层」
 # 的返工，记账在这里。债务：底栏的构建时机与 watchTick 的状态机还没收成一个写者。
 churn internal/ui/watch.go 21 次 fix / 7 天 # 战场文件，写者收口未完成

@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -117,6 +118,16 @@ func init() {
 			limit = time.Duration(s * float64(time.Second))
 		}
 	}
+	// 默认只留最近 3 段。不设上限的话，一次排障录十几遍就是几十 GB，
+	// 而 .gitignore 挡住了 git，"不进仓库"会被当成"不用管"。
+	keep := 3
+	if v := os.Getenv("ALIVE_RECORD_KEEP"); v != "" {
+		if k, err := strconv.Atoi(v); err == nil {
+			keep = k
+		}
+	}
+	pruneRecordings(dir, keep)
+
 	n := compressWorkers()
 	recorder = &frameRecorder{
 		dir:     dir,
@@ -130,6 +141,7 @@ func init() {
 		spare:   make(chan []byte, 8+2*n),
 		done:    make(chan struct{}),
 	}
+
 	ui.FrameSink = recorder.frame
 	// 回读失败的帧不能悄悄丢：录制工具的唯一承诺是「每一帧」，所以把它
 	// 记进 record.log（计数 + 前几条），而不是让帧数无声地少一截。
@@ -413,5 +425,66 @@ func (r *frameRecorder) stop(why string) {
 			fmt.Fprintf(r.logw, "capture errors total: %d\n", n)
 		}
 		r.logMu.Unlock()
+	}
+}
+
+// pruneRecordings 只留最近 keep 段录制，其余整段删掉。
+//
+// 为什么要有它：录制是**按秒算盘**的东西。5 秒播放页 = 1.8 GB（算法见上面的
+// 「为什么压缩」那段），而一次排障往往录十几遍。不加保留策略，一天就是几十 GB，
+// 而且没有任何东西会来收——.gitignore 挡住了 git，于是「不进仓库」被当成
+// 「不用管」，涨了两个月没人发现（2026-11-26 实测 40 GB）。
+//
+// 保留策略按目录算：同一父目录下、名字以 rec 段命名的兄弟目录算一组，
+// 按 mtime 留最新的 keep 段。keep <= 0 表示不限。
+//
+// 为什么不是「录到内存、失败才 dump」：alive-framediff 要的是两段完整的序列
+// 做逐帧比对，「只留出问题的那几帧」没有参照物。所以真正该省的不是单段的大小，
+// 是**段的数量**。
+func pruneRecordings(dir string, keep int) {
+	if keep <= 0 {
+		return
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return
+	}
+	parent := filepath.Dir(abs)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	type cand struct {
+		path string
+		at   time.Time
+	}
+	var all []cand
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == filepath.Base(abs) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		// 只碰像录制的东西：目录里有 frames.idx 或 manifest.json。
+		p := filepath.Join(parent, e.Name())
+		if _, err := os.Stat(filepath.Join(p, "manifest.json")); err != nil {
+			if _, err := os.Stat(filepath.Join(p, "frames.idx")); err != nil {
+				continue
+			}
+		}
+		all = append(all, cand{p, info.ModTime()})
+	}
+	// 新的一段也算进去：父目录下最多留 keep 段。
+	if len(all) < keep {
+		return
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.After(all[j].at) })
+	drop := all[keep-1:]
+	for _, c := range drop {
+		if err := os.RemoveAll(c.path); err == nil {
+			_, _ = os.Stderr.WriteString("alive-record: 清掉旧录制 " + c.path + "\n")
+		}
 	}
 }

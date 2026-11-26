@@ -1,3 +1,7 @@
+# libmpv 运行库：116MB，不进仓库。make deps 按 sha256 下到用户缓存。
+# 上游自己也这么做（internal/nativelib/nativelib.go:355 落到 <cache>/mygo/natives/）。
+/third_party/mpv/bin/libmpv-2.dll
+
 # 打包产物与开发缓存
 /build/
 /.mygo/

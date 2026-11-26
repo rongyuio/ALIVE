@@ -50,7 +50,7 @@ TEST_HOME := $(CURDIR)/.mygo/test-home
 TESTENV   = APPDATA="$(TEST_HOME)/Roaming" LOCALAPPDATA="$(TEST_HOME)/Local" GOCACHE="$(shell $(GO) env GOCACHE)" $(RUNENV)
 
 .DEFAULT_GOAL := build
-.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline mock-partial e2e diag tidy tools clean check-mpv gate hooks state symptoms
+.PHONY: help build run dev fmt fmt-check vet test check lint mock mock-offline mock-partial e2e diag tidy tools deps clean rec-clean e2e-home check-mpv gate hooks state symptoms
 
 help:
 	@echo "build         package into $(BUILD_DIR)/<os>-<arch>/ (portable + installer)"
@@ -168,8 +168,58 @@ hooks:
 tidy:
 	$(GO) mod tidy
 
+# deps 把不进仓库的二进制取回来。现在只有一个：libmpv 运行库（116MB）。
+#
+# 为什么不入库：上游 MyGo 自己也这么做——plugins/video 的 DLL 按 sha256 落到
+# <cache>/mygo/natives/（internal/nativelib/nativelib.go:355）。一个原生直播
+# 客户端提交 116MB 运行库，clone 一次就背上它，而它和源码无关。
+#
+# 校验是必须的：这是要在进程里 LoadLibrary 的东西，sha256 对不上就不该用。
+MPV_DLL      := third_party/mpv/bin/libmpv-2.dll
+MPV_SHA256   := 88504ee5560942a955405e99dfb5971368e4cf851321f36565bf2a667271db1b
+MPV_SIZE     := 121789952
+# 发布在仓库的 native-libraries tag 上，和上游 mygo 的做法一致。
+MPV_URL      := https://github.com/egoist/mygo/releases/download/native-libraries/libmpv-2.dll
+
+deps:
+	@$(SH) 'test -f "$(MPV_DLL)" && [ $$(wc -c < "$(MPV_DLL)") -eq $(MPV_SIZE) ] || { \
+		echo "取 libmpv：$(MPV_URL)"; \
+		mkdir -p third_party/mpv/bin; \
+		curl -fL --retry 3 -o "$(MPV_DLL).part" "$(MPV_URL)"; \
+		mv "$(MPV_DLL).part" "$(MPV_DLL)"; \
+	}'
+	@$(SH) 'got=$$(sha256sum "$(MPV_DLL)" 2>/dev/null | cut -d" " -f1); \
+		if [ "$$got" != "$(MPV_SHA256)" ]; then \
+			echo "libmpv 的 sha256 对不上：" >&2; \
+			echo "  期望 $(MPV_SHA256)" >&2; \
+			echo "  实际 $$got" >&2; \
+			rm -f "$(MPV_DLL)"; \
+			exit 1; \
+		fi; \
+		echo "libmpv 就位（$(MPV_SIZE) 字节，sha256 校验通过）"'
+
 clean:
-	@$(SH) 'rm -rf "$(BUILD_DIR)" .mygo'
+	@$(SH) 'rm -rf "$(BUILD_DIR)" .mygo .tmp'
+
+# e2e-home 给手工 e2e 起一个干净的沙箱，并打印该用的环境变量。
+#
+# 和 make test 的 TEST_HOME 同一套做法：**复用同一个目录，起跑前清空**。
+# 以前每次排障手搓一个新目录（.mygo/hover-home、click-home、probe-home…），
+# 用完不删，一个 295 MB，17 个就是 5 GB——而且没人知道哪个还有用。
+#
+# 用法：
+#   eval "$(make -s e2e-home)"        # bash
+#   make -s e2e-home | Invoke-Expression   # pwsh
+e2e-home:
+	@$(SH) 'rm -rf ".mygo/e2e-home"'
+	@$(SH) 'mkdir -p ".mygo/e2e-home/Roaming/alive" ".mygo/e2e-home/Local/alive"'
+	@$(SH) 'echo "export APPDATA=\"$(CURDIR)/.mygo/e2e-home/Roaming\""'
+	@$(SH) 'echo "export LOCALAPPDATA=\"$(CURDIR)/.mygo/e2e-home/Local\""'
+	@$(SH) 'echo "export MYGO_AUTOMATION=\"$(CURDIR)/.tmp/e2e.sock\""'
+# rec-clean 只清录制序列：.tmp/probes 里的探针是手工维护的，不该被顺手删掉。
+# 录制一次 5 秒的播放页是 1.8 GB（record_e2e.go 的注释里有算法），不清会一直涨。
+rec-clean:
+	@$(SH) 'rm -rf .tmp/rec'
 	@$(SH) 'rm -f ALIVE ALIVE.exe alive-e2e mygo_windows_*.syso'
 
 

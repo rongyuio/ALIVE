@@ -62,6 +62,11 @@ var checks = []check{
 		why:  "§3.10 动画时长只有一个来源（internal/theme 的 Motion*）",
 		run:  checkMotion,
 	},
+	{
+		name: "features",
+		why:  "§R13 功能必须有用户路径断言，且判定表与代码对得上",
+		run:  checkFeatures,
+	},
 }
 
 func main() {

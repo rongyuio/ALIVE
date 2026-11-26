@@ -115,6 +115,7 @@ make hooks         安装 .githooks（换机器要做一次）
 
 ### 测试
 
+
 **R11 测试不读真实用户目录，时间只走 `tt.Advance`。** 真实的 `state.json` 能让同一
 份代码在别人机器上绿、在这台机器上红。
 → `internal/ui/main_test.go` 等包的 `TestMain`
@@ -122,6 +123,12 @@ make hooks         安装 .githooks（换机器要做一次）
 **R12 探针不进仓库。** 要连公网、要真实流、跑不进 `make check` 的放
 `.tmp/probes/<包名>/`。不新增常驻 `ALIVE_*` 验收开关，假数据层走构建标签。
 → **probes**
+
+**R13 功能必须有用户路径断言，且判定表和代码对得上。** `doc/FEATURES.md` 的表是
+唯一的验收面：每行一个用户动作，最后一列是断言函数名。判据只能是 `tt.Click` /
+`tt.Find` / `tt.HasText` / `tt.Image`；断言里出现 `app.` 的内部字段，那条不算验收。
+表里出现的函数必须真的存在，`features_*.go` 里的 `TestFeature*` 必须真的在表里。
+→ `make gate` 的 **features**
 
 ## 4. 写代码
 
