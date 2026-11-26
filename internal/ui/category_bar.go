@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -261,8 +260,9 @@ func (a *App) groupTab(c *ui.Context, i int, name string, w float32) {
 	// 选中态的底色由下面的滑块画：同一块材质移过去，而不是旧的白一下、
 	// 新的亮一下。这里只留 hover 的反应，而且选中项不叠 hover 底，
 	// 否则会把滑块盖掉半块。
-	if !selected && tab.Hovered() {
-		tab.Background(theme.FillQuaternary)
+	// 悬停底色和文字色用同一个动效：底色瞬间跳、文字在弹，读起来是两种反馈。
+	if !selected {
+		tab.Background(hoverSurface(tab, "group-bg", tab.Hovered(), theme.FillQuaternary))
 	}
 	if tab.Clicked() {
 		a.selectGroup(i)
@@ -315,9 +315,9 @@ func (a *App) categorySearch(c *ui.Context) {
 		border = theme.AccentInk
 	}
 	field.Border(1, field.AnimateColor("cat-search-border", border,
-		theme.EaseOut(190*time.Millisecond)))
+		theme.Chrome()))
 	field.Width(field.AnimateTo("cat-search-w", width,
-		theme.EaseOut(240*time.Millisecond)))
+		theme.Reveal()))
 
 	field.Children(func() {
 		ui.TextInputBase(c, &a.CategoryQuery).
@@ -330,19 +330,14 @@ func (a *App) categorySearch(c *ui.Context) {
 		if a.CategoryQuery != "" {
 			clear := ui.Box(c).Size(18, 18).Radius(9).Center().
 				Cursor(ui.CursorPointer).Label("清空分区搜索")
-			if clear.Hovered() {
-				clear.Background(theme.FillTertiary)
-			}
+			clear.Background(hoverSurface(clear, "cat-clear-bg", clear.Hovered(), theme.FillTertiary))
 			if clear.Clicked() {
 				// 清空后焦点还给输入框，保持展开
 				a.CategoryQuery = ""
 				a.CategorySearchHandle.Focus(c)
 			}
 			clear.Children(func() {
-				col := theme.TextTertiary
-				if clear.Hovered() {
-					col = theme.TextPrimary
-				}
+				col := hoverInk(clear, "cat-clear-ink", clear.Hovered(), theme.TextTertiary, theme.TextPrimary)
 				ui.Icon(c, iconX).FontSize(12).TextColor(col)
 			})
 		}
@@ -485,9 +480,7 @@ func (a *App) categorySearchItem(c *ui.Context, i int, h categoryHit) {
 	}
 	// 悬停只影响绘制，不写模型：指针停在列表上时每帧写 CategoryHit 会把
 	// 键盘 ↑↓ 刚改好的选中项覆盖掉。
-	if !active && row.Hovered() {
-		row.Background(theme.FillSecondary)
-	}
+	row.Background(hoverSurfaceOn(row, "cat-hit-bg", row.Hovered(), !active, theme.FillSecondary))
 	if row.Clicked() {
 		a.CategoryHit = i
 		a.pickCategoryHit(h)
@@ -540,8 +533,8 @@ func (a *App) categoryChip(c *ui.Context, i int, name string, w float32) {
 	// 就会把正在经过的滑块整块盖住——切换时看起来像被吃掉。
 	// 高亮只由滑块这一块材质承担，未选中就什么都不画。
 	hovered := chip.Hovered()
-	if !selected && hovered {
-		chip.Background(theme.FillTertiary)
+	if !selected {
+		chip.Background(hoverSurface(chip, "chip-bg", hovered, theme.FillTertiary))
 	}
 	if chip.Clicked() {
 		a.selectCategory(i)
@@ -576,26 +569,20 @@ func (a *App) subscribeWidth(c *ui.Context) float32 {
 func (a *App) moreButton(c *ui.Context, row ui.Element) {
 	btn := ui.Row(c).Height(chipH).Padding(0, 13, 0, 13).Gap(4).
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).Label("更多分区")
-	switch {
-	case a.MoreOpen:
+	btn.Background(hoverSurface(btn, "more-bg", btn.Hovered(), theme.FillTertiary))
+	if a.MoreOpen {
 		btn.Background(theme.AccentSoft)
-	case btn.Hovered():
-		btn.Background(theme.FillTertiary)
-	default:
-		btn.Background(theme.FillQuaternary)
 	}
 	if btn.Clicked() {
 		a.MoreOpen = !a.MoreOpen
 	}
 
-	col := theme.TextSecondary
-	switch {
-	case a.MoreOpen:
-		col = theme.AccentInk
-	case btn.Hovered():
-		col = theme.TextPrimary
+	rest, on := theme.TextSecondary, theme.TextPrimary
+	if a.MoreOpen {
+		rest, on = theme.AccentInk, theme.AccentInk
 	}
-	angle := btn.AnimateTo("more-caret", caretAngle(a.MoreOpen), theme.EaseOut(190*time.Millisecond))
+	col := hoverInk(btn, "more-ink", btn.Hovered(), rest, on)
+	angle := btn.AnimateTo("more-caret", caretAngle(a.MoreOpen), theme.Chrome())
 
 	btn.Children(func() {
 		ui.Text(c, "全部").FontSize(theme.TextSM).FontWeight(500).TextColor(col)
@@ -659,24 +646,23 @@ func (a *App) morePanelItem(c *ui.Context, i int, name string) {
 	item := ui.Box(c).Height(moreItemH).Padding(0, 10, 0, 10).
 		Radius(theme.RadiusXS).Center().Cursor(ui.CursorPointer).
 		Label("分类:" + name)
-	switch {
-	case active:
+	if active {
 		item.Background(theme.Accent)
-	case item.Hovered():
-		item.Background(theme.FillQuaternary)
+	} else {
+		item.Background(hoverSurface(item, "more-item-bg", item.Hovered(), theme.FillQuaternary))
 	}
 	if item.Clicked() {
 		a.selectCategory(i)
 	}
 	item.Children(func() {
 		txt := ui.Text(c, name).FontSize(theme.TextSM).SingleLine()
-		switch {
-		case active:
-			txt.FontWeight(600).TextColor(theme.AccentText)
-		case item.Hovered():
-			txt.TextColor(theme.TextPrimary)
-		default:
-			txt.TextColor(theme.TextSecondary)
+		rest, on := theme.TextSecondary, theme.TextPrimary
+		if active {
+			rest, on = theme.AccentText, theme.AccentText
+		}
+		txt.FontWeight(500).TextColor(hoverInk(item, "more-item-ink", item.Hovered(), rest, on))
+		if active {
+			txt.FontWeight(600)
 		}
 	})
 }
@@ -690,10 +676,8 @@ func (a *App) subscribeButton(c *ui.Context) {
 	if subscribed {
 		btn.Background(theme.Accent).Border(1, ui.Transparent)
 	} else {
-		btn.Border(1, theme.BorderFunctional)
-		if btn.Hovered() {
-			btn.Background(theme.AccentSoft).BorderColor(theme.AccentInk)
-		}
+		btn.Background(hoverSurface(btn, "subscribe-bg", btn.Hovered(), theme.AccentSoft)).
+			Border(1, hoverInk(btn, "subscribe-border", btn.Hovered(), theme.BorderFunctional, theme.AccentInk))
 	}
 	if btn.Clicked() {
 		a.toggleSubscribe()
@@ -743,8 +727,8 @@ func (a *App) subChip(c *ui.Context, i int, name string, w float32) {
 		Radius(theme.RadiusXS).Center().Cursor(ui.CursorPointer).
 		Label("子分类:" + name)
 	hovered := chip.Hovered()
-	if !active && hovered {
-		chip.Background(theme.FillQuaternary)
+	if !active {
+		chip.Background(hoverSurface(chip, "sub-bg", hovered, theme.FillQuaternary))
 	}
 	if chip.Clicked() {
 		if i != a.SubCatIndex {

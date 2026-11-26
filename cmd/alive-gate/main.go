@@ -57,6 +57,11 @@ var checks = []check{
 		why:  "§4.9 探针不进仓库",
 		run:  checkProbes,
 	},
+	{
+		name: "motion",
+		why:  "§3.10 动画时长只有一个来源（internal/theme 的 Motion*）",
+		run:  checkMotion,
+	},
 }
 
 func main() {

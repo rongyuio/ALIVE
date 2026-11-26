@@ -144,17 +144,12 @@ func (a *App) searchPopover(c *ui.Context) {
 		case a.SearchQuery != "":
 			clear := ui.Box(c).Size(22, 22).Radius(11).Center().
 				Cursor(ui.CursorPointer).Label("清空搜索")
-			if clear.Hovered() {
-				clear.Background(theme.FillTertiary)
-			}
+			clear.Background(hoverSurface(clear, "search-clear-bg", clear.Hovered(), theme.FillTertiary))
 			if clear.Clicked() {
 				a.SearchQuery = ""
 			}
 			clear.Children(func() {
-				col := theme.TextTertiary
-				if clear.Hovered() {
-					col = theme.TextPrimary
-				}
+				col := hoverInk(clear, "search-clear-ink", clear.Hovered(), theme.TextTertiary, theme.TextPrimary)
 				ui.Icon(c, iconX).FontSize(12).TextColor(col)
 			})
 		}
@@ -230,9 +225,7 @@ func (a *App) searchItem(c *ui.Context, i int, hit searchHit) {
 	}
 	// 悬停只影响绘制，不写模型。指针停在结果上时每帧写 SearchHit，会把键盘
 	// ↑↓ 刚选中的项覆盖掉——用户看到的是「按 ↑↓ 没反应，挪开鼠标又好了」。
-	if !active && row.Hovered() {
-		row.Background(theme.FillSecondary)
-	}
+	row.Background(hoverSurfaceOn(row, "search-row-bg", row.Hovered(), !active, theme.FillSecondary))
 	if row.Clicked() {
 		a.SearchHit = i
 		a.openSearchHit(hit)

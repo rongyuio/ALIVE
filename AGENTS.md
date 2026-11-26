@@ -106,6 +106,13 @@ make hooks         安装 .githooks（换机器要做一次）
 默认 `inkwhite-night`；`signal` 等六个是旧 ID，只在迁移表里还认。
 → 部分由 `internal/theme` 的对比度测试守；字面量靠 review
 
+**R10b 动画时长只有一个来源。** `internal/theme/motion.go` 的 `Motion*` 是唯一
+的时长表（微反馈 / chrome / 开关 / 展开 / 表面，加上 `SpinPeriod` 与
+`MotionSlack`）。控件不许自己写 `N * time.Millisecond` 当动画参数——同一屏里
+190/220/240/320 各写各的，用户读不出哪两下是同一件事。缺一档就先加令牌。
+→ `make gate` 的 **motion**（只查传进动画 API 的字面量；超时、轮询、防抖、
+去重窗口是"等多久"不是"动多久"，不在这条里）
+
 ### 测试
 
 **R11 测试不读真实用户目录，时间只走 `tt.Advance`。** 真实的 `state.json` 能让同一

@@ -193,7 +193,7 @@ func (a *App) danmuSwitchRow(c *ui.Context, label string, on *bool) {
 			if *on {
 				target = 18
 			}
-			x := thumb.AnimateTo("danmu-switch", target, theme.EaseInOut(220*time.Millisecond))
+			x := thumb.AnimateTo("danmu-switch", target, theme.Toggle())
 			thumb.Absolute().Top(2).Left(x)
 			if *on {
 				thumb.Background(ui.Hex("#1a1a1a"))

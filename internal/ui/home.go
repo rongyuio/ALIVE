@@ -891,9 +891,7 @@ func (a *App) errorBar(c *ui.Context, text string, onRetry func()) {
 			retry := ui.Row(c).Height(30).Padding(0, 14, 0, 14).Gap(6).
 				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).Label("重试").
 				Background(theme.FillTertiary)
-			if retry.Hovered() {
-				retry.Background(theme.FillSecondary)
-			}
+			retry.Background(hoverSurface(retry, "retry-bg", retry.Hovered(), theme.FillSecondary))
 			if retry.Clicked() && onRetry != nil {
 				onRetry()
 			}
@@ -1126,9 +1124,7 @@ func (a *App) emptyGrid(c *ui.Context, view gridView) {
 				clear := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
 					Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
 					Label("查看全部分区").Background(theme.Accent)
-				if clear.Hovered() {
-					clear.Background(theme.AccentHover)
-				}
+				clear.Background(hoverSurface(clear, "empty-clear-bg", clear.Hovered(), theme.AccentHover))
 				if clear.Clicked() {
 					// 换到「全部」是换了一份列表：必须重新取。以前这里只改了
 					// SubCatIndex，没有 reload——空态里的这个按钮点了什么都不会
@@ -1145,9 +1141,7 @@ func (a *App) emptyGrid(c *ui.Context, view gridView) {
 			retry := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
 				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
 				Label("重试").Background(theme.FillTertiary)
-			if retry.Hovered() {
-				retry.Background(theme.FillSecondary)
-			}
+			retry.Background(hoverSurface(retry, "retry-bg", retry.Hovered(), theme.FillSecondary))
 			if retry.Clicked() && view.retry != nil {
 				view.retry()
 			}
@@ -1263,7 +1257,7 @@ func (a *App) toastTone(msg, tone string) {
 }
 
 // toastMotionDur 是通知入场/退场过渡的时长，和原来的入场动画一致。
-const toastMotionDur = 220 * time.Millisecond
+const toastMotionDur = theme.MotionToggle
 
 // toastLife 是通知停留的时长。错误要给足读完的时间，其余保持原来的 3.2 秒。
 func toastLife(tone string) time.Duration {
@@ -1581,16 +1575,13 @@ func (a *App) platformTabs(c *ui.Context) {
 					//
 					// 选中项不叠底：它的底由 Accent 滑块画，tab 压在上面
 					// （ZIndex 1），再铺一层就把滑块盖掉了。
-					if idx != selected && tab.Hovered() {
-						tab.Background(theme.FillTertiary)
+					tab.Background(hoverSurfaceOn(tab, "nav-tab-bg", tab.Hovered(), idx != selected, theme.FillTertiary))
+					rest, on := theme.TextTertiary, theme.TextPrimary
+					if idx == selected {
+						rest, on = theme.AccentText, theme.AccentText
 					}
+					col := hoverInk(tab, "nav-tab-ink", tab.Hovered(), rest, on)
 					tab.Children(func() {
-						col := theme.TextTertiary
-						if idx == selected {
-							col = theme.AccentText
-						} else if tab.Hovered() {
-							col = theme.TextPrimary
-						}
 
 						switch t.id {
 						case "follows":
@@ -1621,9 +1612,11 @@ func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string, on func()) {
 	btn := ui.Box(c).Size(size, size).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label(label)
 	hovered := btn.Hovered()
+	bg := ui.Transparent
 	if hovered {
-		btn.Background(theme.FillTertiary)
+		bg = theme.FillTertiary
 	}
+	btn.Background(btn.AnimateColor("icon-btn-bg", bg, theme.HoverInk()))
 	if btn.Clicked() {
 		on()
 	}

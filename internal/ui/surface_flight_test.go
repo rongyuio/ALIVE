@@ -187,12 +187,13 @@ func TestCloseWithoutCardCutsHard(t *testing.T) {
 	}
 }
 
-// 岛 → 播放页，这一间已经在出画面：硬切，不飞封面。
+// 岛 → 播放页，这一间已经在出画面：**飞活画面**，不硬切。
 //
-// 2026-11-25 用户报的就是这条：「点岛放大直播间，明明在开播有画面，过程中
-// 显示封面然后放大变成直播画面，闪一下」。封面会盖住活画面，落地再切回
-// 直播——那次切换是凭空造出来的。有画面时目标页第一帧就该是画面本身。
-func TestIslandToLivePlayerCutsHard(t *testing.T) {
+// 2026-11-26 统一模型：飞不飞只由「两端有没有几何」决定；这一间有没有出图只
+// 决定飞行块里画什么（活画面 / 封面）。2026-11-25 那条报障（封面盖住活画面、
+// 落地再切回直播）的根因是"飞的是封面"，不是"飞"本身——飞活画面就没有
+// 那次凭空造出来的切换。
+func TestIslandToLivePlayerFliesTheLivePicture(t *testing.T) {
 	app, tt, room := listOpenedPlayer(t)
 	key := watchKey(room)
 	// 呈现尺寸的推需要一条引擎轨：Tester 里的 GIF 播放器底下没有
@@ -211,7 +212,7 @@ func TestIslandToLivePlayerCutsHard(t *testing.T) {
 		t.Fatalf("收起之后这一路没了：%q", app.focusKey())
 	}
 	if !app.readyPicture(app.focus) {
-		t.Fatal("夹具里这一间没有画面，测不到「有画面不飞」这条")
+		t.Fatal("夹具里这一间没有画面，测不到「飞出活画面」这条")
 	}
 	// 收起之后是后台收听：引擎按 160×90 渲染。
 	if got := app.focus.present; got != (presentSize{W: 160, H: 90}) {
@@ -219,8 +220,7 @@ func TestIslandToLivePlayerCutsHard(t *testing.T) {
 	}
 
 	app.returnToFocus()
-	// 进播放页的同一拍就要推全尺寸：晚一帧，硬切的第一帧就是一张放大的
-	// 160×90 糊图。
+	// 进播放页的同一拍就要推全尺寸。
 	if got := app.focus.present; got != (presentSize{}) {
 		t.Fatalf("进播放页那一拍没有推全尺寸：present=%+v", got)
 	}
@@ -228,11 +228,15 @@ func TestIslandToLivePlayerCutsHard(t *testing.T) {
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("点岛没有回播放页：%q", app.Router.Path())
 	}
-	if app.surfaceFlight != nil {
-		t.Fatalf("这一间已经在出画面，还飞了一块封面：%+v", app.surfaceFlight)
+	f := app.surfaceFlight
+	if f == nil || f.from != pictureIsland {
+		t.Fatalf("点岛没有从岛起飞：%+v", f)
+	}
+	if f.pixels != pixelsLive {
+		t.Fatalf("这一间已经在出画面，飞行块却画封面：pixels=%v", f.pixels)
 	}
 	if app.Router.Transition != ui.TransitionNone {
-		t.Fatalf("从岛进播放页用了 %v：目标页第一帧就该是清楚的", app.Router.Transition)
+		t.Fatalf("从岛进播放页用了 %v：只有墙格↔播放页才该用 Match", app.Router.Transition)
 	}
 }
 
@@ -317,8 +321,11 @@ func TestIslandClickStartsFromTheIslandNotACard(t *testing.T) {
 	}
 }
 
-// 卡片 → 播放页，这一间已经在出画面：同样硬切。
-func TestCardToLivePlayerCutsHard(t *testing.T) {
+// 卡片 → 播放页，这一间已经在出画面：同样飞活画面。
+//
+// 统一模型下"同一张卡片、同一个操作"永远得到同一个结果——第一次开有动画，
+// 收起后再开也有动画，区别只在飞行块里画活画面还是封面。
+func TestCardToLivePlayerFliesTheLivePicture(t *testing.T) {
 	app, tt := cardFlightApp(t, cardFlightRooms("卡", "英雄联盟", 4))
 	room := app.Streamers[0]
 	focusWithPlayer(t, app, room)
@@ -331,8 +338,12 @@ func TestCardToLivePlayerCutsHard(t *testing.T) {
 	if app.Router.Path() != routePlayer {
 		t.Fatalf("点卡片没有进播放页：%q", app.Router.Path())
 	}
-	if app.surfaceFlight != nil {
-		t.Fatalf("这一间已经在出画面，还飞了一块封面：%+v", app.surfaceFlight)
+	f := app.surfaceFlight
+	if f == nil || f.from != pictureCard {
+		t.Fatalf("点卡片没有从卡片起飞：%+v", f)
+	}
+	if f.pixels != pixelsLive {
+		t.Fatalf("这一间已经在出画面，飞行块却画封面：pixels=%v", f.pixels)
 	}
 }
 

@@ -168,11 +168,22 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 		if active {
 			a.watchLiveDot(c, key)
 		}
-		// 信息与控件收成一条底栏，遮罩就是它本身；常态不显示，hover 或
-		// 键盘聚焦才出现。墙上因此只剩画面和 active 那颗绿点。
-		if tile.Hovered() || tile.FocusVisible() {
-			a.watchBar(c, room, active, r.W)
+		// 信息与控件收成一条底栏，遮罩就是它本身；常态不可见，hover 或
+		// 键盘聚焦才露出来。墙上因此只剩画面和 active 那颗绿点。
+		//
+		// **常驻构建，不随 hover 增删**：底栏里有播放、重新加载、音量、「在墙上听」、
+		// 放大、移出六个可点控件。只在 hover 时建，读屏用户就永远拿不到它们；
+		// 指针扫过的那一瞬间元素树变化也会吞掉一次点击。MyGo 的写法是常驻 +
+		// 透明 + `IgnoreInput(!可见)`（docs/ui/input.md「A button that shows while
+		// its row is hovered」）。
+		shown := tile.Hovered() || tile.FocusVisible()
+		bar := a.watchBar(c, room, active, r.W)
+		bar.IgnoreInput(!shown)
+		op := float32(1)
+		if !shown {
+			op = 0
 		}
+		bar.Opacity(bar.AnimateTo("watch-bar-op", op, theme.Micro()))
 		a.watchState(c, room, sess, player)
 	})
 	return dragging, dropOver
@@ -272,7 +283,7 @@ func (a *App) watchCover(c *ui.Context, room Streamer, r watch.Rect, connecting 
 // 第二行：直接复用播放页控制台的结构——44 高玻璃条、左侧播放/刷新/音量，
 // 右侧放大/移出。弹幕、清晰度、线路、小窗、两种全屏都精简掉。
 // 只有 hover / 键盘聚焦时构建。
-func (a *App) watchBar(c *ui.Context, room Streamer, active bool, w float32) {
+func (a *App) watchBar(c *ui.Context, room Streamer, active bool, w float32) ui.Element {
 	bar := ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(84).
 		Background(theme.MediaScrimTile).Padding(6, 10, 6, 10)
 	bar.Children(func() {
@@ -298,6 +309,7 @@ func (a *App) watchBar(c *ui.Context, room Streamer, active bool, w float32) {
 			a.watchControlBar(c, room, active, w)
 		})
 	})
+	return bar
 }
 
 // watchControlBar 是播放页 playerControls 的精简版。
@@ -572,9 +584,7 @@ func (a *App) watchEmpty(c *ui.Context) {
 func (a *App) watchEmptyBtn(c *ui.Context, label string, on func()) {
 	btn := ui.Box(c).Height(32).Padding(0, 14, 0, 14).Radius(theme.RadiusMD).
 		Background(theme.FillTertiary).Center().Cursor(ui.CursorPointer).Label(label)
-	if btn.Hovered() {
-		btn.Background(theme.FillQuaternary)
-	}
+	btn.Background(hoverSurface(btn, "watch-empty-bg", btn.Hovered(), theme.FillQuaternary))
 	if btn.Clicked() {
 		on()
 	}

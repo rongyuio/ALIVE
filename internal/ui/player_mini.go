@@ -133,12 +133,11 @@ func (a *App) MiniPlayer(c *ui.Context) {
 			Padding(4, 8, 4, 8).Radius(12).Gap(8).AlignItems(ui.Center).
 			Background(ui.RGBA(9, 10, 12, 0.62)).
 			Border(1, theme.MediaHair)
-		op := bar.AnimateTo("mini-bar", boolF(hovered), theme.EaseOut(160*time.Millisecond))
+		op := bar.AnimateTo("mini-bar", boolF(hovered), theme.Micro())
 		bar.Opacity(op)
-		// 淡出时不应该还能点到（看不见的按钮最烦人）
-		if !hovered {
-			bar.PassThrough()
-		}
+		// 淡出时既不该还能点到，也不该留在 Tab 序列里：看不见的按钮最烦人，
+		// 而读屏会照样念到它们。IgnoreInput 同时解决这两件。
+		bar.IgnoreInput(!hovered)
 
 		bar.Children(func() {
 			playIcon := iconPlay
@@ -178,16 +177,11 @@ func (a *App) MiniPlayer(c *ui.Context) {
 func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, label string, size float32, on func()) {
 	btn := ui.Box(c).Size(28, 28).Radius(8).Center().
 		Cursor(ui.CursorPointer).Label(label)
-	if btn.Hovered() {
-		btn.Background(theme.MediaHair)
-	}
+	btn.Background(hoverSurface(btn, "mini-btn-bg", btn.Hovered(), theme.MediaHair))
 	if btn.Clicked() {
 		on()
 	}
-	col := theme.MediaTextBody
-	if btn.Hovered() {
-		col = ui.Hex("#ffffff")
-	}
+	col := hoverInk(btn, "mini-btn-ink", btn.Hovered(), theme.MediaTextBody, ui.Hex("#ffffff"))
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(size).TextColor(col)
 	})
@@ -273,10 +267,7 @@ func (a *App) captionBtn(c *ui.Context, ico *ui.SVG, label string, close bool, o
 	if btn.Clicked() {
 		on()
 	}
-	col := theme.MediaText
-	if hovered {
-		col = ui.Hex("#ffffff")
-	}
+	col := hoverInk(btn, "caption-btn-ink", hovered, theme.MediaText, ui.Hex("#ffffff"))
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(10).TextColor(col)
 	})

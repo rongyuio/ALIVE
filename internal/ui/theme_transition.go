@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/theme"
@@ -11,7 +9,7 @@ import (
 // themeSwitchDur 是日夜 / 配色切换的时长。190ms 是项目动效里的中档，
 // 再长整屏换色会拖，再短会显得硬切。
 const (
-	themeSwitchDur = 190 * time.Millisecond
+	themeSwitchDur = theme.MotionChrome
 	themeMixKey    = "theme-mix"
 )
 

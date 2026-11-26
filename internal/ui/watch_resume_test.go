@@ -166,7 +166,10 @@ func TestOfflineTileProbesSilentlyAndOpensWhenLive(t *testing.T) {
 	}
 
 	app.watchTick(now.Add(time.Hour))
-	waitFor(t, func() bool { return !s.probing })
+	// 等的是「格子已经恢复在播」，不是「探测结束」：s.probing 在算结果之前
+	// 就被清掉，拿它当条件会读到中间态（探到了、还没落 offline=false），
+	// 于是这条测试随机变红。等的是它要证明的那个状态本身。
+	waitFor(t, func() bool { return !s.offline })
 	if n := prov.roomInfoCalls(); n != 1 {
 		t.Fatalf("退避到期只该静默探测一次，实际 %d 次", n)
 	}

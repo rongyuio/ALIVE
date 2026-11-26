@@ -2,7 +2,6 @@ package ui
 
 import (
 	"sort"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -166,9 +165,8 @@ func (a *App) unsubscribeButton(c *ui.Context, chip subChip) {
 	btn := ui.Row(c).Height(chipH).Padding(0, 13, 0, 13).Gap(6).
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).
 		Label("取消订阅").Border(1, theme.Border)
-	if btn.Hovered() {
-		btn.Background(theme.AccentSoft).BorderColor(theme.AccentInk)
-	}
+	btn.Background(hoverSurface(btn, "unsub-bg", btn.Hovered(), theme.AccentSoft))
+	btn.BorderColor(hoverInk(btn, "unsub-border", btn.Hovered(), theme.Border, theme.AccentInk))
 	if btn.Clicked() {
 		a.removeSubPlatform(chip, active.PlatformID)
 	}
@@ -191,9 +189,7 @@ func (a *App) subscribeChip(c *ui.Context, idx int, chip subChip) ui.Element {
 		// 平台集合是这枚 chip 的关键信息，读屏也要拿到
 		Description("订阅了 " + chipPlatforms(chip))
 	// 选中态由滑块画。未选中不画底，否则会把经过的滑块盖住。
-	if !selected && el.Hovered() {
-		el.Background(theme.FillTertiary)
-	}
+	el.Background(hoverSurfaceOn(el, "subs-chip-bg", el.Hovered(), !selected, theme.FillTertiary))
 	if el.Clicked() {
 		if idx != a.SubIndex {
 			// 换 chip 后列表回到顶部。换的是另一套行，
@@ -244,7 +240,7 @@ const subTagHoverScale float32 = 1.3
 // 鼠标扫过去像是「慢慢地胖起来」。Dock 的放大本来就该跟手：180ms 的
 // ease-out，指针到哪儿它就到哪儿，离开时同样快。
 func subTagGrow() ui.Animation {
-	return ui.Animation{Duration: 180 * time.Millisecond, Ease: ui.EaseOut}
+	return theme.Micro()
 }
 
 // subPlatformTag 是 chip 里的一枚平台胶囊，也是切换平台的按钮。

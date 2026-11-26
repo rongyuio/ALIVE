@@ -68,6 +68,7 @@
 | `internal/ui/*`（界面） | [reference/mygo.md](reference/mygo.md)、[reference/palette-ladder.md](reference/palette-ladder.md)、[reference/ui-regressions.md](reference/ui-regressions.md)、根目录 `AGENTS.md` |
 | `record_e2e.go`、`cmd/alive-framediff/*`、`third_party/mygo/ui/record.go` | [reference/frame-recording.md](reference/frame-recording.md) |
 | `internal/theme/*` | [decisions/0008](decisions/0008-palette-system.md)、[reference/palette-ladder.md](reference/palette-ladder.md)、[reference/palette-briefs.md](reference/palette-briefs.md) |
+| 任何动画 / 过渡 / 悬停反馈 | `internal/theme/motion.go`（唯一的时长表）、`internal/ui/surface_plan.go`（唯一的过渡求值点）、`internal/ui/hover.go`（悬停的两个取用函数）、[architecture/surfaces.md](architecture/surfaces.md) 的「过渡契约」 |
 | `internal/ui/follow.go`（关注状态与刷新时机） | [decisions/0014](decisions/0014-follows-freshness.md) |
 | `main.go`、`mygo.json`（打包、插件、更新） | [decisions/0015](decisions/0015-self-update.md)、[reference/mygo.md](reference/mygo.md) |
 | `internal/applog/*`、`internal/diag/*`、`internal/hang/*`、`internal/metrics/*`、`internal/support/*`、`cmd/alive-diag/*` | [architecture/diagnostics.md](architecture/diagnostics.md) |

@@ -17,9 +17,10 @@ import (
 //	播放页 → 卡片   画面从舞台缩回卡片
 //	播放页 → 岛     画面从舞台缩进岛（收起 / 离开播放页去别处）
 //
-// 进播放页的封面只在**这一间还没有画面**时飞。已经有画面的房间，封面过去
-// 只会盖住活画面、落地再切回直播，是一次凭空造出来的闪——那条路直接硬切，
-// 目标页第一帧就是画面（见 enterPlayer 的 readyPicture）。
+// 进播放页的飞行**恒安排**（只要这一间在来源页上有几何）。这一间此刻有没有
+// 在出图只决定飞行块里画什么：有活画面画活画面，没有画封面。2026-11-25 那次
+// 报障（「点岛放大直播间，过程中显示封面然后变成直播画面」）的根因是飞的是
+// 封面，不是"飞"——按"有没有引擎"分叉成"飞 / 硬切"会让同一个操作时有时无。
 // 墙格和播放页之间不在这里：两边画的是同一个播放器、同一帧画面，走 MyGo 的
 // Match（见 watch.go / player.go）。其余组合（没有画面可接）硬切。
 //
@@ -33,7 +34,7 @@ import (
 
 const (
 	// surfaceFlightDur 和表面之间的过渡同一档。再长，人已经在操作目标页了。
-	surfaceFlightDur = 280 * time.Millisecond
+	surfaceFlightDur = theme.MotionSurface
 	// surfaceFlightEndW/H 是岛这个落点的大小：比岛（IslandW 100 × IslandH 38）
 	// 小一圈，保证整块缩进岛后面，岛沿不会露出一个角。
 	surfaceFlightEndW float32 = 80
@@ -44,8 +45,8 @@ const (
 type flightKind int
 
 const (
-	// flightEnter 是进播放页：舞台已经在下面，飞的是封面，落地后淡出。
-	// 只在舞台还没有画面时用——已经有画面就直接切，见 enterPlayer。
+	// flightEnter 是进播放页：舞台已经在下面，飞的是这一间最好的像素，
+	// 落地后淡出。飞不飞与"有没有画面"无关，见 surface_plan.go。
 	flightEnter flightKind = iota
 	// flightLeave 是离开播放页：路由已经切走，飞的是画面本身。
 	flightLeave
@@ -61,6 +62,9 @@ type surfaceFlight struct {
 	// 出发了，中途改窗口也不重算起点。
 	from, to         picture
 	fromRect, toRect ui.Rect
+	// pixels 是飞行块里画什么：有活画面就用活画面，没有就用封面。
+	// 它由 surface_plan.go 的 planTransition 决定，不由"从哪进来"决定。
+	pixels transitionPixels
 	// page 是落点所属的那一页（pageKey）。飞行途中换了页，这块画面就属于
 	// 上一页的落点，立刻作废；岛是全局的，page 为空表示不校验。
 	page string
@@ -71,13 +75,13 @@ type surfaceFlight struct {
 
 // startEnterFlight 安排「进播放页」的那一块画面。src 必须是 pictureCard 或
 // pictureIsland；墙格走 Match，没有画面可接就不飞。
-func (a *App) startEnterFlight(s *roomSession, src picture) {
+func (a *App) startEnterFlight(s *roomSession, src picture, pixels transitionPixels) {
 	if s == nil || (src != pictureCard && src != pictureIsland) {
 		return
 	}
 	f := &surfaceFlight{
 		kind: flightEnter, key: s.key, room: s.room,
-		from: src, to: picturePlayer,
+		from: src, to: picturePlayer, pixels: pixels,
 		page: pageKey(a.Platform, routePlayer, a.FollowsSection),
 	}
 	if src == pictureCard {
@@ -92,12 +96,12 @@ func (a *App) startEnterFlight(s *roomSession, src picture) {
 // startLeaveFlight 安排「离开播放页」的那一块画面。to 必须是 pictureCard 或
 // pictureIsland；墙格走 Match，结束且没有画面可接就不飞。page 是落点所属
 // 的那一页；岛传空（全局落点，不随换页作废）。
-func (a *App) startLeaveFlight(s *roomSession, to picture, toRect ui.Rect, page string) {
+func (a *App) startLeaveFlight(s *roomSession, to picture, toRect ui.Rect, page string, pixels transitionPixels) {
 	if s == nil || (to != pictureCard && to != pictureIsland) {
 		return
 	}
 	a.surfaceFlight = &surfaceFlight{
-		kind: flightLeave, key: s.key, room: s.room,
+		kind: flightLeave, key: s.key, room: s.room, pixels: pixels,
 		from: picturePlayer, fromRect: a.playerStageBounds,
 		to: to, toRect: toRect, page: page,
 	}
@@ -194,8 +198,9 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 	e := easeOutUnit(progress)
 
 	// 进播放页时目标页第一帧就已经在下面了：压一层随飞行退去的暗罩，
-	// 注意力收在封面上，落地时罩子和封面一起退，画面接上。
-	if f.kind == flightEnter {
+	// 注意力收在封面上，落地时罩子和封面一起退，画面接上。飞的是活画面
+	// 时不压罩：那层暗罩会让"画面在动"变成"画面被蒙住"。
+	if f.kind == flightEnter && f.pixels != pixelsLive {
 		stage := f.toRect
 		ui.Box(c).Absolute().Left(stage.X).Top(stage.Y).Width(stage.W).Height(stage.H).
 			Background(theme.MediaFlightScrim.Alpha(1 - progress)).IgnoreInput(true)
@@ -219,34 +224,32 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 		box.Opacity((1 - progress) / 0.25)
 	}
 	box.Children(func() {
-		if f.kind == flightEnter {
-			// 只画封面：这条路只在这一间还没有画面时才会被安排（enterPlayer
-			// 的 readyPicture）。舞台下面即便已经有了播放器，这里再画一遍
-			// 也是同一帧的重复，没有意义。
-			if bmp := media.Default.Bitmap(f.room.CoverURL, f.fromRect.W); bmp != nil {
-				ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
-			} else {
-				coverArt(c, w, h)
-			}
-			return
-		}
-		// 离开：和舞台同一套。底图铺满黑边，画面 contain，首帧没到用封面顶住。
+		// 飞行块画的是**这一间此刻最好的像素**：有活画面就画活画面，
+		// 没有才退到封面。进和出用同一套画法——"有没有画面"只决定画什么，
+		// 不决定飞不飞。
 		player := a.surfaceFlightPlayer(f.key)
 		ready := player != nil && player.Ready()
-		if bmp := a.backdropFor(c, f.room); bmp != nil {
-			backdropLayers(c, bmp)
-		}
-		if player != nil {
+		if f.pixels == pixelsLive && player != nil {
+			if bmp := a.backdropFor(c, f.room); bmp != nil {
+				backdropLayers(c, bmp)
+			}
 			ui.Video(c, player).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
 			if ready {
 				return
 			}
+			// 引擎还没出首帧：先用封面顶住，并在上面压一层软罩。
+			if bmp := media.Default.Bitmap(f.room.CoverURL, f.fromRect.W); bmp != nil {
+				ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
+			}
+			ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
+				Background(theme.MediaScrimSoft)
+			return
 		}
 		if bmp := media.Default.Bitmap(f.room.CoverURL, f.fromRect.W); bmp != nil {
-			ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
+			ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
+		} else {
+			coverArt(c, w, h)
 		}
-		ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-			Background(theme.MediaScrimSoft)
 	})
 	// 岛自己的流光每帧都在请求帧，但那不是这条动画的前提：reduced motion 下
 	// 流光停了，画面还得走完。

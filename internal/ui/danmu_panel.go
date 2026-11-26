@@ -149,7 +149,7 @@ func (a *App) danmuPanelHandle(c *ui.Context, open bool) {
 			tab.Shadow(0, 8, 20, -10, theme.MediaShadowStrong)
 			// .panelHandleTab { opacity: 0; transition: opacity var(--dur-2) }
 			op := tab.AnimateTo("panel-tab", boolF(hot.Hovered()),
-				theme.EaseOut(190*time.Millisecond))
+				theme.Chrome())
 			tab.Opacity(op)
 			ico := iconChevronLeftBold
 			if open {
@@ -295,9 +295,7 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 		FillWidth().
 		Padding(danmuPanelPadV, danmuPanelPadH, danmuPanelPadV, danmuPanelPadH).
 		Radius(theme.RadiusXS)
-	if item.Hovered() {
-		item.Background(theme.FillQuaternary)
-	}
+	item.Background(hoverSurface(item, "danmu-item-bg", item.Hovered(), theme.FillQuaternary))
 
 	item.Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Baseline).Children(func() {

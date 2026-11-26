@@ -172,7 +172,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 // 悬浮 chrome 的自动隐藏参数：2800ms 后淡出，280ms 淡完。
 const (
 	chromeIdleAfter = 2800 * time.Millisecond
-	chromeFadeDur   = 280 * time.Millisecond
+	chromeFadeDur   = theme.MotionSurface
 )
 
 // 指针落在这两条带里就算「手在 chrome 上」：顶栏（top 14 + 44 高）和
@@ -242,9 +242,11 @@ func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
 
 // chromeFade 让一块 chrome 跟着自动隐藏淡出，返回当前透明度。
 //
-// 隐藏靠 opacity + visibility 过渡；这边 opacity 走 AnimateTo，隐藏态
-// 再补一个 PassThrough——不穿透的话，淡到 0 的顶栏和控制条仍然占着命中
-// 矩形，画面上的双击和点击播放会被它们吃掉。
+// 隐藏靠 opacity 过渡；这边 opacity 走 AnimateTo，隐藏态再补一个
+// IgnoreInput(true)——只淡出不够：淡到 0 的顶栏和控制条仍然占着命中矩形，
+// 画面上的双击和点击播放会被它们吃掉；而且它们还在 Tab 序列里，读屏会念到
+// 一组"看不见的按钮"。IgnoreInput 同时解决这两件（指针穿透 + 不进焦点），
+// 和 MyGo 文档里「hover 才显示的按钮要常驻 + IgnoreInput」是同一条。
 func (a *App) chromeFade(e ui.Element) float32 {
 	target := float32(1)
 	if a.ChromeHidden {
@@ -252,9 +254,7 @@ func (a *App) chromeFade(e ui.Element) float32 {
 	}
 	op := e.AnimateTo("chrome-fade", target, theme.EaseOut(chromeFadeDur))
 	e.Opacity(op)
-	if a.ChromeHidden {
-		e.PassThrough()
-	}
+	e.IgnoreInput(a.ChromeHidden)
 	return op
 }
 
@@ -560,9 +560,7 @@ func (a *App) overlayText(c *ui.Context, text string) {
 func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 	btn := ui.Row(c).Height(40).Padding(0, 24, 0, 24).Radius(theme.RadiusFull).
 		Background(ui.Hex("#ffffff")).Center().Cursor(ui.CursorPointer).Label(label)
-	if btn.Hovered() {
-		btn.Background(ui.Hex("#f1f1f1"))
-	}
+	btn.Background(hoverSurface(btn, "overlay-btn-bg", btn.Hovered(), ui.Hex("#f1f1f1")))
 	if btn.Clicked() {
 		on()
 	}
@@ -648,10 +646,8 @@ func (a *App) playerTopbar(c *ui.Context) {
 			Background(ui.RGBA(10, 10, 12, 0.62)).
 			Border(1, theme.MediaTrack).
 			Center().Cursor(ui.CursorPointer).Label("退出直播间")
-		if back.Hovered() {
-			back.Background(ui.RGBA(10, 10, 12, 0.72)).
-				BorderColor(theme.MediaHairStrong)
-		}
+		back.Background(hoverSurface(back, "back-bg", back.Hovered(), ui.RGBA(10, 10, 12, 0.72))).
+			BorderColor(hoverInk(back, "back-border", back.Hovered(), theme.MediaTrack, theme.MediaHairStrong))
 		if back.Clicked() {
 			// 叉是明确退出：结束焦点、断弹幕，不留后台声音。别的离开方式
 			// （顶栏 tab、灵动岛、搜索跳转）只进后台收听。
@@ -1008,7 +1004,7 @@ func (a *App) playerDropdown(c *ui.Context, label string, options []string, valu
 			col = playerIconOn
 		}
 		ui.Text(c, value).FontSize(theme.TextXS).TextColor(col)
-		caret := btn.AnimateTo("dd-"+label, caretAngle(*open), theme.EaseOut(190*time.Millisecond))
+		caret := btn.AnimateTo("dd-"+label, caretAngle(*open), theme.Chrome())
 		ui.Icon(c, iconChevron).FontSize(12).TextColor(col).Rotate(caret)
 	})
 
@@ -1043,10 +1039,11 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value string, open *
 
 	row := ui.Row(c).FillWidth().Padding(8, 12, 8, 12).Gap(12).Radius(8).
 		AlignItems(ui.Center).Cursor(ui.CursorPointer).Label("选项:" + opt)
+	// 选中和悬停用同一块底，但都要过渡：瞬间跳会和面板的淡入不同步。
 	if active {
 		row.Background(strong)
-	} else if row.Hovered() {
-		row.Background(strong)
+	} else {
+		row.Background(hoverSurface(row, "dd-row-bg", row.Hovered(), strong))
 	}
 	if row.Clicked() {
 		// 选中值写进房间记录（由 onPick 完成），这里只负责收起面板：
@@ -1101,13 +1098,10 @@ func (a *App) iconBtnSized(c *ui.Context, ico *ui.SVG, size, hit float32, active
 // playerIconColor 是控制条图标的三态颜色：激活走主题色、hover 纯白、
 // 其余常态。弹幕电视控件要单独给徽标取色，所以从 playerIconBtn 里提出来。
 func playerIconColor(btn ui.Element, active bool) ui.Color {
-	switch {
-	case active:
+	if active {
 		return theme.Accent
-	case btn.Hovered():
-		return playerIconOn
 	}
-	return playerIcon
+	return hoverInk(btn, "player-icon-ink", btn.Hovered(), playerIcon, playerIconOn)
 }
 
 // 滚轮调音量的灵敏度：一格滚轮（Windows 默认 3 行 × 33 DIP ≈ 100 DIP）5%，

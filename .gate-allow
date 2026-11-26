@@ -9,10 +9,13 @@
 # 四个核心战场文件：7 天内 fix 次数已超阈值，且 24 小时内还在动。
 # 这不是「可以继续打补丁」，是「重构还没排上」。范围与根因见
 # doc/evolution.md 第四条线（谁活着、谁在响、画面多大）。
-churn internal/ui/player.go 13 次 fix / 7 天 # 战场文件，写者收口未完成
+churn internal/ui/player.go 14 次 fix / 7 天 # 战场文件，写者收口未完成；+1 来自 a5fd89a（hover 才创建的控件改常驻）
 churn internal/ui/player_media.go 18 次 fix / 7 天 # 同上
 churn internal/ui/surface.go 4 次 fix / 7 天 # 同上
 churn internal/ui/surface_motion.go 6 次 fix / 7 天 # 同上（「飞回格子」修了 6 次）
+# watch.go 从 20 涨到 21 也是 a5fd89a：墙格底栏改成常驻构建属于同一条「交互层」
+# 的返工，记账在这里。债务：底栏的构建时机与 watchTick 的状态机还没收成一个写者。
+churn internal/ui/watch.go 21 次 fix / 7 天 # 战场文件，写者收口未完成
 # 历史里的多文件 fix：规则落地之前就存在的，改不了。只豁免这几个具体提交，
 # 新提交照拦（commit-msg 钩子在第一道就拦）。
 # 数字是修好 commits 判据后重算的真实文件数（旧版把多行 body 当成文件，

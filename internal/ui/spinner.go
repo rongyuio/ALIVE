@@ -2,7 +2,6 @@ package ui
 
 import (
 	"math"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -26,7 +25,7 @@ func spinner(c *ui.Context, size float32) ui.Element {
 var spinDriven bool
 
 // spinPeriod 是一圈的时间，对应 CSS 的 `animation: spin .8s linear infinite`。
-const spinPeriod = 800 * time.Millisecond
+const spinPeriod = theme.SpinPeriod
 
 // resetSpinFrame 在每次构建视图的开头清掉驱动标记（Shell 里调）。
 func resetSpinFrame() { spinDriven = false }

@@ -211,9 +211,7 @@ func (a *App) authAccountPanel(c *ui.Context, auth live.Authenticator, st live.A
 			Radius(theme.RadiusMD).AlignItems(ui.Center).
 			Cursor(ui.CursorPointer).Label("退出登录")
 		logout.Background(theme.FillTertiary)
-		if logout.Hovered() {
-			logout.Background(theme.FillSecondary)
-		}
+		logout.Background(hoverSurface(logout, "logout-bg", logout.Hovered(), theme.FillSecondary))
 		if logout.Clicked() {
 			auth.Logout()
 			a.AuthOpen = false
@@ -231,10 +229,7 @@ func (a *App) authAccountPanel(c *ui.Context, auth live.Authenticator, st live.A
 func (a *App) authRetry(c *ui.Context, auth live.Authenticator) {
 	btn := ui.Row(c).Height(30).FillWidth().Radius(theme.RadiusMD).
 		Center().Cursor(ui.CursorPointer).Label("重新获取")
-	btn.Background(theme.FillTertiary)
-	if btn.Hovered() {
-		btn.Background(theme.FillSecondary)
-	}
+	btn.Background(hoverSurface(btn, "retry-bg", btn.Hovered(), theme.FillSecondary))
 	if btn.Clicked() {
 		auth.RefreshQRCode()
 	}

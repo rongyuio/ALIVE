@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -78,7 +77,8 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 		// 悬停色 color-mix(bg-secondary 88%, bg-tertiary)
 		cardBg = theme.BgSecondary.Mix(theme.BgTertiary, 0.12)
 	}
-	card.Background(cardBg)
+	// 悬停底色和昵称着色同一族动效：底色瞬间跳、文字在弹是两种反馈。
+	card.Background(card.AnimateColor("card-bg", cardBg, theme.HoverInk()))
 	if onOpen != nil && card.Clicked() {
 		onOpen()
 	}
@@ -102,7 +102,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 			if hovered {
 				target = 1.02
 			}
-			scale := art.AnimateTo("cover", target, theme.EaseOut(320*time.Millisecond))
+			scale := art.AnimateTo("cover", target, theme.Reveal())
 			art.Scale(scale, scale)
 			art.Children(func() {
 				// 真封面优先；还没下载完就先用静止的占位撑住版式，加载完成后
@@ -133,8 +133,16 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 
 			// 卡片不显示直播 / 未开播状态：首页拉的直播间天然是在播的
 
-			// 关注按钮：左上角。hover 淡入，已关注时一直显示
-			if hovered || followed {
+			// 关注按钮：左上角。悬停淡入，已关注时一直显示。
+			//
+			// **常驻构建，不随 hover 增删。** 只在 hover 时才建的按钮在无障碍树里
+			// 根本不存在——读屏用户永远找不到「关注」这一项；而且指针扫过左上角
+			// 的那一瞬间元素树变了，按下与抬起可能落在两个不同节点上，那一下点击
+			// 就丢了。MyGo 的写法是常驻 + `Opacity(0)` + `IgnoreInput(!可见)`：
+			// 透明时不接指针、不进 Tab，但读屏仍能找到（docs/ui/input.md 那一节
+			// 点名的就是这个场景）。
+			{
+				shown := hovered || followed
 				follow := ui.Box(c).Absolute().Left(8).Top(8).Size(32, 32).Radius(16).
 					Center().Cursor(ui.CursorPointer)
 				if followed {
@@ -142,15 +150,20 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 				} else {
 					follow.Label("关注:" + s.Name)
 				}
-				switch {
-				case followed:
+				follow.IgnoreInput(!shown)
+				op := float32(1)
+				if !shown {
+					op = 0
+				}
+				follow.Opacity(follow.AnimateTo("card-follow-op", op, theme.Micro()))
+				// 关注键压在封面上：常态 rgba(8,9,11,.72)，悬停再深一档。
+				// 底色和其余控件同一族动效，不瞬间跳。
+				if followed {
 					follow.Background(theme.Accent).Border(1, ui.Transparent)
-				case follow.Hovered():
-					// rgba(8,9,11,.9)：比常态再深一档
-					follow.Background(ui.RGBA(8, 9, 11, 0.90)).Border(1, theme.White12)
-				default:
-					// rgba(8,9,11,.72)
-					follow.Background(ui.RGBA(8, 9, 11, 0.72)).Border(1, theme.White12)
+				} else {
+					follow.Background(hoverSurface(follow, "card-follow-bg",
+						follow.Hovered(), ui.RGBA(8, 9, 11, 0.90))).
+						Border(1, theme.White12)
 				}
 				if follow.Clicked() && onToggleFollow != nil {
 					onToggleFollow()

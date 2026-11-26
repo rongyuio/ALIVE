@@ -131,9 +131,7 @@ func (a *App) danmuFilterRow(c *ui.Context, i int, word string) {
 		AlignItems(ui.Center).
 		Background(theme.MediaRow).
 		Border(1, theme.MediaRowLine)
-	if row.Hovered() {
-		row.Background(theme.MediaRowLine)
-	}
+	row.Background(hoverSurface(row, "filter-row-bg", row.Hovered(), theme.MediaRowLine))
 	row.Children(func() {
 		// 长词截断：面板只有 200 宽，一个超长关键词不能把删除按钮挤出去
 		ui.Box(c).Grow(1).Children(func() {
@@ -142,9 +140,7 @@ func (a *App) danmuFilterRow(c *ui.Context, i int, word string) {
 		})
 		del := ui.Box(c).Size(18, 18).Radius(9).Center().
 			Cursor(ui.CursorPointer).Label("删除屏蔽词 " + word)
-		if del.Hovered() {
-			del.Background(theme.MediaHair)
-		}
+		del.Background(hoverSurface(del, "filter-del-bg", del.Hovered(), theme.MediaHair))
 		if del.Clicked() {
 			a.removeDanmuFilter(i)
 		}

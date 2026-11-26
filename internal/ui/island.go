@@ -366,9 +366,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	{
 		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 			Cursor(ui.CursorPointer).Label("回到直播间")
-		if hit.Hovered() {
-			hit.Background(ui.RGBA(255, 255, 255, 0.06))
-		}
+		hit.Background(hoverSurface(hit, "island-hit-bg", hit.Hovered(), ui.RGBA(255, 255, 255, 0.06)))
 		if hit.Clicked() {
 			// 在播放页点岛 = 收起（用户确认保留的手感）；在别的页面点岛
 			// = 回到焦点那一间。两者都只在 returnToFocus 一处判断。
@@ -397,9 +395,8 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 		Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label(cancelLabel)
 	cancel.Background(theme.MediaRow).Border(1, theme.MediaRowLine)
-	if cancel.Hovered() {
-		cancel.Background(theme.MediaHair).BorderColor(theme.MediaHairStrong)
-	}
+	cancel.Background(hoverSurface(cancel, "island-cancel-bg", cancel.Hovered(), theme.MediaHair))
+	cancel.BorderColor(hoverInk(cancel, "island-cancel-border", cancel.Hovered(), theme.MediaRowLine, theme.MediaHairStrong))
 	if cancel.Clicked() {
 		a.closeFocus()
 	}
@@ -425,10 +422,8 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	} else {
 		// 岛是墨底，不能用相对地面推导的 Fill/Border：浅色主题里那是近白的
 		// 填充，白星压上去就没了。用「压在图上的墨」那一族。
-		btn.Background(theme.MediaRow).Border(1, theme.MediaRowLine)
-		if btn.Hovered() {
-			btn.Background(theme.MediaHair).BorderColor(theme.MediaHairStrong)
-		}
+		btn.Background(hoverSurface(btn, "island-follow-bg", btn.Hovered(), theme.MediaHair)).
+			Border(1, hoverInk(btn, "island-follow-border", btn.Hovered(), theme.MediaRowLine, theme.MediaHairStrong))
 	}
 	if btn.Clicked() {
 		a.toggleFollow(s)

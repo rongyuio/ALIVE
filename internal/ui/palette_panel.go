@@ -141,9 +141,7 @@ func (a *App) themeModeButton(c *ui.Context) {
 		Label("配色模式 " + label).
 		Tooltip("配色模式：" + label + "（点击切换）").
 		Background(theme.FillQuaternary)
-	if btn.Hovered() {
-		btn.Background(theme.FillTertiary)
-	}
+	btn.Background(hoverSurface(btn, "palette-mode-bg", btn.Hovered(), theme.FillTertiary))
 	if btn.Clicked() {
 		a.ThemeMode = themeModeNext(a.ThemeMode)
 		// 立即按新选择换到同色系的另一半，面板里的格子跟着换。
@@ -151,10 +149,7 @@ func (a *App) themeModeButton(c *ui.Context) {
 		a.markDirty()
 	}
 	btn.Children(func() {
-		col := theme.TextSecondary
-		if btn.Hovered() {
-			col = theme.TextPrimary
-		}
+		col := hoverInk(btn, "palette-mode-ink", btn.Hovered(), theme.TextSecondary, theme.TextPrimary)
 		ui.Icon(c, icon).FontSize(15).TextColor(col)
 	})
 }
@@ -192,8 +187,8 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 		Border(1, ui.Transparent).Cursor(ui.CursorPointer).Label("配色:" + p.Name)
 	if active {
 		item.Border(1, theme.AccentLine).Background(theme.FillTertiary)
-	} else if item.Hovered() {
-		item.BorderColor(theme.BorderStrong).Background(theme.FillTertiary)
+	} else {
+		item.BorderColor(theme.BorderStrong).Background(hoverSurface(item, "palette-item-bg", item.Hovered(), theme.FillTertiary))
 	}
 	if item.Clicked() {
 		a.PaletteID = p.ID

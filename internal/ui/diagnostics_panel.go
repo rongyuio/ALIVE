@@ -133,10 +133,7 @@ func (a *App) diagCard(c *ui.Context) {
 func (a *App) diagTextAction(c *ui.Context, label string, on func()) {
 	btn := ui.Box(c).Height(20).Padding(0, 4, 0, 4).Radius(theme.RadiusXS).
 		Center().Cursor(ui.CursorPointer).Label(label)
-	col := theme.TextMeta
-	if btn.Hovered() {
-		col = theme.TextPrimary
-	}
+	col := hoverInk(btn, "diag-text-ink", btn.Hovered(), theme.TextMeta, theme.TextPrimary)
 	btn.Children(func() {
 		ui.Text(c, label).FontSize(theme.Text2XS).FontWeight(600).TextColor(col)
 	})
@@ -149,11 +146,8 @@ func (a *App) diagTextAction(c *ui.Context, label string, on func()) {
 func (a *App) diagIconAction(c *ui.Context, ico *ui.SVG, label string, on func()) {
 	btn := ui.Box(c).Size(24, 24).Radius(theme.RadiusFull).Center().
 		Cursor(ui.CursorPointer).Label(label)
-	col := theme.AccentInk
-	if btn.Hovered() {
-		btn.Background(theme.AccentSoft)
-		col = theme.TextPrimary
-	}
+	col := hoverInk(btn, "diag-act-ink", btn.Hovered(), theme.AccentInk, theme.TextPrimary)
+	btn.Background(hoverSurface(btn, "diag-act-bg", btn.Hovered(), theme.AccentSoft))
 	if btn.Clicked() {
 		on()
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/diag"
+	"alive/internal/theme"
 )
 
 // 表面之间的过渡与焦点的生命周期。
@@ -31,7 +32,7 @@ type surfaceMatch struct{ key string }
 //
 // 280ms 和 theme 的 EaseOut 一档对齐。比顶栏滑块的 220ms 长一点：
 // 那是"换个选项"，这是"同一间房换个位置"，位移量级大得多。
-const routeTransitionDur = 280 * time.Millisecond
+const routeTransitionDur = theme.MotionSurface
 
 // setFocus 是焦点的唯一写者。
 //
@@ -201,32 +202,29 @@ func (a *App) openRoomFrom(room Streamer, from picture) {
 	a.enterPlayer(s, src)
 }
 
-// enterPlayer 换到播放页，按画面归属选接法。
+// enterPlayer 换到播放页：组装两端的事实，交给 planTransition 决定。
 //
-//   - 墙格：舞台和格子画的是同一个播放器、同一帧画面，走 Match 连续放大；
-//   - 卡片 / 岛，且这一间还没有画面：封面从那个矩形长成舞台，落地后淡出；
-//   - 卡片 / 岛，但这一间已经在出画面：硬切；
-//   - 没有画面可接：硬切。
+//   - 墙格 ↔ 播放页：同一枚画面，Match 连续放大；
+//   - 卡片 / 岛有几何：飞（像素按这一间有没有出图选活画面 / 封面）；
+//   - 没有几何可接：硬切。
 func (a *App) enterPlayer(s *roomSession, src picture) {
 	a.surfaceFlight = nil
-	switch src {
-	case pictureTile:
+	route := a.Router.Path()
+	fromOK := a.surfaceHasGeometry(src, s.key, route, a.FollowsSection)
+	plan := planTransition(src, picturePlayer, fromOK, true, a.readyPicture(s))
+	switch plan.kind {
+	case transitionMatch:
 		a.Router.Transition = ui.TransitionMatch
-		a.routeTransitionUntil = a.now().Add(routeTransitionDur + 120*time.Millisecond)
-	case pictureCard, pictureIsland:
-		// 已经有画面时不能飞封面：那块封面会盖住活的画面，落地再从封面切回
-		// 直播——一次凭空造出来的闪（2026-11-25 报的「点岛放大先显示封面」）。
-		// 目标页第一帧就是画面，直接切。
-		if !a.readyPicture(s) {
-			a.startEnterFlight(s, src)
-		}
+		a.routeTransitionUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
+	case transitionFly:
+		a.startEnterFlight(s, src, plan.pixels)
 		a.Router.Transition = ui.TransitionNone
 		a.routeTransitionUntil = time.Time{}
 	default:
 		a.Router.Transition = ui.TransitionNone
 		a.routeTransitionUntil = time.Time{}
 	}
-	a.noteRoute(a.Router.Path(), routePlayer)
+	a.noteRoute(route, routePlayer)
 	a.Router.Push(routePlayer)
 	// 路由一换，全尺寸就已经成立；在这里立刻推一次，别等下一帧的 tickSurface。
 	//
@@ -326,22 +324,20 @@ func (a *App) leavePlayerTo(op leaveOp, destRoute string, destSection int, actio
 	}
 	key := s.key
 	focusAlive := op == leaveCollapse
-	fullscreen := a.WinFull || a.winFullscreen
 	target := a.pictureOn(key, destRoute, destSection, focusAlive)
-	// 结束这一路时卡片不是落点：画面已经随会话一起结束，飞回卡片是
-	// 在为一个不存在的画面演收尾（surfaces.md 的操作表：X 只有墙格 > 硬切）。
-	// 收起（leaveCollapse）保留卡片落点。
-	if op == leaveClose && target == pictureCard {
-		target = pictureNone
-	}
-	if fullscreen && target != pictureTile {
+	// 结束这一路（X / 退出直播间）没有"要去的地方"：除了墙格本来就在继续
+	// 画同一枚画面（Match），其余硬切。用户明确关掉一个直播间，不需要收尾动画。
+	if op == leaveClose && target != pictureTile {
 		target = pictureNone
 	}
 
 	a.surfaceFlight = nil
 	a.routeTransitionUntil = time.Time{}
-	switch target {
-	case pictureTile:
+	toOK := a.surfaceHasGeometry(target, key, destRoute, destSection)
+	live := s.player != nil && s.player.Ready()
+	plan := planTransition(picturePlayer, target, true, toOK, live)
+	switch plan.kind {
+	case transitionMatch:
 		// 舞台和格子画的是同一个播放器：Match 让它连续缩回去。舞台这一帧
 		// 身上可能没有身份（刚改过窗口尺寸），先补一拍，两帧后再换路由。
 		if a.exitArm {
@@ -352,15 +348,14 @@ func (a *App) leavePlayerTo(op leaveOp, destRoute string, destSection int, actio
 		a.exitMatchKey = key
 		a.exitAction = action
 		a.invalidateWindows()
-	case pictureCard:
-		a.startLeaveFlight(s, pictureCard, a.cardRectFor(key, destRoute, destSection),
-			pageKey(a.Platform, destRoute, destSection))
-		a.playerExitUntil = a.now().Add(surfaceFlightDur + 120*time.Millisecond)
-		a.Router.Transition = ui.TransitionNone
-		action()
-	case pictureIsland:
-		a.startLeaveFlight(s, pictureIsland, ui.Rect{}, "")
-		a.playerExitUntil = a.now().Add(surfaceFlightDur + 120*time.Millisecond)
+	case transitionFly:
+		if target == pictureIsland {
+			a.startLeaveFlight(s, target, ui.Rect{}, "", plan.pixels)
+		} else {
+			a.startLeaveFlight(s, target, a.cardRectFor(key, destRoute, destSection),
+				pageKey(a.Platform, destRoute, destSection), plan.pixels)
+		}
+		a.playerExitUntil = a.now().Add(surfaceFlightDur + theme.MotionSlack)
 		a.Router.Transition = ui.TransitionNone
 		action()
 	default:
@@ -394,7 +389,7 @@ func (a *App) tickExitArm() {
 	// 这一帧的舞台只能靠它拿到 Match 身份，否则整页会退化成透明度淡出。
 	// 清空在 tickRouteTransition 的 playerExitUntil 到点处。
 	a.Router.Transition = ui.TransitionMatch
-	a.playerExitUntil = a.now().Add(routeTransitionDur + 120*time.Millisecond)
+	a.playerExitUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
 	a.routeTransitionUntil = a.playerExitUntil
 	if act := a.exitAction; act != nil {
 		a.exitAction = nil

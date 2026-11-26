@@ -242,9 +242,7 @@ func (a *App) followsSectionTab(c *ui.Context, id string) {
 		Padding(0, groupTabPadH, 0, groupTabPadH).
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).
 		Label(name)
-	if !selected && tab.Hovered() {
-		tab.Background(theme.FillQuaternary)
-	}
+	tab.Background(hoverSurfaceOn(tab, "follows-tab-bg", tab.Hovered(), !selected, theme.FillQuaternary))
 	if tab.Clicked() {
 		a.selectFollowsSection(section)
 	}
@@ -354,9 +352,9 @@ func (a *App) followsActions(c *ui.Context) {
 			width = catSearchWide
 		}
 		search.Width(search.AnimateTo("follows-search-w", width,
-			theme.EaseOut(240*time.Millisecond)))
+			theme.Reveal()))
 		search.Border(1, search.AnimateColor("follows-search-border", border,
-			theme.EaseOut(190*time.Millisecond)))
+			theme.Chrome()))
 		search.Children(func() {
 			ui.Icon(c, iconSearch).FontSize(14).TextColor(theme.TextTertiary)
 			ui.TextInputBase(c, &a.FollowsQuery).FontSize(theme.TextXS).Grow(1).
@@ -376,9 +374,7 @@ func (a *App) followsActions(c *ui.Context) {
 			if a.FollowsQuery != "" {
 				clear := ui.Box(c).Size(18, 18).Radius(9).Center().
 					Cursor(ui.CursorPointer).Label("清空关注搜索")
-				if clear.Hovered() {
-					clear.Background(theme.FillTertiary)
-				}
+				clear.Background(hoverSurface(clear, "follows-clear-bg", clear.Hovered(), theme.FillTertiary))
 				if clear.Clicked() {
 					a.FollowsQuery = ""
 				}
@@ -472,12 +468,7 @@ func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
 	key := s.Platform + "|" + s.RoomID + "|" + s.Name
 	// 行底色的过渡是 background-color 190ms ease-out，
 	// 鼠标扫过列表是整片渐亮，不是一格一格地闪。
-	rowBg := ui.Transparent
-	if hovered {
-		rowBg = theme.FillQuaternary
-	}
-	row.Background(row.AnimateColor("follows-row-bg-"+key, rowBg,
-		theme.EaseOut(followsDur2)))
+	row.Background(hoverSurface(row, "follows-row-bg-"+key, hovered, theme.FillQuaternary))
 	if row.Clicked() {
 		a.openRoom(s)
 	}
@@ -577,9 +568,7 @@ func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool,
 		btn.Cursor(ui.CursorPointer)
 	}
 	hovered := !busy && btn.Hovered()
-	if hovered {
-		btn.Background(theme.FillTertiary)
-	}
+	btn.Background(hoverSurfaceOn(btn, "follows-act-bg", btn.Hovered(), !busy, theme.FillTertiary))
 	if btn.Clicked() && !busy {
 		on()
 	}
@@ -603,7 +592,7 @@ func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool,
 		icon := ui.Icon(c, ico).FontSize(16).TextColor(col)
 		if busy {
 			// 刷新中：0.9s 匀速转一圈，兼作进度提示
-			phase := btn.Loop("action-spin", 900*time.Millisecond, ui.Linear) * 360
+			phase := btn.Loop("action-spin", theme.SpinPeriod, ui.Linear) * 360
 			// 停下的那一帧要从当前角度接着往回转，先把角度写进收尾动画
 			btn.Jump("action-spin-stop", phase)
 			icon.Rotate(phase)
@@ -621,15 +610,15 @@ const (
 	followsRingSize   float32 = 26
 	followsRingStroke float32 = 2
 	// .indicator 的 transition: stroke-dashoffset 220ms var(--ease-out)
-	followsRingDur = 220 * time.Millisecond
+	followsRingDur = theme.MotionToggle
 	// --dur-2：.panelCard / .panelName / .panelFilter 的 hover 与选中态过渡
-	followsDur2 = 190 * time.Millisecond
+	followsDur2 = theme.MotionChrome
 )
 
 // followsSpinStop 是 .actionBtn svg 的 transition：
 // transform 500ms cubic-bezier(0.16, 1, 0.3, 1)。和 --ease-out 不是同一条曲线。
 var followsSpinStop = ui.Animation{
-	Duration: 500 * time.Millisecond,
+	Duration: theme.MotionSurface * 2,
 	Ease:     ui.CubicBezier(0.16, 1, 0.3, 1),
 }
 
@@ -681,22 +670,18 @@ func (a *App) followsPlatformChip(c *ui.Context, idx int, id, label string, w fl
 
 	// 选中态由滑块画：同一块材质滑过去，而不是旧的白一下、新的亮一下。
 	// 未选中不画底——底下一有颜色，就会把正在经过的滑块整块盖住。
-	if !active && chip.Hovered() {
-		chip.Background(theme.FillTertiary)
-	}
+	chip.Background(hoverSurfaceOn(chip, "follows-chip-bg", chip.Hovered(), !active, theme.FillTertiary))
 	if chip.Clicked() {
 		a.navFlip(&a.followsSeq)
 		a.FollowsPlatform = id
 	}
 	chip.Children(func() {
-		col := theme.TextSecondary
+		rest, on := theme.TextSecondary, theme.TextPrimary
 		if active {
-			col = theme.AccentText
-		} else if chip.Hovered() {
-			col = theme.TextPrimary
+			rest, on = theme.AccentText, theme.AccentText
 		}
 		txt := ui.Text(c, label).FontSize(theme.TextSM)
-		txt.TextColor(txt.AnimateColor("chip-fg-"+id, col, theme.Slide()))
+		txt.TextColor(hoverInk(chip, "chip-fg-"+id, chip.Hovered(), rest, on))
 		if active {
 			txt.FontWeight(600)
 		} else {

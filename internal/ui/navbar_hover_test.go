@@ -2,6 +2,7 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -33,9 +34,15 @@ func TestPlatformTabHoverTakesASurface(t *testing.T) {
 	hover := func(b ui.Rect) {
 		tt.Move(b.X+b.W/2, b.Y+b.H/2)
 		tt.Frame()
+		// 悬停底色现在和文字色同一族动效（theme.HoverInk 弹簧），不是瞬间
+		// 到位：弹簧停稳大约 250ms，这里推到 400ms 再取像素。
+		tt.Advance(400 * time.Millisecond)
+		tt.Frame()
 	}
 	unhover := func() {
 		tt.Move(720, 500)
+		tt.Frame()
+		tt.Advance(400 * time.Millisecond)
 		tt.Frame()
 	}
 	same := func(a, b ui.Color) bool { return a.R == b.R && a.G == b.G && a.B == b.B }

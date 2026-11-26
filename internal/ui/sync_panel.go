@@ -96,18 +96,13 @@ func (a *App) syncHeader(c *ui.Context) {
 
 		close := ui.Box(c).Size(28, 28).Radius(theme.RadiusFull).Center().
 			Background(theme.FillQuaternary).Cursor(ui.CursorPointer).Label("关闭")
-		if close.Hovered() {
-			close.Background(theme.FillTertiary)
-		}
+		close.Background(hoverSurface(close, "sync-close-bg", close.Hovered(), theme.FillTertiary))
 		if close.Clicked() {
 			a.SyncOpen = false
 			a.SyncPlan = nil
 		}
 		close.Children(func() {
-			col := theme.TextTertiary
-			if close.Hovered() {
-				col = theme.TextPrimary
-			}
+			col := hoverInk(close, "sync-close-ink", close.Hovered(), theme.TextTertiary, theme.TextPrimary)
 			ui.Icon(c, iconX).FontSize(16).TextColor(col)
 		})
 	})
@@ -182,12 +177,11 @@ func (a *App) syncTab(c *ui.Context, t syncTabItem, w float32, active bool) {
 	}
 
 	tab.Children(func() {
-		col := theme.TextTertiary
+		rest, on := theme.TextTertiary, theme.TextPrimary
 		if active {
-			col = theme.AccentText
-		} else if tab.Hovered() {
-			col = theme.TextPrimary
+			rest, on = theme.AccentText, theme.AccentText
 		}
+		col := hoverInk(tab, "sync-tab-ink-all", tab.Hovered(), rest, on)
 		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
 			ico := ui.Icon(c, t.ico).FontSize(syncTabIcoW)
 			ico.TextColor(ico.AnimateColor("sync-tab-ico-"+t.id, col, theme.Slide()))
@@ -359,10 +353,10 @@ func (a *App) syncButton(c *ui.Context, action string, ico *ui.SVG, label string
 		btn.Opacity(0.5).Cursor(ui.CursorDefault)
 	} else {
 		btn.Cursor(ui.CursorPointer)
-		if btn.Hovered() && primary {
-			btn.Background(theme.AccentHover)
-		} else if btn.Hovered() {
-			btn.Background(theme.FillSecondary)
+		if primary {
+			btn.Background(hoverSurface(btn, "sync-btn-bg", btn.Hovered(), theme.AccentHover))
+		} else {
+			btn.Background(hoverSurface(btn, "sync-btn-bg", btn.Hovered(), theme.FillSecondary))
 		}
 		switch {
 		case stoppable:
@@ -396,7 +390,7 @@ func (a *App) syncButton(c *ui.Context, action string, ico *ui.SVG, label string
 			case mine:
 				// 跑着的时候图标转起来，兼作进度提示
 				ui.Icon(c, iconSync).FontSize(14).TextColor(col).Rotate(
-					btn.Loop("sync-btn-spin", 900*time.Millisecond, ui.Linear) * 360)
+					btn.Loop("sync-btn-spin", theme.SpinPeriod, ui.Linear) * 360)
 			default:
 				ui.Icon(c, ico).FontSize(14).TextColor(col)
 			}
