@@ -2,10 +2,8 @@
 
 用 libmpv 播放直播流，做成 MyGo 的 `media.Engine`。这一层是薄壳：真正的播放全在 mpv 里。
 
-- 为什么是 libmpv（含放弃自研引擎的实测数据）→ [doc/decisions/0004](../../doc/decisions/0004-libmpv.md)
-- 在整条播放链路里的位置、bgr0 的 alpha 陷阱 → [doc/architecture/playback.md](../../doc/architecture/playback.md)
-- 首帧与矩阵实测 → [doc/reference/measurements.md](../../doc/reference/measurements.md)
-- 上游 mpv 报名 → [third_party/mpv/README.md](../../third_party/mpv/README.md)
+bgr0 的 alpha 陷阱见下方「只干三件事」；上游 mpv 说明见
+[third_party/mpv/README.md](../../third_party/mpv/README.md)。
 
 本文件只写接口和实现约定。
 
@@ -49,10 +47,10 @@ func Open(ctx context.Context, upstream string, opts Options) (*Engine, error)
 make test    # recipe 里带 ALIVE_MPV_LIB
 ```
 
-包里只剩纯逻辑测试（音频门控、CPU 采样），不需要网络也不需要真实流。
+本项目自有的 `_test.go` 目前在瘦身中整体移除，包里没有测试。要补纯逻辑测试（音频门控、
+CPU 采样）就写 `_test.go`，不需要网络也不需要真实流。
 
-手动的基准测量不进仓库——`TestLiveEngine`（真实流端到端：首帧、音频连续、**CPU 转换
-必须有内容且 alpha 全 255**）、`TestMatrix`（跨平台 × 分区 × 房间 × 档位）、
-`TestFfmpegControl`（同一份签名地址跑 ffmpeg 命令行，判断慢是上游还是我们）、
-`TestLocalStream`、`TestVideoResume`。脚本在 `.tmp/probes/playback/`，跑之前拷回本目录。
-它们要连公网或要本地推流，默认跳过；`TestFfmpegControl` 不打印地址——它带签名。
+手动的真实流 / 基准测量不进仓库——真实流端到端（首帧、音频连续、**CPU 转换必须有内容
+且 alpha 全 255**）、跨平台矩阵、同一份签名地址跑 ffmpeg 命令行（判断慢是上游还是我们）
+这类脚本放 `.tmp/probes/playback/`，跑之前拷回本目录。它们要连公网或要本地推流，不进
+`make check`。

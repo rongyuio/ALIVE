@@ -32,7 +32,7 @@ func (a *App) FollowsPage(c *ui.Context) {
 		// key 里带上当前一级分区：两级分区共用一份代次，序号在各层
 		// 各自从 0 起，只按代次换 key 的话，从「关注主播」的平台 0 切到
 		// 「订阅分区」的分区 0 会被当成同一块内容，不播进出。
-		feed := ui.Column(c).Key(navKey(followsFeedKind(a.FollowsSection), a.followsSeq)).
+		feed := ui.Column(c.Key(navKey(followsFeedKind(a.FollowsSection), a.followsSeq))).
 			Grow(1)
 		feed.Children(func() {
 			switch a.FollowsSection {
@@ -421,51 +421,65 @@ func (a *App) subscribeFeed(c *ui.Context) {
 
 // followsGrid 是主播行列表。
 //
-// 行宽按 minmax(248px, 1fr)、gap 4 算：列数随可用宽度增减，
-// 和首页网格同一条公式，只是最小列宽更大（每格是一整行信息）。
+// 用 ui.GridView：列数按最小列宽 248 随可用宽度增减，行高固定 60（40 头像 + 上下
+// 各 10 的 padding），只建可见的那些行。以前是 ui.Scroll 里铺一整张 ui.Grid，
+// 关注多少就每帧建多少行。
 func (a *App) followsGrid(c *ui.Context, list []Streamer) {
-	w, _ := c.Size()
-	avail := w - 2*a.bodyPadX(c) - theme.ScrollbarW
-	const gap = float32(4)
-	const minW = float32(248)
-	avail = max(avail, minW)
-	cols := max(int((avail+gap)/(minW+gap)), 1)
-	cellW := (avail - gap*float32(cols-1)) / float32(cols)
-
-	ui.Scroll(c).Grow(1).Children(func() {
-		// 空态：padding 64 20、居中、13px tertiary
-		if len(list) == 0 {
-			// 空态分两种：一个都没关注，和筛选/搜索之后没命中
-			empty := "没有匹配的主播"
-			if len(a.followStreamers()) == 0 {
-				empty = "还没有关注的主播"
-			}
-			ui.Box(c).Width(avail).Padding(64, 20, 64, 20).Center().Children(func() {
-				ui.Text(c, empty).FontSize(theme.TextSM).
-					TextColor(theme.TextTertiary)
-			})
-			return
+	const (
+		minW = float32(248)
+		rowH = float32(60)
+		gap  = float32(4)
+	)
+	if len(list) == 0 {
+		// 空态分两种：一个都没关注，和筛选/搜索之后没命中
+		empty := "没有匹配的主播"
+		if len(a.followStreamers()) == 0 {
+			empty = "还没有关注的主播"
 		}
-		ui.Grid(c).Width(avail).Columns(cols).Gap(gap).Children(func() {
-			for i := range list {
-				a.followsRow(c, i, list[i], cellW)
-			}
+		w, _ := c.Size()
+		ui.Box(c).Width(w-2*a.bodyPadX(c)-theme.ScrollbarW).
+			Padding(64, 20, 64, 20).Center().Children(func() {
+			ui.Text(c, empty).FontSize(theme.TextSM).
+				TextColor(theme.TextTertiary)
 		})
-	})
+		return
+	}
+	// 行的身份跟主播走，不跟位置走。这份 list 会被搜索词过滤：用下标当 key 时
+	// 中间少一条，后面每一行的身份都左移一格，底色动画和右键菜单就会落到另一
+	// 行上。同名同房间的重复项（Mock / 老记录）用出现序号区分。
+	seen := make(map[string]int, len(list))
+	keys := make([]string, len(list))
+	for i, s := range list {
+		id := followRowID(s)
+		keys[i] = followRowKey(id, seen[id])
+		seen[id]++
+	}
+	a.FollowsGrid.Key = func(i int) any { return keys[i] }
+	ui.GridView(c, &a.FollowsGrid, len(list), minW, rowH, func(i int) {
+		a.followsRow(c, keys[i], list[i])
+	}).Grow(1).Gap(gap)
+}
+
+// followRowID 是关注行的稳定身份：平台 + 房间 + 昵称。
+func followRowID(s Streamer) string { return s.Platform + "|" + s.RoomID + "|" + s.Name }
+
+// followRowKey 给重复项编号：同一身份的第一次用原 key，之后依次加 #1、#2。
+// 这样既不会撞键，也不会像下标那样一过滤就整体错位。
+func followRowKey(id string, n int) string {
+	if n == 0 {
+		return id
+	}
+	return fmt.Sprintf("%s#%d", id, n)
 }
 
 // followsRow 是一行：40px 圆头像（右下角在线点）+ 昵称 / 直播间标题。
-func (a *App) followsRow(c *ui.Context, i int, s Streamer, w float32) {
-	// 行的身份由位置决定：右键菜单的选中结果要回到同一个元素才生效，
-	// 而 Mock/老记录里可能出现同名同房间的重复项，用名字拼 key 会撞键。
-	row := ui.Row(c.Key(fmt.Sprintf("follow-row-%d", i))).
-		Width(w).Gap(12).Padding(10, 12, 10, 12).
+func (a *App) followsRow(c *ui.Context, key string, s Streamer) {
+	row := ui.Row(c.Key(key)).
+		FillWidth().Gap(12).Padding(10, 12, 10, 12).
 		Radius(theme.RadiusMD).Cursor(ui.CursorPointer).
 		Label("关注的主播 " + s.Name)
 	hovered := row.Hovered()
 
-	// 动画 key 绑在主播身份上：列表重排时同一行的渐亮状态跟着它走，不会重启。
-	key := s.Platform + "|" + s.RoomID + "|" + s.Name
 	// 行底色的过渡是 background-color 190ms ease-out，
 	// 鼠标扫过列表是整片渐亮，不是一格一格地闪。
 	row.Background(hoverSurface(row, "follows-row-bg-"+key, hovered, theme.FillQuaternary))

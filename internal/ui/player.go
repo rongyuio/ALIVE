@@ -16,10 +16,10 @@ import (
 // 播放页里常用的半透明底色。控制条和顶栏胶囊都是
 // 「深色半透明 + 1px 白色 12% 描边」，叠在画面上才压得住。
 var (
-	playerBarBg     = ui.RGBA(9, 10, 12, 0.62)
+	playerBarBg     = theme.MediaBarBg
 	playerBarBorder = theme.MediaHair
 	playerIcon      = theme.MediaTextBody
-	playerIconOn    = ui.Hex("#ffffff")
+	playerIconOn    = theme.White
 )
 
 // PlayerPage 是播放页。
@@ -65,108 +65,111 @@ func (a *App) PlayerPage(c *ui.Context) {
 	if full {
 		pad = 0
 	}
-	ui.Box(c).Grow(1).Padding(0, pad, 0, pad).Children(func() {
-		// 外壳不描边：和设备页、卡片一样，边界交给地→画面的色阶和圆角。
-		// 以前那 1px 是为了遮住「描边压在圆角裁剪线上」的接缝，不画描边就没有
-		// 这条接缝——Clip 直接把舞台裁成圆角。
-		shell := ui.Column(c).Fill().Background(theme.BgSecondary)
-		if !full {
-			shell.Radius(theme.RadiusXL).Clip()
-		}
-		// 飞到墙格、从墙格飞进来的，是这一块外壳，不是它里面的舞台。
-		//
-		// 圆角属于外壳（舞台 + 弹幕面板的整体），也只有外壳知道自己在不在
-		// 全屏。把 Match 挂在舞台上的话，飞行元素得自己再声明一份半径去
-		// 模拟外壳的圆角——而那两角在面板打开时根本不是圆角（右侧是内部
-		// 边）。挂在外壳上，形状只有一处来源：它自己的 Radius。
-		//
-		// 身份**常挂**：进 / 出播放页的 Match 起飞点取自上一帧，点击发生在
-		// 这一页构建之后——只在过渡窗口里挂的话，按 Esc 那一帧舞台身上还
-		// 没有身份，飞不起来。墙格那边同理（见 watch.go）。
-		//
-		// 唯一的例外是刚改过窗口尺寸的几百毫秒（matchable）：带 Match 的
-		// 元素在 resize 时会做尺寸动画。正在走表面过渡时例外：exitArm
-		// 补的那一拍就是要让 resize 窗口里的舞台也带上身份。
-		if key := a.stageMatchKey(); key != "" && (a.exitArm || a.matchable() || !a.routeTransitionUntil.IsZero()) {
-			shell.Transition(ui.ElementTransition{
-				Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
-			})
-		}
-
-		shell.Children(func() {
-			ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-				stage := ui.Box(c).Grow(1).Background(ui.RGB(0, 0, 0)).
-					Label("播放画面（双击全屏）")
-				// 舞台上一帧的矩形：收起时画面从这里起飞（见 surface_flight.go）。
-				// 舞台可能被右侧弹幕面板挤窄，不能按正文区估。
-				if r := stage.Bounds(); r.W > 0 && r.H > 0 {
-					a.playerStageBounds = r
-				}
-				// 悬浮 chrome 的自动隐藏：先按指针位置和空闲时长算出这一帧
-				// 的显隐，拖窗条和 chrome 都跟着它走。
-				a.syncChromeIdle(c, stage)
-				chromeOff := a.ChromeHidden
-				if chromeOff {
-					// 空闲态：控件让位之后连光标一起藏掉
-					stage.Cursor(ui.CursorNone)
-				}
-				stage.Children(func() {
-					a.stageFrame(c, stage)
-					a.danmuLayer(c)
-					// 状态层压在画面和弹幕之上、chrome 之下：它是 z-index 15，
-					// 控制条和顶栏是 20。
-					a.stageOverlay(c)
-					a.bufferingPill(c)
-					a.noticePill(c)
-					// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域
-					// （拖窗区：navbar 高度 64，压在视频之上、
-					// chrome 之下）。只铺顶部一条，整块铺满会把画面下方的
-					// 双击也吃掉。
-					//
-					// 位置必须排在这里：MyGo 的命中链只取最上层的那个元素和
-					// 它的祖先，不会穿过兄弟往下找。原来它画在 stageFrame 之前，
-					// 于是视频、状态层、顶栏、顶栏里那根弹性空 Box 每一层都能
-					// 把它挡掉，实际只剩 14px 高的一条能拖。
-					//
-					// chrome 淡出时这层必须撤掉：它在原生侧就是标题栏，鼠标一
-					// 进去页面就收不到 move，控制条再也唤不回来（那段注释
-					// 就是为这个写的）。
-					if a.WinFull && !chromeOff {
-						ui.Box(c).Absolute().Top(0).Left(0).Right(0).
-							Height(theme.NavbarHeight).DragWindow()
-					}
-					a.playerTopbar(c)
-					a.playerControls(c)
-					a.playerCaption(c)
+	// 弹幕推动器的生命周期绑在这一屏上：离开播放页或关窗时由 OnUnmount 收掉。
+	ui.Box(c).Grow(1).Padding(0, pad, 0, pad).
+		OnUnmount(a.stopDanmuLoop).
+		Children(func() {
+			// 外壳不描边：和设备页、卡片一样，边界交给地→画面的色阶和圆角。
+			// 以前那 1px 是为了遮住「描边压在圆角裁剪线上」的接缝，不画描边就没有
+			// 这条接缝——Clip 直接把舞台裁成圆角。
+			shell := ui.Column(c).Fill().Background(theme.BgSecondary)
+			if !full {
+				shell.Radius(theme.RadiusXL).Clip()
+			}
+			// 飞到墙格、从墙格飞进来的，是这一块外壳，不是它里面的舞台。
+			//
+			// 圆角属于外壳（舞台 + 弹幕面板的整体），也只有外壳知道自己在不在
+			// 全屏。把 Match 挂在舞台上的话，飞行元素得自己再声明一份半径去
+			// 模拟外壳的圆角——而那两角在面板打开时根本不是圆角（右侧是内部
+			// 边）。挂在外壳上，形状只有一处来源：它自己的 Radius。
+			//
+			// 身份**常挂**：进 / 出播放页的 Match 起飞点取自上一帧，点击发生在
+			// 这一页构建之后——只在过渡窗口里挂的话，按 Esc 那一帧舞台身上还
+			// 没有身份，飞不起来。墙格那边同理（见 watch.go）。
+			//
+			// 唯一的例外是刚改过窗口尺寸的几百毫秒（matchable）：带 Match 的
+			// 元素在 resize 时会做尺寸动画。正在走表面过渡时例外：exitArm
+			// 补的那一拍就是要让 resize 窗口里的舞台也带上身份。
+			if key := a.stageMatchKey(); key != "" && (a.exitArm || a.matchable() || !a.routeTransitionUntil.IsZero()) {
+				shell.Transition(ui.ElementTransition{
+					Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
 				})
-				// 双击画面：已经在全屏里就退出去，没全屏就进窗口全屏。
-				// 原来只翻 WinFull，系统全屏下双击等于没反应。
-				//
-				// 按钮、下拉、头像这些命中目标自带点击身份，在命中链里排在
-				// stage 前面，双击落在它们身上时这里收不到——控制条上连点
-				// 不会误切全屏。
-				if stage.DoubleClicked() {
-					switch {
-					case a.WinFull:
-						a.WinFull = false
-					case windowFullScreen(a.Win):
-						windowSetFullScreen(a.Win, false)
-					default:
-						a.WinFull = true
+			}
+
+			shell.Children(func() {
+				ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+					stage := ui.Box(c).Grow(1).Background(theme.Black).
+						Label("播放画面（双击全屏）")
+					// 舞台上一帧的矩形：收起时画面从这里起飞（见 surface_flight.go）。
+					// 舞台可能被右侧弹幕面板挤窄，不能按正文区估。
+					if r := stage.Bounds(); r.W > 0 && r.H > 0 {
+						a.playerStageBounds = r
 					}
-				}
-				// 右侧弹幕列表。
-				//
-				// 只有系统全屏不给：那是真全屏，画面独占整块屏幕。窗口全屏
-				// （应用内沉浸、任务栏还在）照常保留——那边弹幕列表本身就是
-				// 功能，没有理由跟着画面一起消失。收起 / 展开仍然走面板左沿
-				// 那颗小舌。
-				if !a.sysFullscreen() {
-					a.danmuPanel(c)
-				}
+					// 悬浮 chrome 的自动隐藏：先按指针位置和空闲时长算出这一帧
+					// 的显隐，拖窗条和 chrome 都跟着它走。
+					a.syncChromeIdle(c, stage)
+					chromeOff := a.ChromeHidden
+					if chromeOff {
+						// 空闲态：控件让位之后连光标一起藏掉
+						stage.Cursor(ui.CursorNone)
+					}
+					stage.Children(func() {
+						a.stageFrame(c, stage)
+						a.danmuLayer(c)
+						// 状态层压在画面和弹幕之上、chrome 之下：它是 z-index 15，
+						// 控制条和顶栏是 20。
+						a.stageOverlay(c)
+						a.bufferingPill(c)
+						a.noticePill(c)
+						// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域
+						// （拖窗区：navbar 高度 64，压在视频之上、
+						// chrome 之下）。只铺顶部一条，整块铺满会把画面下方的
+						// 双击也吃掉。
+						//
+						// 位置必须排在这里：MyGo 的命中链只取最上层的那个元素和
+						// 它的祖先，不会穿过兄弟往下找。原来它画在 stageFrame 之前，
+						// 于是视频、状态层、顶栏、顶栏里那根弹性空 Box 每一层都能
+						// 把它挡掉，实际只剩 14px 高的一条能拖。
+						//
+						// chrome 淡出时这层必须撤掉：它在原生侧就是标题栏，鼠标一
+						// 进去页面就收不到 move，控制条再也唤不回来（那段注释
+						// 就是为这个写的）。
+						if a.WinFull && !chromeOff {
+							ui.Box(c).Absolute().Top(0).Left(0).Right(0).
+								Height(theme.NavbarHeight).DragWindow()
+						}
+						a.playerTopbar(c)
+						a.playerControls(c)
+						a.playerCaption(c)
+					})
+					// 双击画面：已经在全屏里就退出去，没全屏就进窗口全屏。
+					// 原来只翻 WinFull，系统全屏下双击等于没反应。
+					//
+					// 按钮、下拉、头像这些命中目标自带点击身份，在命中链里排在
+					// stage 前面，双击落在它们身上时这里收不到——控制条上连点
+					// 不会误切全屏。
+					if stage.DoubleClicked() {
+						switch {
+						case a.WinFull:
+							a.WinFull = false
+						case windowFullScreen(a.Win):
+							windowSetFullScreen(a.Win, false)
+						default:
+							a.WinFull = true
+						}
+					}
+					// 右侧弹幕列表。
+					//
+					// 只有系统全屏不给：那是真全屏，画面独占整块屏幕。窗口全屏
+					// （应用内沉浸、任务栏还在）照常保留——那边弹幕列表本身就是
+					// 功能，没有理由跟着画面一起消失。收起 / 展开仍然走面板左沿
+					// 那颗小舌。
+					if !a.sysFullscreen() {
+						a.danmuPanel(c)
+					}
+				})
 			})
 		})
-	})
 }
 
 // 悬浮 chrome 的自动隐藏参数：2800ms 后淡出，280ms 淡完。
@@ -348,7 +351,7 @@ func (a *App) stageFrame(c *ui.Context, stage ui.Element) {
 		}
 	}
 	// 黑边底必须排在画面之前。它是一张**静态**图：抓一帧、缩小、模糊，
-	// 之后就不再变（见 doc/decisions/0013）。
+	// 之后就不再变。
 	if vw, vh := stageSourceSize(p, cover); a.backdropShown(c, stage, vw, vh) {
 		a.stageBackdrop(c, p, cover)
 	}
@@ -520,7 +523,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 			// 多线路平台失败过才提示，单线路说了也没用
 			if len(m.streamNow().Lines) > 1 {
 				ui.Text(c, "可以在控制条切换线路后重试").
-					FontSize(theme.TextXS).TextColor(ui.RGBA(255, 255, 255, 0.6)).
+					FontSize(theme.TextXS).TextColor(theme.White.Alpha(0.6)).
 					TextAlign(ui.Center).LineHeight(1.7)
 			}
 			a.overlayButton(c, "重试", a.retryStream)
@@ -559,7 +562,7 @@ func (a *App) stageOverlay(c *ui.Context) {
 // 底板做实——状态层出现时本来也没有别的东西要点。
 func (a *App) overlayLayer(c *ui.Context, fn func()) {
 	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(6, 7, 9, 0.82)).Children(func() {
+		Background(theme.MediaOverlayScrim).Children(func() {
 		ui.Column(c).Fill().Center().Gap(14).Children(fn)
 	})
 }
@@ -577,16 +580,16 @@ func (a *App) overlayText(c *ui.Context, text string) {
 // 40 高、左右 24、纯白胶囊、深色字。
 func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 	btn := ui.Row(c).Height(40).Padding(0, 24, 0, 24).Radius(theme.RadiusFull).
-		Background(ui.Hex("#ffffff")).Center().Cursor(ui.CursorPointer).Label(label)
-	btn.Background(hoverSurface(btn, "overlay-btn-bg", btn.Hovered(), ui.Hex("#f1f1f1")))
+		Background(theme.White).Center().Cursor(ui.CursorPointer).Label(label)
+	btn.Background(hoverSurface(btn, "overlay-btn-bg", btn.Hovered(), theme.MediaOverlayBtnHover))
 	if btn.Clicked() {
 		on()
 	}
 	down := btn.Pressed()
 	btn.Children(func() {
-		ui.Icon(c, iconSync).FontSize(13).TextColor(ui.Hex("#0b0c08"))
+		ui.Icon(c, iconSync).FontSize(13).TextColor(theme.MediaOverlayBtnInk)
 		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(600).
-			TextColor(ui.Hex("#0b0c08"))
+			TextColor(theme.MediaOverlayBtnInk)
 		pressDim(c, down, theme.RadiusFull)
 	})
 }
@@ -661,10 +664,10 @@ func (a *App) playerTopbar(c *ui.Context) {
 	row.Children(func() {
 		// ------------------------------ 返回：44 圆钮
 		back := ui.Box(c).Size(44, 44).Radius(999).
-			Background(ui.RGBA(10, 10, 12, 0.62)).
+			Background(theme.MediaCapsuleBg).
 			Border(1, theme.MediaTrack).
 			Center().Cursor(ui.CursorPointer).Label("退出直播间")
-		back.Background(hoverSurface(back, "back-bg", back.Hovered(), ui.RGBA(10, 10, 12, 0.72))).
+		back.Background(hoverSurface(back, "back-bg", back.Hovered(), theme.MediaCapsuleBgHover)).
 			BorderColor(hoverInk(back, "back-border", back.Hovered(), theme.MediaTrack, theme.MediaHairStrong))
 		if back.Clicked() {
 			// 叉是明确退出：结束焦点、断弹幕，不留后台声音。别的离开方式

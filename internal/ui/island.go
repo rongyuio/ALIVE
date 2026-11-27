@@ -366,7 +366,7 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	{
 		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 			Cursor(ui.CursorPointer).Label("回到直播间")
-		hit.Background(hoverSurface(hit, "island-hit-bg", hit.Hovered(), ui.RGBA(255, 255, 255, 0.06)))
+		hit.Background(hoverSurface(hit, "island-hit-bg", hit.Hovered(), theme.IslandHover))
 		if hit.Clicked() {
 			// 在播放页点岛 = 收起（用户确认保留的手感）；在别的页面点岛
 			// = 回到焦点那一间。两者都只在 returnToFocus 一处判断。

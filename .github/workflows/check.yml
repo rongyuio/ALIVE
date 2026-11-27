@@ -22,10 +22,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # 全历史：gate 的 churn 和 alive-symptoms 都要读 7 天的 git log。
-          # 浅克隆下它们会拿到空历史、静默通过——那是最糟的失效方式。
-          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -64,23 +60,9 @@ jobs:
       - name: mygo vet
         run: go tool mygo vet .
 
+      # AGENTS.md 里每条规则、每个路径和 API 的出处都得站得住（make agents-check）。
+      - name: agents-check
+        run: go run ./tools/agentscheck
+
       - name: test
         run: go test -tags mock ./... -count=1
-
-      # 工程契约里能自动检查的那几条（cmd/alive-gate）。
-      # 检查历史的那两条（churn / commits）在工作区里才有意义：CI 是浅克隆、
-      # 而且这里评测的是一个已经存在的提交——它们不会误报，直接跳过。
-      - name: gate
-        run: go run ./cmd/alive-gate
-
-      # 症状账本只写进 job summary，不让构建失败：它回答「这是第几次」，
-      # 该不该停手由人判断。把一条启发式判据变成红线，等于让它替你决定。
-      - name: symptoms
-        if: always()
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          "## 症状账本（doc/STATE.md）" >> $env:GITHUB_STEP_SUMMARY
-          "``````" >> $env:GITHUB_STEP_SUMMARY
-          go run ./cmd/alive-symptoms -check -out - 2>&1 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
-          "``````" >> $env:GITHUB_STEP_SUMMARY

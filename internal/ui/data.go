@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -350,8 +351,7 @@ func (a *App) loadRooms() {
 // applyFirstChunk 把首屏的一段写进列表。
 //
 // 部分结果照常换上去：Chunk 契约是「已经取到的部分照常交出来，Cursor 停在
-// 真实消费位置」，下一次从 Cursor 续，不跳也不丢（见 live.Chunk 与
-// doc/architecture/platform.md 第八节）。
+// 真实消费位置」，下一次从 Cursor 续，不跳也不丢（见 live.Chunk）。
 func (a *App) applyFirstChunk(key string, chunk live.Chunk) {
 	rooms := convertRooms(chunk.Rooms)
 	a.Rooms = rooms
@@ -701,11 +701,14 @@ func (a *App) syncSearch() {
 	}()
 }
 
-// searchErrorText 是给用户看的失败文案：风控单独说，
+// searchErrorText 是给用户看的失败文案：风控、需要登录各自单独说，
 // 不要把 HTTP 状态码和上游报文直接甩到浮层上。
 func searchErrorText(err error) string {
 	if live.IsBlocked(err) {
 		return "请求过于频繁，请稍后再试"
+	}
+	if errors.Is(err, live.ErrAuth) {
+		return "这个平台要登录才能搜，先去登录"
 	}
 	return "搜索失败：" + err.Error()
 }

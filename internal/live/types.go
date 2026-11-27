@@ -267,6 +267,12 @@ var ErrBlocked = sentinel{msg: "live: 平台风控", class: "blocked"}
 // ErrUnsupported 表示该平台还没有接入这项能力。
 var ErrUnsupported = sentinel{msg: "live: 该平台暂不支持", class: "unsupported"}
 
+// ErrAuth 表示平台要求登录、或会话已经失效。
+//
+// 它和 ErrBlocked 分开：被封是等一会儿再来，被要求登录是换多少条流都没用，
+// 得让用户去登一次。上层据此把失败显示成「需要登录」，而不是一句通用报错。
+var ErrAuth = sentinel{msg: "live: 需要登录", class: "auth"}
+
 // sentinel 是带分类标签的哨兵错误：原文一个字没改，多的是 DiagClass。
 //
 // 分类由错误自己给出，diag 认接口而不认 live 的类型——它一旦反向 import

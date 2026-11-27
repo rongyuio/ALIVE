@@ -2,8 +2,8 @@
 
 各直播平台的数据层：分区、列表、搜索、取流、弹幕，归一化成同一套类型。
 
-- 四个平台的取流约束、登录门槛、线路语义、编码分支 → [doc/architecture/platform.md](../../doc/architecture/platform.md)
-- 各平台实际下发什么编码 → [doc/reference/measurements.md](../../doc/reference/measurements.md)
+取流约束、登录门槛、线路语义、编码分支是各平台文件的注释（`<平台>_stream.go`、`http.go`）
+里的一手结论；实测脚本在 `.tmp/probes/live/`，不入库。
 
 本文件只写这个包内部的约定。
 
@@ -33,11 +33,10 @@
 ## 测试
 
 ```sh
-make test                          # recipe 里带 -tags mock
-go test ./internal/live -count=1
-go test -race ./internal/live -count=1
+make test                              # recipe 里带 -tags mock
+go test -tags mock ./internal/live -count=1
 ```
 
-包里只剩不联网的解析测试。打真实接口的用例（`TestBilibiliLive`、`TestDouyuLive`、
-`TestHuyaLive`）不进仓库，脚本在 `.tmp/probes/live/`，需要时拷回本目录。真实取流
-结果记在 [doc/reference/measurements.md](../../doc/reference/measurements.md)。
+本项目自有的 `_test.go` 目前在瘦身中整体移除，包里没有测试。要补测试就写 `_test.go`，
+用 `-tags mock` 的假数据层；要打真实接口的用例（`TestBilibiliLive`、`TestDouyuLive`、
+`TestHuyaLive`）不进仓库，脚本放 `.tmp/probes/live/`，需要时拷回本目录。

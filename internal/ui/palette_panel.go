@@ -202,7 +202,7 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 		swatch.ClipInset(0, 0, 0, 0, 7)
 		swatch.Children(func() {
 			for _, hex := range p.Swatch {
-				ui.Box(c).Grow(1).Height(30).Background(ui.Hex(hex))
+				ui.Box(c).Grow(1).Height(30).Background(theme.HexColor(hex))
 			}
 		})
 

@@ -216,7 +216,7 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 	// 是半透明的模糊层，底下的 1 级色差会透过来——TestLeaveFlightStartsAsTheStage
 	// 就是拿这个当判据。
 	box := ui.Box(c).Absolute().Left(x).Top(y).Width(w).Height(h).
-		Radius(theme.RadiusXL).Clip().Background(ui.RGB(0, 0, 0)).
+		Radius(theme.RadiusXL).Clip().Background(theme.Black).
 		IgnoreInput(true).Label("表面过渡中的画面")
 	// 落点藏在岛 / 卡片后面了，但边缘还会漏出一点：最后一段淡掉，
 	// 收尾不是「啪」地消失。进入时还要露出下面已经就位的画面。

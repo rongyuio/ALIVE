@@ -113,8 +113,7 @@ type Options struct {
 	// GPU 走零拷贝（mpv 的 D3D11 render API，直接渲进共享纹理）。
 	//
 	// 只有观测墙开：mpv 直接渲进共享 D3D11 纹理，MyGo 的渲染器用另一个
-	// device 打开它，帧不经内存（12 路 8.7 核 → 0.4 核，见
-	// doc/reference/measurements.md「视频零拷贝」）。播放页一路全尺寸，收益
+	// device 打开它，帧不经内存（12 路 8.7 核 → 0.4 核）。播放页一路全尺寸，收益
 	// 小，且截图 / Tester 的 CPU 回读路径留着更方便。
 	GPU bool
 	// NoBackBuffer 关掉 demuxer 的回退缓存。

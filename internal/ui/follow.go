@@ -174,11 +174,8 @@ const refreshWorkers = 6
 //   - 进入关注页 30s：用户从首页过来。上一次刷还不到半分钟就没必要再打
 //     一轮；超过半分钟，屏幕上的绿点已经可能过时（开播、下播都在这量级）。
 //   - 窗口恢复 60s：挂机回来比切页更晚，可以更宽容。
-//   - 可见时心跳 90s：54 位关注跨 4 平台，实测一轮 2.4~5.6s（2026-11-25，
-//     见 reference/measurements.md）。检查粒度 20s，所以实际间隔落在
-//     90~110s，稳态不到 1 req/s，各平台限流器还能兜住。
-//
-// 这三个数连同「失败不灭绿点」写进 doc/decisions/0014-follows-freshness.md。
+//   - 可见时心跳 90s：54 位关注跨 4 平台，实测一轮 2.4~5.6s（2026-11-25）。检查
+//     粒度 20s，所以实际间隔落在 90~110s，稳态不到 1 req/s，各平台限流器还能兜住。
 const (
 	followsEnterFresh     = 30 * time.Second
 	followsRestoreFresh   = 60 * time.Second

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -163,29 +162,14 @@ func (a *App) danmuPanelHandle(c *ui.Context, open bool) {
 }
 
 func (a *App) danmuPanelList(c *ui.Context) {
-	// 跟随底部；用户上滑后累计新弹幕，浮出「N 条新弹幕」胶囊。
-	//
-	// 面板读的是 DanmuLog（收到就留的历史），不是 Danmu（画面上正在飞的那批）——
-	// messages 和 Overlay 本来就是两份数据，后者飞完就没了。
-	a.panelStick = a.PanelScroll.Y >= a.PanelScroll.MaxY-32
-
-	// 视口高度变了（开关窗口全屏、进出系统全屏、拖窗口边缘）：Y 和 MaxY
-	// 还是上一帧的一对，面板一变矮 MaxY 就变大，Y 立刻离底一截，上面的
-	// 跟随判据下一帧就失效——列表从此定住，新弹幕只累计不滚。
-	// 变了的这一帧，只要原来跟底，就把 Y 重新钉到末尾，让布局钳到新底。
-	if _, h := c.Size(); h != a.panelViewH || a.playerFullscreen() != a.panelViewFull {
-		a.panelViewH, a.panelViewFull = h, a.playerFullscreen()
-		if a.panelStick {
-			a.PanelScroll.Y = math.MaxFloat32
-		}
-	}
-
-	if n := a.panelNewDanmu(); n > 0 {
-		if a.panelStick {
-			a.PanelScroll.Y = math.MaxFloat32
-		} else {
-			a.panelPending += n
-		}
+	// 贴底由 ListState.FollowEnd 自己管：贴底时新弹幕把底推上来，用户上滑就脱离、
+	// 滑回底部又跟上，视口变高变矮也不用谁来重新钉 Y。这里只负责在脱离时累计
+	// 「N 条新弹幕」。
+	n := a.panelNewDanmu()
+	if a.PanelList.AtEnd() {
+		a.panelPending = 0
+	} else if n > 0 {
+		a.panelPending += n
 	}
 
 	// 数据层只产出 chat 和 SC，这里不用再过滤——礼物、进场、公告
@@ -194,17 +178,13 @@ func (a *App) danmuPanelList(c *ui.Context) {
 	if len(list) > danmuPanelMaxLines {
 		list = list[len(list)-danmuPanelMaxLines:]
 	}
+	a.PanelList.Key = func(i int) any { return list[i].Seq }
 
 	// 空列表不画占位文案：连接状态在后台，界面根本拿不到「正在连接」
 	// 这个事实——连上了只是没人在说话，也会一直挂着那行字。
-	ui.Scroll(c).Grow(1).Padding(12, 10, 16, 10).TrackScroll(&a.PanelScroll).
-		Children(func() {
-			ui.Column(c).FillWidth().Gap(danmuPanelListGap).Children(func() {
-				for _, d := range list {
-					a.danmuPanelItem(c, d)
-				}
-			})
-		})
+	ui.List(c, &a.PanelList, len(list), func(i int) {
+		a.danmuPanelItem(c, list[i])
+	}).Grow(1).Padding(12, 10, 16, 10).Gap(danmuPanelListGap)
 
 	if a.panelPending > 0 {
 		pill := ui.Row(c).Height(28).Padding(0, 12, 0, 12).Gap(5).
@@ -212,7 +192,7 @@ func (a *App) danmuPanelList(c *ui.Context) {
 			Cursor(ui.CursorPointer).Label("回到最新弹幕").
 			Attach(ui.AnchorBottom, ui.AnchorBottom).Bottom(12)
 		if pill.Clicked() {
-			a.PanelScroll.Y = math.MaxFloat32
+			a.PanelList.ScrollToEnd()
 			a.panelPending = 0
 		}
 		pill.Children(func() {
@@ -386,7 +366,7 @@ func chipTextColor(bg ui.Color) ui.Color {
 	if bg.A == 0 {
 		return theme.TextSecondary
 	}
-	return ui.Hex("#ffffff")
+	return theme.White
 }
 
 // validHexRGB 检查平台下发的是不是合法的 #RRGGBB。
@@ -415,7 +395,7 @@ func validHexRGB(s string) bool {
 func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 	tint := theme.Accent
 	if validHexRGB(d.Background) {
-		tint = ui.Hex(d.Background)
+		tint = theme.HexColor(d.Background)
 	}
 
 	item := ui.Column(c).Gap(danmuPanelRowGap).
@@ -437,7 +417,7 @@ func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 				// 律白字。按亮度分深浅会让同一条列表里 ¥10 白字、¥100 黑字。
 				ui.Text(c, fmt.Sprintf("¥%d", d.Price)).
 					FontSize(theme.Text2XS).FontWeight(700).
-					TextColor(ui.Hex("#ffffff")).FontFeatures("tnum")
+					TextColor(theme.White).FontFeatures("tnum")
 			})
 			ui.Box(c).Grow(1).Children(func() {
 				ui.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).

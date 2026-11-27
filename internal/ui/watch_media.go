@@ -1402,7 +1402,14 @@ func (a *App) watchSwap(dragKey, targetKey string) {
 	if from < 0 || to < 0 || from == to {
 		return
 	}
-	a.WatchRooms[from], a.WatchRooms[to] = a.WatchRooms[to], a.WatchRooms[from]
+	// 必须新分配：拖拽的落点是在 watchWall 构建这一格时同步处理的，而 watchWall
+	// 开头把 a.WatchRooms 的切片头拷给了 rooms，正按同一底层数组遍历。原地交换
+	// 会让本轮循环剩下的格子按换过位的数组继续建——同一间房在这一帧里画两格，
+	// 各自的播放器还会画到错格。watchRemove 里是同一个理由。
+	out := make([]Streamer, len(a.WatchRooms))
+	copy(out, a.WatchRooms)
+	out[from], out[to] = out[to], out[from]
+	a.WatchRooms = out
 	a.markDirty()
 	a.invalidateWindows()
 }

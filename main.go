@@ -131,8 +131,8 @@ func main() {
 	// 拖进来）。
 	//
 	// 必须在 App.Run 之前：插件在 Setup 里登记自己，等 App 就绪才开始排检查。
-	// 没配 updates 的构建里它什么也不做（mygo.json 配了，见
-	// doc/decisions/0015-self-update.md）。
+	// 没配 updates 的构建里它什么也不做（见 mygo.json 的 updates 段与
+	// third_party/mygo/docs/plugins/updater.md）。
 	mygo.Use(native.Plugin)
 
 	app := appui.NewApp()

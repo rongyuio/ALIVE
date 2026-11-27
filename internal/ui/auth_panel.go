@@ -166,12 +166,12 @@ func (a *App) authScanPanel(c *ui.Context, auth live.Authenticator, st live.Auth
 			TextColor(theme.TextPrimary).TextAlign(ui.Center).MaxLines(1)
 
 		ui.Box(c).Size(authQRSize, authQRSize).Radius(theme.RadiusMD).
-			Background(ui.RGB(255, 255, 255)).Center().Children(func() {
+			Background(theme.White).Center().Children(func() {
 			if qr != nil {
 				ui.Image(c, qr).Size(authQRSize-20, authQRSize-20).Fit(ui.Contain)
 				return
 			}
-			ui.Icon(c, iconQRCode).FontSize(30).TextColor(ui.RGB(122, 126, 136))
+			ui.Icon(c, iconQRCode).FontSize(30).TextColor(theme.AuthQrIconInk)
 		})
 
 		// 状态文案最多两行：错误信息带接口原文，一行放不下，

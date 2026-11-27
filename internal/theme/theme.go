@@ -61,6 +61,8 @@ func init() { Apply(Palettes[0].ID) }
 var (
 	// 封面上的人数胶囊：rgba(8,9,11,.78)
 	OverlayInk = ui.RGBA(8, 9, 11, 0.78)
+	// OverlayInkStrong 是封面上关注键悬停时更深的一档：rgba(8,9,11,.90)。
+	OverlayInkStrong = ui.RGBA(8, 9, 11, 0.90)
 	// IslandInk 是灵动岛的底：纯黑，不跟配色走。
 	//
 	// 参照物是手机的屏幕挖孔——它永远比界面暗，因为它是硬件，不是卡片。
@@ -71,11 +73,28 @@ var (
 	// IslandTopLight 是墨岛顶部那 1px 受光边。岛不跟配色走，所以这条高光
 	// 也不能借 TopLight——浅色主题里那是一道极淡的墨线，压在黑底上看不见。
 	IslandTopLight = ui.RGBA(255, 255, 255, 0.06)
+	// IslandHover 是岛上整块热区 hover 时的提亮层。岛是恒定黑底，不跟配色走；
+	// 值刚好和 IslandTopLight 一样，但语义是「指针经过」而不是「顶部受光」。
+	IslandHover = ui.RGBA(255, 255, 255, 0.06)
+	// White / Black 是不跟配色走的纯色基座：白底控件、色块棋盘格、滑杆拇指、
+	// 视频舞台的黑底都取它们；要半透明就在调用点用 .Alpha() 叠一层。
+	White = ui.RGB(255, 255, 255)
+	Black = ui.RGB(0, 0, 0)
 	// 白色文字描边 / 高光
 	White90 = ui.RGBA(255, 255, 255, 0.90)
 	White94 = ui.RGBA(255, 255, 255, 0.94)
 	White12 = ui.RGBA(255, 255, 255, 0.12)
+	// DanmuStrokeInk 是新用户弹幕的默认描边色：#444，压在任意字色后面当一圈灰边。
+	DanmuStrokeInk = ui.RGB(68, 68, 68)
+	// AuthQrIconInk 是登录二维码占位图标的灰。#7a7e88 压在固定的白底卡片上。
+	AuthQrIconInk = ui.RGB(122, 126, 136)
 )
+
+// HexColor 把平台下发的 "#rrggbb" 解析成颜色。
+//
+// 弹幕字色、醒目留言底色、粉丝牌配色、配色面板的预览带都是运行时的字符串，
+// 做不成常量令牌；解析这一步住在 theme 里，internal/ui 就只剩「取令牌」。
+func HexColor(hex string) ui.Color { return ui.Hex(hex) }
 
 // ---------------------------------------------------------------- 压在画面上的墨
 
@@ -135,6 +154,23 @@ var (
 	// MediaScrimTile 是观测墙格子底部信息条的压暗层：0.66 才压得住
 	// 亮场景的直播画面，同时不把整块画面盖死。
 	MediaScrimTile = ui.RGBA(6, 7, 9, 0.66)
+	// 控制条 / 小窗控制条的半透明底：rgba(9,10,12,.62)。
+	MediaBarBg = ui.RGBA(9, 10, 12, 0.62)
+	// 播放器状态层（加载 / 出错 / 未开播）铺满舞台的压暗底：rgba(6,7,9,.82)。
+	MediaOverlayScrim = ui.RGBA(6, 7, 9, 0.82)
+	// 全屏顶栏返回圆钮的底色，悬停再深一档。
+	MediaCapsuleBg      = ui.RGBA(10, 10, 12, 0.62)
+	MediaCapsuleBgHover = ui.RGBA(10, 10, 12, 0.72)
+	// 数据同步模态的遮罩底：rgba(4,5,7,.72)。
+	MediaModalScrim = ui.RGBA(4, 5, 7, 0.72)
+	// 状态层白色主按钮上的深色图标与文字：近墨的 #0b0c08。
+	MediaOverlayBtnInk = ui.RGB(0x0b, 0x0c, 0x08)
+	// 状态层白色主按钮悬停时的浅灰底：#f1f1f1。
+	MediaOverlayBtnHover = ui.RGB(0xf1, 0xf1, 0xf1)
+	// 弹幕设置开关打开时、强调色底上的深色拇指：#1a1a1a。
+	MediaSwitchThumbOn = ui.RGB(0x1a, 0x1a, 0x1a)
+	// 全屏窗口按钮里的关闭键悬停红，取 Win11 自己的 #c42b1c。
+	MediaCaptionClose = ui.RGB(0xc4, 0x2b, 0x1c)
 	// 平台品牌色只用于观测墙的平台胶囊，不随主题变。胶囊上的字统一用
 	// IslandInk：四个品牌色配深色字的对比度都比白字高。
 	BrandBilibili = ui.RGB(0xFB, 0x72, 0x99)

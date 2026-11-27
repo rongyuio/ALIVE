@@ -21,7 +21,7 @@ func (a *App) shortcutsOverlay(c *ui.Context) {
 	// Space / K / F / M 仍会穿到 Shell 的 shellKeys，对背后正在播的那一路
 	// 生效。Esc 由这一层自己消费，handleEscape 里的分支留作兜底。
 	bg := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(0, 0, 0, 0.55)).Center().Modal().Label("关闭快捷键说明")
+		Background(theme.MediaBackdropScrim).Center().Modal().Label("关闭快捷键说明")
 	if bg.Clicked() || bg.OverlayShortcut(0, ui.KeyEscape) {
 		a.ShortcutsOpen = false
 	}

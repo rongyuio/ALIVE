@@ -51,7 +51,7 @@ func (a *App) syncOverlay(c *ui.Context) {
 	// Esc 也由这一层自己消费，和 PopoverBase / DialogBase 的层级一致，
 	// 不再依赖 handleEscape 恰好先看 SyncOpen。
 	bg := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(ui.RGBA(4, 5, 7, 0.72)).Center().Modal().Label("关闭数据同步")
+		Background(theme.MediaModalScrim).Center().Modal().Label("关闭数据同步")
 	if bg.Clicked() || bg.OverlayShortcut(0, ui.KeyEscape) {
 		a.SyncOpen = false
 		a.SyncPlan = nil

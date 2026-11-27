@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/ui"
 )
 
@@ -15,17 +13,15 @@ import (
 //
 // 一次 Esc 只做一件事，从最内层往外：浮层 → 关注面板 → 全屏 → 返回列表。
 func (a *App) shellKeys(c *ui.Context) {
-	// Esc 只认一次按键。
-	//
-	// 视图一帧会构建多趟（测量、布局、绘制），按键在每一趟里都重新投递，
-	// 不挡住的话一次 Esc 会先关掉弹层、紧接着又在下一趟把用户送回列表——
-	// 按一下退两层。200ms 的窗口足够覆盖同一次按键的所有投递，
-	// 人也不会快到在这个间隔里连按两次。
+	// 系统全屏的上一帧状态：handleEscape 用它认「这次 Esc 是不是已经被窗口拿去退全屏」。
+	wasFull := a.wasOSFullScreen
+	a.wasOSFullScreen = windowFullScreen(a.Win)
+
+	// Esc 只认一次按键，但不需要自己去重：框架保证一次按键只投递一次
+	// （ui/input.go 的 engine.shortcut 命中后把它从 delivered 里摘掉）。以前这里
+	// 拿 200ms 时间窗口去重，多此一举，还吞掉了手快时的第二次 Esc。
 	if c.Shortcut(0, ui.KeyEscape) {
-		if time.Since(a.lastEscape) >= 200*time.Millisecond {
-			a.lastEscape = time.Now()
-			a.handleEscape()
-		}
+		a.handleEscape(wasFull)
 		return
 	}
 
@@ -74,7 +70,7 @@ func (a *App) shellKeys(c *ui.Context) {
 //
 // 浮层（PopoverBase）比这里更早拿到 Esc——它们在构建时就消费了，
 // 所以能走到这里说明浮层已经关掉或不在了。
-func (a *App) handleEscape() {
+func (a *App) handleEscape(wasFull bool) {
 	if a.SyncOpen {
 		a.SyncOpen = false
 		return
@@ -97,17 +93,17 @@ func (a *App) handleEscape() {
 	// 系统全屏可能已经被窗口自己消费掉，错过这里就再没有入口了。
 	if a.WinFull {
 		a.WinFull = false
-		a.lastFullscreenExit = time.Now()
 		return
 	}
 	// 全屏时 Esc 只退出全屏，绝不顺手把用户踢出直播间
 	if windowFullScreen(a.Win) {
 		windowSetFullScreen(a.Win, false)
-		a.lastFullscreenExit = time.Now()
 		return
 	}
-	// 同一次按键可能先被窗口消费成「退出全屏」，再传到这里
-	if time.Since(a.lastFullscreenExit) < 500*time.Millisecond {
+	// 同一次按键可能先被窗口消费成「退出全屏」，随后又送到这里：上一帧还在系统
+	// 全屏、这一帧不在了，就是那种情况。用状态认，比按时间窗口猜可靠；也不会
+	// 连带吞掉用户紧接着按的第二下。
+	if wasFull {
 		return
 	}
 	// 第一档：收进岛。引擎、取流、声音全留着，岛不动，接着出声；

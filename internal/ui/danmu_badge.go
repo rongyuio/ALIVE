@@ -93,7 +93,7 @@ func colorFromHex(hex string) ui.Color {
 	if hex == "" {
 		return ui.Color{}
 	}
-	return ui.Hex(hex)
+	return theme.HexColor(hex)
 }
 
 // levelChipColor 返回用户等级胶囊的底色；零值表示没有对应规则，用中性胶囊。
@@ -152,10 +152,10 @@ func medalChipColors(d danmuLine) (bg, bgEnd ui.Color) {
 func medalHexColor(hex string) ui.Color {
 	switch len(hex) {
 	case 7:
-		c := ui.Hex(hex)
-		return ui.RGBA(c.R, c.G, c.B, badgeAlpha)
+		c := theme.HexColor(hex)
+		return c.Alpha(badgeAlpha)
 	case 9:
-		return ui.Hex(hex)
+		return theme.HexColor(hex)
 	}
 	return ui.Color{}
 }

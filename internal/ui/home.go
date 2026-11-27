@@ -213,20 +213,17 @@ type App struct {
 	// 右侧弹幕列表
 	DanmuPanelOn bool
 	DanmuPanelW  float32
-	PanelScroll  ui.ScrollState
-	panelSeen    int
+	// PanelList 是弹幕列表。FollowEnd 让它贴底：新弹幕把底推上来，用户上滑就
+	// 脱离、滑回底部又跟上，视口变高变矮也不用谁来重新钉 Y。行的身份是每条
+	// 弹幕的序号（danmuLine.Seq）。
+	PanelList ui.ListState
+	panelSeen int
 	// panelMark 是上次结算时日志里最后一条的身份。日志满 danmuLogMax 后
 	// 长度恒定，只有回看「上次看到哪一条」才能数出新弹幕（见 panelNewDanmu）。
 	panelMark    panelLineMark
 	panelPending int
-	panelStick   bool
-	// panelViewH / panelViewFull 记着上一帧列表的视口。开关全屏或拖窗口边缘
-	// 时视口高度会变：MaxY 跟着跳，而 Y 还停在旧的底上，跟随判据会当场
-	// 失效。变了的这一帧要把 Y 重新钉到末尾。
-	panelViewH    float32
-	panelViewFull bool
-	panelDragW    float32
-	panelDragX    float32
+	panelDragW   float32
+	panelDragX   float32
 
 	// 配色：当前配色 ID、配色面板是否展开，以及夜/日/跟随系统的选择。
 	// ThemeMode 取 "system"（默认）/ "dark" / "light"：它决定用哪一侧的配色，
@@ -316,9 +313,12 @@ type App struct {
 	// 列表滚动：列表本身是虚拟化的 ui.List，滚动位置由 ListState 自己保持
 	//（同一个分区来回进出、从播放页返回都还在原位）。
 	// scrollKey 只用来判断「换了分区」，换分区要回到顶部。
-	HomeList  ui.ListState
-	SubList   ui.ListState
-	scrollKey string
+	HomeList ui.ListState
+	SubList  ui.ListState
+	// FollowsGrid 是关注页主播行的网格：虚拟化，只建可见的行；滚动位置和
+	// 行的身份都由它自己保持。
+	FollowsGrid ui.GridState
+	scrollKey   string
 	// 上一帧真正构建了多少张卡片：虚拟化是否生效的回归指标（测试用）
 	builtCards int
 
@@ -326,11 +326,11 @@ type App struct {
 	gridCols  int
 	gridCardW float32
 
-	// 播放页：静音前的音量、全屏退出时刻（防抖）、快捷键说明浮层
-	lastEscape         time.Time // 上一次处理 Esc 的时刻，同一次按键只认一次
-	volumeBeforeMute   float32
-	lastFullscreenExit time.Time
-	ShortcutsOpen      bool
+	// 播放页：静音前的音量、上一帧的系统全屏状态（认「这次 Esc 是不是已经被窗口用掉」）、
+	// 快捷键说明浮层
+	volumeBeforeMute float32
+	wasOSFullScreen  bool
+	ShortcutsOpen    bool
 
 	// 顶栏「数据同步」面板：导出 / 导入 / 诊断三个页签。
 	// SyncBusy 期间按钮不响应，SyncBusyAction 记住忙的是哪一个动作——三个
@@ -514,6 +514,8 @@ func newApp() *App {
 		DefaultVolume: 0.6,
 		clock:         time.Now,
 		DanmuOn:       true,
+		// 弹幕面板贴底：新弹幕推着底走，用户上滑就脱离。
+		PanelList:     ui.ListState{FollowEnd: true},
 		DanmuFont:     20,
 		DanmuDur:      10 * time.Second,
 		DanmuArea:     0.5,
@@ -561,7 +563,7 @@ func (a *App) bindAuth() {
 	a.authQR = map[string]*ui.Bitmap{}
 	a.authQRSeq = map[string]int{}
 	// 只有扫码登录的两个平台。虎牙和抖音都不接登录：画质档位和弹幕匿名
-	// 就全有，登录换不到东西（见 doc/architecture/platform.md §七）。
+	// 就全有，登录换不到东西。
 	for _, p := range []live.Platform{live.Bilibili, live.Douyu} {
 		if auth, ok := live.AuthFor(p); ok {
 			a.bindPlatformAuth(p, auth)
@@ -834,7 +836,7 @@ func (a *App) Home(c *ui.Context) {
 		}
 		// 内容层单独换代：切平台 / 分区时换 key，新旧内容直接交换。
 		// 分区栏和错误条留在原地——它们是这一屏的边框，不是内容。
-		feed := ui.Column(c).Key(a.navFeedKey()).Grow(1)
+		feed := ui.Column(c.Key(a.navFeedKey())).Grow(1)
 		feed.Children(func() {
 			a.grid(c, a.feed(), &a.HomeList, a.loadMoreRooms)
 		})

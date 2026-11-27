@@ -20,7 +20,7 @@
 - 🎬 播放：断流自动重连、后台收听
 - 🔁 数据同步：配置导入导出（导入前先看改动）
 - 🌓 主题切换：六族十二套配色，日夜模式，支持跟随系统
-- 🩺 诊断：结构化事件日志、崩溃黑匣子 `crash-*.log`、把日志翻译成答案的 `alive-diag`
+- 🩺 诊断：结构化事件日志、崩溃黑匣子 `crash-*.log`、应用内诊断页导出脱敏日志包
 
 ## 安装方式
 
@@ -32,7 +32,7 @@
 
 ## 编译
 
-- 前置：Windows x64、Go 1.27+、make，仓库已包含libmpv DLL（third_party/mpv）
+- 前置：Windows x64、Go 1.27+、make；libmpv 的 DLL 不入库，首次 `make deps` 按 sha256 拉到 `third_party/mpv`
 
 ```bash
 # 克隆项目
@@ -45,7 +45,7 @@ make dev
 # 打包构建：build/windows-amd64/ 下的便携版和安装包
 make build
 
-# 全部门禁：fmt + build + vet + mygo vet + lint + 测试 + 插件测试
+# 全部检查：fmt + build + vet + mygo vet + lint + 测试
 make check
 
 # e2e自动化插件构建
@@ -54,27 +54,23 @@ make e2e
 
 ## 排障
 
-```bash
-make diag                                              # 编译 build/alive-diag.exe
-alive-diag symptoms                                    # 有哪些症状
-alive-diag answer player-fail "%LOCALAPPDATA%\alive\logs"
-alive-diag bundle "%LOCALAPPDATA%\alive\logs" out.zip  # 提 issue 用这个，已脱敏
-```
+日志与崩溃现场都在 `%LOCALAPPDATA%\alive\logs`：
 
-日志排查：
+- `alive-<run>.log`：一次运行的完整结构化事件日志（`event` 键见 `internal/diag`）。
+- `crash-<run>.log`：崩溃时的完整 goroutine 栈，这类不在普通日志里。
 
-| 症状 | 怎么查 |
+要一份能贴进 issue 的脱敏包，用应用内诊断页导出（`internal/support.Bundle`），别手动发原始日志。
+
+| 症状 | 先看什么 |
 | --- | --- |
-| 播放页卡住、黑屏、没声音 | `alive-diag answer player-fail <日志目录>`：取流失败是平台或 CDN 的事，引擎打不开是解码器的事 |
-| 某一格一直黑着 | `alive-diag answer black-tile <日志目录>`：看有没有 `wall.open` 却始终没有 `wall.first_frame` |
-| 同一个房间反复重连 | `alive-diag answer reconnect-loop <日志目录>`：看几次重开、每次的原因 |
-| 进程崩溃 | 这类不在日志里，看 `%LOCALAPPDATA%\alive\logs\crash-*.log`，完整栈就在里面 |
-
-症状与证据的完整对照在 [diagnostics.md](doc/architecture/diagnostics.md)。
+| 播放页卡住、黑屏、没声音 | 先分清上游（平台流断了、CDN 慢）和本机（尺寸、门控、接管）：对照日志里的取流与引擎事件 |
+| 某一格一直黑着 | 看有没有 `wall.open` 却始终没有 `wall.first_frame` |
+| 同一个房间反复重连 | 数日志里几次重开、每次的原因 |
+| 进程崩溃 | 看 `crash-<run>.log` 的完整栈 |
 
 ## 参考
 
 - 功能界面参考： [chen-zeong/DTV](https://github.com/chen-zeong/DTV)
 - 自绘界面框架：[github.com/egoist/mygo](https://github.com/egoist/mygo)
 - 播放：[libmpv](https://github.com/mpv-player/mpv)，头文件与 DLL 在 `third_party/mpv`
-- 接口字段的实测记录见 [platform.md](doc/architecture/platform.md)，实测数字见 [measurements.md](doc/reference/measurements.md)
+- 平台取流约束见 [internal/live/README.md](internal/live/README.md)，播放分层见 [internal/playback/README.md](internal/playback/README.md)

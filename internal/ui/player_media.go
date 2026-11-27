@@ -1818,6 +1818,8 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 	}
 
 	// 历史：收到就留，和飞行无关
+	a.danmu.seq++
+	line.Seq = a.danmu.seq
 	a.DanmuLog = append(a.DanmuLog, line)
 	if len(a.DanmuLog) > danmuLogMax {
 		a.DanmuLog = a.DanmuLog[len(a.DanmuLog)-danmuLogMax:]

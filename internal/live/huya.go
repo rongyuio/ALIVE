@@ -49,7 +49,7 @@ type huyaProvider struct {
 	// 虎牙的画质档位和弹幕在未登录态下同样下发：实测 6 个分类的在播房间，登录与未登录
 	// 拿到的三档完全相同（原画 / 最高码率 / 标清），原画的 FLV 元数据是
 	// 1440p，分片 CDN 对未登录请求同样返回 200；弹幕也照常收到。登录只换到头像和昵称，
-	// 不值得再维护一套 webview。见 doc/architecture/platform.md §七。
+	// 不值得再维护一套 webview。
 	// 表情包是后台补的数据：拉一次存进 runtimeEmotes。
 	// 失败 60 秒后再试，避免房间连不上时反复打接口。
 	emoteTried atomic.Int64

@@ -53,6 +53,9 @@ const (
 // Track 在生成时定死，这样别的弹幕消失时它不会跳轨道；
 // 面板只用 Text / Nick / Level / Kind，不关心 Track。
 type danmuLine struct {
+	// Seq 是收到顺序的序号，从 1 递增。它是这条弹幕的身份：列表拿它当行的
+	// Key，日志被截断、前面的行被挤掉时，剩下每行的身份不会跟着位置漂。
+	Seq   uint64
 	Text  string
 	Nick  string
 	Level int
@@ -105,7 +108,7 @@ func danmuColor(d danmuLine, colorful bool, fallback ui.Color) ui.Color {
 	if !colorful || d.Color == "" || strings.EqualFold(d.Color, "#ffffff") {
 		return fallback
 	}
-	return ui.Hex(d.Color)
+	return theme.HexColor(d.Color)
 }
 
 // danmuStickerScale 是纯图弹幕（房间表情、收藏集表情贴纸）相对字号的倍率。
@@ -119,17 +122,19 @@ const danmuStickerScale float32 = 2.8
 type danmuState struct {
 	active atomic.Bool
 	loop   atomic.Bool
+	// seq 是 danmuLine.Seq 的发号器，只在主线程里读写。
+	seq uint64
 }
 
 // ensureDanmuLoop 保证弹幕推动器在跑。
 //
-// 只有播放页需要连续帧：33ms 一次让主线程按时间重算位置。
-// 离开播放页后 tickDanmu 把 active 置 false，goroutine 自行退出。
+// 只有播放页需要连续帧：33ms 一次让主线程按时间重算位置。它的生命周期绑在播放页
+// 那个元素上（OnUnmount → stopDanmuLoop），离开页面或关窗时由框架收掉，不再靠
+// 轮询路由自己发现。
 //
 // 弹幕关着时不需要这个 ticker：tickDanmu 只维护画面上正在飞的那批
 // （见 tickDanmu），而右侧面板读的是 DanmuLog、由每帧的视图重建直接算出来，
 // 新弹幕到达本身就会经 runOnMain 触发一次重建——面板不要推动器。
-// 关掉时把 active 放下，正在跑的那个循环下一拍自己退出。
 func (a *App) ensureDanmuLoop() {
 	if a.Win == nil {
 		return
@@ -155,6 +160,10 @@ func (a *App) ensureDanmuLoop() {
 		}
 	}()
 }
+
+// stopDanmuLoop 停下推动器：把 active 放下，正在跑的循环下一拍退出。
+// 由播放页元素的 OnUnmount 调用——谁起的活谁收。
+func (a *App) stopDanmuLoop() { a.danmu.active.Store(false) }
 
 // danmuTime 是弹幕当前用的时间，第一次用到时用注入的时钟落一个初值。
 func (a *App) danmuTime() time.Time {
@@ -321,11 +330,6 @@ func danmuWidthEstimate(d danmuLine, font float32) float32 {
 
 // tickDanmu 在主线程推进弹幕：清掉过期的，按间隔补新的。
 func (a *App) tickDanmu() {
-	if a.Router.Path() != routePlayer {
-		a.danmu.active.Store(false)
-		return
-	}
-
 	a.advanceDanmuClock()
 	now := a.danmuTime()
 	live := a.Danmu[:0]

@@ -66,7 +66,7 @@ func (a *App) danmuFilterInput(c *ui.Context) {
 	field.Border(1, border)
 
 	field.Children(func() {
-		ui.Icon(c, iconFilter).FontSize(13).TextColor(ui.RGBA(255, 255, 255, 0.4))
+		ui.Icon(c, iconFilter).FontSize(13).TextColor(theme.White.Alpha(0.4))
 		ui.TextInputBase(c, &a.DanmuFilterQuery).FontSize(theme.TextXS).Grow(1).
 			Label("弹幕屏蔽词").
 			Placeholder("输入关键词，回车添加").
@@ -141,11 +141,11 @@ func (a *App) danmuFilterRow(c *ui.Context, i int, word string) {
 		del := ui.Box(c).Size(18, 18).Radius(9).Center().
 			Cursor(ui.CursorPointer).Label("删除屏蔽词 " + word)
 		del.Background(hoverSurface(del, "filter-del-bg", del.Hovered(), theme.MediaHair))
-		if del.Clicked() {
-			a.removeDanmuFilter(i)
-		}
+		// 推迟到本帧构建之后：删除会把这个切片的底层数组原地改短，而外层 range
+		// 正按它遍历——同帧会把后面的行漏画或画成下一条词。
+		del.OnClick(func() { a.removeDanmuFilter(i) })
 		del.Children(func() {
-			ui.Icon(c, iconX).FontSize(11).TextColor(ui.RGBA(255, 255, 255, 0.6))
+			ui.Icon(c, iconX).FontSize(11).TextColor(theme.White.Alpha(0.6))
 		})
 	})
 }

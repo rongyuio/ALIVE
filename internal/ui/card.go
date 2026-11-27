@@ -162,7 +162,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 					follow.Background(theme.Accent).Border(1, ui.Transparent)
 				} else {
 					follow.Background(hoverSurface(follow, "card-follow-bg",
-						follow.Hovered(), ui.RGBA(8, 9, 11, 0.90))).
+						follow.Hovered(), theme.OverlayInkStrong)).
 						Border(1, theme.White12)
 				}
 				if follow.Clicked() && onToggleFollow != nil {

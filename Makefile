@@ -35,7 +35,7 @@ ENV_TEST := set "APPDATA=$(TEST_HOME)\Roaming" && set "LOCALAPPDATA=$(TEST_HOME)
 PKG_DIRS := $(shell $(GO) list -f "{{.Dir}}" ./...)
 
 .DEFAULT_GOAL := help
-.PHONY: help build run dev dev-reset fmt fmt-check vet lint test check \
+.PHONY: help build run dev dev-reset fmt fmt-check vet lint test check agents-check \
         mock mock-offline mock-partial e2e deps check-mpv clean hooks tools
 
 help:
@@ -48,7 +48,8 @@ help:
 	@echo vet            go build + go vet + mygo vet
 	@echo test           go test -tags mock, sandboxed under .mygo\test-home
 	@echo lint           golangci-lint run
-	@echo check          fmt-check + vet + lint + test
+	@echo check          fmt-check + vet + lint + test + agents-check
+	@echo agents-check   AGENTS.md 的命令、路径、API、出处都对得上
 	@echo mock           run with the mock data layer (live + danmaku)
 	@echo mock-offline   mock data layer, offline state
 	@echo mock-partial   mock feed: a half-filled chunk at cursor 40
@@ -94,6 +95,11 @@ vet:
 lint:
 	golangci-lint run --build-tags mock ./...
 
+# AGENTS.md 自己的校验：正文提到的 make 目标真存在、路径和 API 真存在、
+# §出处 那张表的 file:line「原话」真成立、左栏没和正文走散。红了就是文档说了假话。
+agents-check:
+	$(GO) run ./tools/agentscheck
+
 # 每次从干净的用户目录起跑：上一轮写下的 state.json 会让断言读到上机的状态。
 test: check-mpv
 	@if exist "$(TEST_HOME)" rmdir /s /q "$(TEST_HOME)"
@@ -101,7 +107,7 @@ test: check-mpv
 	@mkdir "$(TEST_HOME)\Local\alive"
 	@$(ENV_TEST) $(GO) test -tags mock ./... -count=1
 
-check: fmt-check vet lint test
+check: fmt-check vet lint test agents-check
 
 # ---------------------------------------------------------------- 假数据层
 
@@ -143,3 +149,4 @@ hooks:
 
 tools:
 	$(GO) install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation
+

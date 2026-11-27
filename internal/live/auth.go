@@ -702,7 +702,9 @@ func platformDisplayName(p Platform) string {
 }
 
 // errSessionInvalid 是「会话无效」的哨兵错误，驱动用它区分网络错误。
-var errSessionInvalid = fmt.Errorf("会话无效")
+//
+// 对上层它是 ErrAuth：会话废了换流也没用，用户得重新登一次。
+var errSessionInvalid = fmt.Errorf("%w：会话无效", ErrAuth)
 
 // applyRenew 是一次续期的纯逻辑：调驱动、判断有无变化、拼新会话。
 //

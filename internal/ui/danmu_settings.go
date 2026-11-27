@@ -93,7 +93,7 @@ func danmuRow(c *ui.Context) ui.Element {
 
 func danmuLabel(c *ui.Context, text string) ui.Element {
 	return ui.Text(c, text).FontSize(theme.TextXS).
-		TextColor(ui.RGBA(255, 255, 255, danmuLabelAlp))
+		TextColor(theme.White.Alpha(danmuLabelAlp))
 }
 
 func (a *App) danmuColorRow(c *ui.Context, label string, color *ui.Color, open *bool) {
@@ -131,7 +131,7 @@ func (a *App) danmuColorWell(c *ui.Context, label string, color *ui.Color, open 
 	}
 	ui.PopoverBase(c, well, open, func(panel ui.Element) {
 		panel.Padding(14).Radius(theme.RadiusXL).
-			Background(ui.RGBA(17, 20, 28, 0.94)).
+			Background(theme.MediaPanel).
 			Border(1, theme.MediaHair).
 			Shadow(0, 18, 40, 0, theme.MediaShadow).
 			Margin(8, 0, 0, 0)
@@ -151,14 +151,14 @@ func danmuWellRing(c ui.Color) ui.Color {
 	lum := 0.2126*float32(c.R) + 0.7152*float32(c.G) + 0.0722*float32(c.B)
 	lum = lum*float32(c.A)/255 + 255*(1-float32(c.A)/255)
 	if lum > 140 {
-		return ui.RGBA(0, 0, 0, 0.30)
+		return theme.Black.Alpha(0.30)
 	}
 	return theme.MediaTrackFill
 }
 
 // danmuWellCheckers 是色块底下的灰白棋盘格。
 func danmuWellCheckers(p *ui.Painter, r ui.Rect) {
-	p.Fill(r, ui.RGB(255, 255, 255), theme.RadiusXS)
+	p.Fill(r, theme.White, theme.RadiusXS)
 	p.Clip(r, theme.RadiusXS, func() {
 		for y, row := r.Y, 0; y < r.Y+r.H; y, row = y+danmuWellChecker, row+1 {
 			for x, col := r.X, 0; x < r.X+r.W; x, col = x+danmuWellChecker, col+1 {
@@ -167,7 +167,7 @@ func danmuWellCheckers(p *ui.Painter, r ui.Rect) {
 				}
 				p.Fill(ui.Rect{X: x, Y: y,
 					W: min(danmuWellChecker, r.X+r.W-x),
-					H: min(danmuWellChecker, r.Y+r.H-y)}, ui.RGBA(0, 0, 0, 0.12), 0)
+					H: min(danmuWellChecker, r.Y+r.H-y)}, theme.Black.Alpha(0.12), 0)
 			}
 		}
 	})
@@ -197,7 +197,7 @@ func (a *App) danmuSwitchRow(c *ui.Context, label string, on *bool) {
 			x := thumb.AnimateTo("danmu-switch", target, theme.Toggle())
 			thumb.Absolute().Top(2).Left(x)
 			if *on {
-				thumb.Background(ui.Hex("#1a1a1a"))
+				thumb.Background(theme.MediaSwitchThumbOn)
 			} else {
 				thumb.Background(theme.MediaText)
 			}
@@ -242,7 +242,7 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, cur, lo, hi, st
 				X: r.X + r.W*frac - danmuThumbD/2,
 				Y: mid - danmuThumbD/2,
 				W: danmuThumbD, H: danmuThumbD,
-			}, ui.RGB(255, 255, 255), danmuThumbD/2)
+			}, theme.White, danmuThumbD/2)
 		})
 		if track.Changed() {
 			set(v)

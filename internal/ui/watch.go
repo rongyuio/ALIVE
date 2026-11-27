@@ -39,7 +39,7 @@ func (a *App) watchWall(c *ui.Context) {
 		a.watchEmpty(c)
 		return
 	}
-	box := ui.Box(c).Key("watch-wall").Grow(1).Clip()
+	box := ui.Box(c.Key("watch-wall")).Grow(1).Clip()
 	b := box.Bounds()
 	if b.W <= 0 || b.H <= 0 {
 		// Bounds 是上一帧的布局。第一帧先把容器交给布局，下一帧再摆格子。

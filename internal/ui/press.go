@@ -2,6 +2,8 @@ package ui
 
 import (
 	"github.com/egoist/mygo/ui"
+
+	"alive/internal/theme"
 )
 
 // 按下反馈。
@@ -29,5 +31,5 @@ func pressDim(c *ui.Context, down bool, radius float32) {
 		return
 	}
 	ui.Box(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).
-		Radius(radius).Background(ui.RGBA(0, 0, 0, pressDimAlpha)).PassThrough()
+		Radius(radius).Background(theme.Black.Alpha(pressDimAlpha)).PassThrough()
 }

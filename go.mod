@@ -44,6 +44,7 @@ require (
 
 tool github.com/egoist/mygo/cmd/mygo
 
-// 本地一份 mygo：只为了把 internal/media 与 internal/scene 的引擎契约导出，
-// 好让应用自己实现解码引擎交给 ui.NewEngineVideoPlayer。上游代码一行未改。
+// 本地一份 mygo，是与上游的差：导出引擎契约（media/、scene/、ui/engine_export.go），
+// 加 GPU 帧回读（ui/record.go、d3d11/capture.go），加 mpv 播放引擎（plugins/video），
+// 加安装器文案本地化（cmd/mygo）。逐文件的差、原因和升级办法见 doc/reference/mygo.md。
 replace github.com/egoist/mygo => ./third_party/mygo

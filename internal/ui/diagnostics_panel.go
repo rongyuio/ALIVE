@@ -27,7 +27,7 @@ const profileWindow = 30 * time.Second
 
 // diagFirstFrameSlowMS 是首帧 p95 标红的门槛。
 //
-// 出处是 doc/reference/measurements.md：同一台机器上 B 站 545068 走正常路径
+// 实测得来的：同一台机器上 B 站 545068 走正常路径
 // 首帧 1666ms，而改造前被判为「慢」的那条路是 3648ms。3000ms 落在这两点之间：
 // 正常路径够不着，坏路径一定跨过去。
 const diagFirstFrameSlowMS int64 = 3000
