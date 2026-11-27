@@ -11,34 +11,34 @@ import (
 
 // 表面过渡：一块画面在两个表面之间飞。
 //
-// 只有三种落点需要飞（见 surface.go 的 picture）：
+// 只剩两种落点走这里（见 surface.go 的 picture）：
 //
 //	卡片 → 播放页   封面从卡片长成舞台，落地后淡出露出画面
 //	播放页 → 卡片   画面从舞台缩回卡片
-//	播放页 → 岛     画面从舞台缩进岛（收起 / 离开播放页去别处）
+//
+// 墙格和岛都**不在这里**：它们和播放页共用一块真画面，走 MyGo 的元素级
+// Match + Fly（`ui.ElementTransition{Match, Fly}`，见 transitions.md 的
+// Shared elements）——两端各挂一次身份，交叉淡化、可打断、reduced motion
+// 都由框架负责，不在这里手搓第二份画面。
+//
+// 卡片为什么留着：卡片上是封面，舞台上是视频，两端的"内容"根本不同一种，
+// 共享身份做不出「封面长成画面」，而 Fly 只能搬元素、搬不了内容。这一块
+// 飞行块画的正是那件事本身（有活画面用活画面，否则封面）。
 //
 // 进播放页的飞行**恒安排**（只要这一间在来源页上有几何）。这一间此刻有没有
-// 在出图只决定飞行块里画什么：有活画面画活画面，没有画封面。2026-11-25 那次
-// 报障（「点岛放大直播间，过程中显示封面然后变成直播画面」）的根因是飞的是
-// 封面，不是"飞"——按"有没有引擎"分叉成"飞 / 硬切"会让同一个操作时有时无。
-// 墙格和播放页之间不在这里：两边画的是同一个播放器、同一帧画面，走 MyGo 的
-// Match（见 watch.go / player.go）。其余组合（没有画面可接）硬切。
+// 在出图只决定飞行块里画什么。2026-11-25 那次报障（「点岛放大直播间，过程中
+// 显示封面然后变成直播画面」）的根因是飞的是封面，不是"飞"——按"有没有引擎"
+// 分叉成"飞 / 硬切"会让同一个操作时有时无。岛那一路现在改走元素 Match 之后，
+// 这条分叉在岛上也消失了。
 //
 // 为什么不用 Router 的交叉淡化：它把两页同时按透明度混在一起。播放页是一整块
 // 不透明的画面，列表页是浅色内容，中间那几帧就是一层灰雾——视频从卡片后面
 // 透出来，控制条的深色长条浮在卡片上（2026-11-24 实测）。所以路由立刻切走，
 // 目标页从第一帧起就是清楚的，只有这一块画面在飞。
-//
-// 飞行画在岛之前（Shell 里先 surfaceFlightView 再 Island）：落点在岛的位置，
-// 岛盖住它的最后一段。
 
 const (
 	// surfaceFlightDur 和表面之间的过渡同一档。再长，人已经在操作目标页了。
 	surfaceFlightDur = theme.MotionSurface
-	// surfaceFlightEndW/H 是岛这个落点的大小：比岛（IslandW 100 × IslandH 38）
-	// 小一圈，保证整块缩进岛后面，岛沿不会露出一个角。
-	surfaceFlightEndW float32 = 80
-	surfaceFlightEndH float32 = 30
 )
 
 // flightKind 是飞行的方向：决定内容画什么、要不要给目标页压暗。
@@ -73,10 +73,10 @@ type surfaceFlight struct {
 	start   time.Time
 }
 
-// startEnterFlight 安排「进播放页」的那一块画面。src 必须是 pictureCard 或
-// pictureIsland；墙格走 Match，没有画面可接就不飞。
+// startEnterFlight 安排「进播放页」的那一块画面。src 必须是 pictureCard；
+// 墙格和岛都走元素级的 Match + Fly，没有画面可接就不飞。
 func (a *App) startEnterFlight(s *roomSession, src picture, pixels transitionPixels) {
-	if s == nil || (src != pictureCard && src != pictureIsland) {
+	if s == nil || src != pictureCard {
 		return
 	}
 	f := &surfaceFlight{
@@ -93,11 +93,10 @@ func (a *App) startEnterFlight(s *roomSession, src picture, pixels transitionPix
 	a.surfaceFlight = f
 }
 
-// startLeaveFlight 安排「离开播放页」的那一块画面。to 必须是 pictureCard 或
-// pictureIsland；墙格走 Match，结束且没有画面可接就不飞。page 是落点所属
-// 的那一页；岛传空（全局落点，不随换页作废）。
+// startLeaveFlight 安排「离开播放页」的那一块画面。to 必须是 pictureCard；
+// 墙格和岛都走元素级的 Match + Fly。page 是落点所属的那一页。
 func (a *App) startLeaveFlight(s *roomSession, to picture, toRect ui.Rect, page string, pixels transitionPixels) {
-	if s == nil || (to != pictureCard && to != pictureIsland) {
+	if s == nil || to != pictureCard {
 		return
 	}
 	a.surfaceFlight = &surfaceFlight{
@@ -117,16 +116,6 @@ func (a *App) surfaceFlightPlayer(key string) *ui.VideoPlayer {
 		return s.player
 	}
 	return nil
-}
-
-// islandFlightRect 是岛这个落点：居中、藏在岛后面。
-func (a *App) islandFlightRect(c *ui.Context) ui.Rect {
-	winW, _ := c.Size()
-	return ui.Rect{
-		X: (winW - surfaceFlightEndW) / 2,
-		Y: islandTop + (theme.IslandH-surfaceFlightEndH)/2,
-		W: surfaceFlightEndW, H: surfaceFlightEndH,
-	}
 }
 
 // stageRect 是播放页舞台在窗口里的矩形。
@@ -168,19 +157,10 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 		f.started = true
 		f.start = c.Now()
 		if f.fromRect.W <= 0 || f.fromRect.H <= 0 {
-			if f.from == pictureIsland {
-				f.fromRect = a.islandFlightRect(c)
-			} else {
-				f.fromRect = a.stageRect(c)
-			}
+			f.fromRect = a.stageRect(c)
 		}
 		if f.toRect.W <= 0 || f.toRect.H <= 0 {
-			switch f.to {
-			case picturePlayer:
-				f.toRect = a.stageRect(c)
-			case pictureIsland:
-				f.toRect = a.islandFlightRect(c)
-			}
+			f.toRect = a.stageRect(c)
 		}
 		if f.fromRect.W <= 0 || f.toRect.W <= 0 {
 			a.surfaceFlight = nil

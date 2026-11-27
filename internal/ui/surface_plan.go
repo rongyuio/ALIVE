@@ -26,6 +26,13 @@ const (
 	transitionCut transitionKind = iota
 	transitionFly
 	transitionMatch
+	// transitionElement 是元素级 Match + Fly，页面硬切。
+	//
+	// 和 transitionMatch 的区别只在 Router：那一个让 Router 也做交叉淡化，
+	// 适合两端都是暗色画面的墙格 ↔ 播放页。岛 ↔ 播放页不能这么做——来源页
+	// 是浅色列表，交叉淡化会糊成一层灰雾（2026-11-24 实测）。所以页面硬切，
+	// 只让**元素**带着共享身份飞。
+	transitionElement
 )
 
 // transitionPixels 是飞行块里该画什么。
@@ -52,6 +59,11 @@ func planTransition(from, to picture, fromOK, toOK, live bool) transitionPlan {
 		return transitionPlan{kind: transitionCut, reason: "same-surface"}
 	case from == pictureTile && to == picturePlayer, from == picturePlayer && to == pictureTile:
 		return transitionPlan{kind: transitionMatch, pixels: pixelsLive}
+	case from == pictureIsland && to == picturePlayer, from == picturePlayer && to == pictureIsland:
+		// 岛与播放页共用一块画面：岛的本体和舞台挂同一个 surfaceMatch，
+		// 由 MyGo 的 Fly 飞，页面硬切。不再走手搓的像素飞行块——那块是同一个
+		// player 的第二个 ui.Video，一帧里会画出两份画面（见 known-debt.md）。
+		return transitionPlan{kind: transitionElement, pixels: pixelsLive}
 	}
 	p := pixelsCover
 	if live {

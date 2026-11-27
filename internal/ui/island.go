@@ -140,6 +140,18 @@ func (a *App) Island(c *ui.Context) {
 	island := ui.Box(c.Key("island")).Label("灵动岛").Absolute().Top(islandTop).
 		Height(theme.IslandH).Radius(theme.RadiusFull).DragWindow()
 
+	// 岛就是这一间的画面在「没有全屏视图」时的落点，和播放页的舞台共用
+	// 一个 surfaceMatch：进 / 出播放页时由 MyGo 的 Fly 把它长成 / 缩回整块
+	// 舞台（transitions.md 的 Shared elements）。
+	//
+	// 只在没有别人替它持有身份时挂：播放页上身份在舞台身上，墙上在格子里。
+	// 同一帧里两个元素带同一个 Match 会把后建的那个冻在源尺寸——探针实测过。
+	if key := a.islandMatchKey(open); key != "" {
+		island.Transition(ui.ElementTransition{
+			Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
+		})
+	}
+
 	// 弹簧跑宽度：过冲是超出目标（岛比目标宽一点再回来），内容居中，
 	// 裁不到任何东西，回弹正是「灵动」的来源。
 	w := island.AnimateTo("island-w", targetW, ui.Snappy)
@@ -177,6 +189,30 @@ func (a *App) Island(c *ui.Context) {
 			}
 		})
 	})
+}
+
+// islandMatchKey 是岛这一刻该带的 surfaceMatch 身份；空表示不挂。
+//
+// 判据只有一条，就是画面归属本身：**这一间的画面此刻归岛，岛才持有身份**
+// （pictureNow 返回 pictureIsland）。别在这里另写一份优先级判断——写一份就
+// 会和 pictureAt 走散。上一版手工判了"不在播放页、不在墙上"，漏掉了卡片那
+// 一档：首页上有这一间的卡片时画面归卡片，岛却仍然挂着身份，于是点卡片进
+// 播放页时舞台从**岛**的矩形起飞（而不是从卡片），飞行块和岛同时动。
+//
+// 刚改过窗口尺寸的几百毫秒里也不挂：带 Match 的元素在 resize 时会做尺寸
+// 动画，岛每帧弹一下就是用户说的「最大化会闪」（同 watch.go 的 matchable）。
+func (a *App) islandMatchKey(open bool) string {
+	if !open || !a.matchable() {
+		return ""
+	}
+	key := a.focusKey()
+	if key == "" {
+		return ""
+	}
+	if a.pictureNow(key) != pictureIsland {
+		return ""
+	}
+	return key
 }
 
 // enterPlayerIsland 记下「现在在哪个直播间」。

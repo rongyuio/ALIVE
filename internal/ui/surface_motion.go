@@ -216,6 +216,11 @@ func (a *App) enterPlayer(s *roomSession, src picture) {
 	case transitionMatch:
 		a.Router.Transition = ui.TransitionMatch
 		a.routeTransitionUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
+	case transitionElement:
+		// 岛 ↔ 播放页：共享身份飞，页面硬切（来源页是浅色列表，交叉淡化会糊）。
+		// routeTransitionUntil 让两端在这段窗口里都保住身份，即使刚改过窗口尺寸。
+		a.Router.Transition = ui.TransitionNone
+		a.routeTransitionUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
 	case transitionFly:
 		a.startEnterFlight(s, src, plan.pixels)
 		a.Router.Transition = ui.TransitionNone
@@ -348,13 +353,16 @@ func (a *App) leavePlayerTo(op leaveOp, destRoute string, destSection int, actio
 		a.exitMatchKey = key
 		a.exitAction = action
 		a.invalidateWindows()
+	case transitionElement:
+		// 缩回岛：舞台和岛共用一个身份，页面硬切。playerExitUntil 让引擎
+		// 留到演完再换尺寸，否则缩到一半就变糊。
+		a.Router.Transition = ui.TransitionNone
+		a.routeTransitionUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
+		a.playerExitUntil = a.routeTransitionUntil
+		action()
 	case transitionFly:
-		if target == pictureIsland {
-			a.startLeaveFlight(s, target, ui.Rect{}, "", plan.pixels)
-		} else {
-			a.startLeaveFlight(s, target, a.cardRectFor(key, destRoute, destSection),
-				pageKey(a.Platform, destRoute, destSection), plan.pixels)
-		}
+		a.startLeaveFlight(s, target, a.cardRectFor(key, destRoute, destSection),
+			pageKey(a.Platform, destRoute, destSection), plan.pixels)
 		a.playerExitUntil = a.now().Add(surfaceFlightDur + theme.MotionSlack)
 		a.Router.Transition = ui.TransitionNone
 		action()

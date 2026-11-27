@@ -9,6 +9,13 @@
 包级构建期标记（改成每个环自己 `Loop`）、切平台等首屏的跨帧时间戳比较（改成
 `c.After` 计时器计数）、观测墙等第一帧的 `c.After(1ms)`（改成 `c.Invalidate`）。
 
+表面过渡那一轮也清了：**岛 ↔ 播放页原来手搓的那块像素飞行块已经删掉**，改成两端各挂一次
+`ui.ElementTransition{Match, Fly}`（岛的本体在 [island.go](../internal/ui/island.go) 的
+`islandMatchKey`，舞台在 [player.go](../internal/ui/player.go)）。原来那块飞行块是同一个
+`*ui.VideoPlayer` 的第二个 `ui.Video`，一帧里会画出两份同一路画面——用户报的「一个直播间
+同时出现放大后的终态和过渡态」就是这个。现在只剩卡片 ↔ 播放页还走飞行块（两端内容不同种：
+封面 vs 视频，`Fly` 搬不了内容）。
+
 ## 还没改对的
 
 | # | 位置 | 事实 | 怎么处置 |
