@@ -622,7 +622,9 @@ func (a *App) bufferingPill(c *ui.Context) {
 // noticePill 是降档一类临时提示：底部居中的小胶囊，几秒后自己消失。
 // 不放在错误层里——画面还在正常播，只是平台的档位和点选的不一样。
 func (a *App) noticePill(c *ui.Context) {
-	now := time.Now()
+	// 视图时钟，不是墙钟：noticeUntil 由 notifyPlayback 按帧钟写，
+	// c.After 排的也是帧钟。三处必须同一个时基，否则 Tester 里推不动。
+	now := c.Now()
 	if !a.media.noticeActive(now) {
 		return
 	}

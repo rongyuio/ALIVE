@@ -193,8 +193,10 @@ func (a *App) surfaceFlightView(c *ui.Context) {
 
 	// 底色必须是舞台那一种黑，不能用岛的墨色：飞行块从舞台矩形起飞，
 	// 起飞第一帧要和舞台最后一帧逐像素相同（黑边区尤其明显）。底图本身
-	// 是半透明的模糊层，底下的 1 级色差会透过来——TestLeaveFlightStartsAsTheStage
-	// 就是拿这个当判据。
+	// 是半透明的模糊层，底下的 1 级色差会透过来。
+	//
+	// 判据在 TestCardFlightGrowsToStageAndEnds：它拿起飞帧和舞台帧的同一
+	// 个像素比。换底色之前先跑它。
 	box := ui.Box(c).Absolute().Left(x).Top(y).Width(w).Height(h).
 		Radius(theme.RadiusXL).Clip().Background(theme.Black).
 		IgnoreInput(true).Label("表面过渡中的画面")

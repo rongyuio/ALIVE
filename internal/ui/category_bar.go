@@ -22,10 +22,6 @@ const (
 	chipGap  float32 = 8
 	chipMaxW float32 = 200
 
-	subChipH    float32 = 30
-	subChipPadH float32 = 13
-	subChipMaxW float32 = 180
-
 	catSearchH    float32 = 34
 	catSearchW    float32 = 176
 	catSearchWide float32 = 220
@@ -74,48 +70,28 @@ func (a *App) currentCategory() string {
 	return cats[a.CategoryIndex]
 }
 
-// currentSubs 是当前二级分区下的三级分区。
-//
-// 数据源给了才有：真实模式（internal/live）目前还没有三级分区，字段为空，
-// 控件自然不出现。不按平台名硬判断「斗鱼才有三级」，那种写法在接入其他
-// 平台的多级分区时会立刻失效。
-func (a *App) currentSubs() []string {
-	return a.subCategories[a.currentCategory()]
-}
-
-// currentSub 返回选中的三级分区；空串表示「全部」。
-func (a *App) currentSub() string {
-	subs := a.currentSubs()
-	if a.SubCatIndex < 0 || a.SubCatIndex >= len(subs) {
-		return ""
-	}
-	return subs[a.SubCatIndex]
-}
-
 func (a *App) selectGroup(i int) {
 	if i < 0 || i >= len(a.Groups) {
 		return
 	}
-	// 点的就是当前这一组、而且已经停在它的第一个二级/「全部」上：这是一次
+	// 点的就是当前这一组、而且已经停在它的第一个二级分区上：这是一次
 	// 空操作。仍然换代会把内容层整棵子树重建一遍（换 key + 重拉列表）——
 	// 表现是「同一个分区点一下，内容重铺/滚动位置跳」，而且刚按下的卡片
-	// 会和松手时的不是同一个元素，点击就此丢掉。三级 chip 早就有这条保护
-	// （subChip 里的 `i != a.SubCatIndex`），一级/二级漏了。
-	if i == a.GroupIndex && a.CategoryIndex == 0 && a.SubCatIndex < 0 {
+	// 会和松手时的不是同一个元素，点击就此丢掉。
+	if i == a.GroupIndex && a.CategoryIndex == 0 {
 		a.MoreOpen = false
 		return
 	}
 	a.navFlip(&a.navSeq)
-	// 切一级分区时自动选中它的第一个二级分区，三级回到「全部」
+	// 切一级分区时自动选中它的第一个二级分区。
 	a.GroupIndex = i
 	a.CategoryIndex = 0
-	a.SubCatIndex = -1
 	a.MoreOpen = false
 	a.reloadRooms()
 }
 
 func (a *App) selectCategory(i int) {
-	if i == a.CategoryIndex && a.SubCatIndex < 0 {
+	if i == a.CategoryIndex {
 		// 同上：点已选中的二级分区是空操作，不能重建内容层。
 		a.MoreOpen = false
 		a.CategoryQuery = ""
@@ -124,7 +100,6 @@ func (a *App) selectCategory(i int) {
 	}
 	a.navFlip(&a.navSeq)
 	a.CategoryIndex = i
-	a.SubCatIndex = -1
 	a.MoreOpen = false
 	a.CategoryQuery = ""
 	a.CategorySearchOpen = false
@@ -216,9 +191,6 @@ func (a *App) categoryBar(c *ui.Context) {
 	panel.Children(func() {
 		a.primaryRow(c)
 		a.secondaryRow(c)
-		if len(a.currentSubs()) > 0 {
-			a.tertiaryRow(c)
-		}
 	})
 }
 
@@ -294,17 +266,25 @@ func (a *App) categorySearch(c *ui.Context) {
 		Radius(theme.RadiusFull).Background(theme.FillQuaternary).
 		Center().Cursor(ui.CursorText).Label("分区搜索框")
 
-	// 输入框一拿到焦点就展开到 220，不等用户开始打字。
+	// 输入框拿到焦点、或者用户又改了词，就要展开到 220 并给出结果面板。
 	//
-	// 只在「焦点刚进来」这个边沿写一次，不能每帧按 FocusWithin 无条件写：
-	// 写在渲染路径里等于每次 build 都重开，Esc / Enter 关掉的下一帧就被翻回来。
-	// 而且 Handle.CancelFocus 只清「待处理的聚焦请求」，放不掉已经生效的焦点
-	// （third_party/mygo/ui/ref.go），所以关掉之后必须靠这个边沿而不是靠清焦点。
+	// 两个条件缺一不可：
+	//
+	//   - 焦点进来这个**边沿**：不能每帧按 FocusWithin 无条件写，写在渲染
+	//     路径里等于每次 build 都重开，Esc / Enter 关掉的下一帧就被翻回来。
+	//   - 查询词变了：Esc 收起面板、选中一条结果之后焦点**还在框里**
+	//     （Handle.CancelFocus 只清「待处理的聚焦请求」，放不掉已经生效的
+	//     焦点，third_party/mygo/ui/ref.go），边沿永远不会再来。只认边沿的话
+	//     「Esc 关掉后再打字」和「点了一条结果后接着改词」这两种最常见的连击
+	//     都不出面板——输入框收窄、一个字不显示结果。
+	//
+	// 只在词非空时按"变了"重开：Esc 会把词清成空串，那一步不能算用户又想搜。
 	focused := field.FocusWithin()
-	if focused && !a.catSearchFocused {
+	if focused && (!a.catSearchFocused || (a.CategoryQuery != "" && a.CategoryQuery != a.catSearchQuery)) {
 		a.CategorySearchOpen = true
 	}
 	a.catSearchFocused = focused
+	a.catSearchQuery = a.CategoryQuery
 	width := catSearchW
 	if a.CategorySearchOpen || a.CategoryQuery != "" {
 		width = catSearchWide
@@ -442,7 +422,7 @@ func (a *App) categoryHits() []categoryHit {
 }
 
 func (a *App) pickCategoryHit(h categoryHit) {
-	if h.GroupIndex == a.GroupIndex && h.CategoryIndex == a.CategoryIndex && a.SubCatIndex < 0 {
+	if h.GroupIndex == a.GroupIndex && h.CategoryIndex == a.CategoryIndex {
 		// 搜到的就是当前这一档：只收掉搜索，不换代。
 		a.MoreOpen = false
 		a.CategoryQuery = ""
@@ -452,7 +432,6 @@ func (a *App) pickCategoryHit(h categoryHit) {
 	a.navFlip(&a.navSeq)
 	a.GroupIndex = h.GroupIndex
 	a.CategoryIndex = h.CategoryIndex
-	a.SubCatIndex = -1
 	a.MoreOpen = false
 	a.CategoryQuery = ""
 	a.CategorySearchOpen = false
@@ -700,64 +679,6 @@ func (a *App) subscribeButton(c *ui.Context) {
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(13).TextColor(col)
 		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(600).TextColor(col)
-	})
-}
-
-// tertiaryRow 是三级分区行（仅斗鱼）：一条上分隔线 + 一行 chip，
-// 第一个固定是「全部」（= 二级分区维度）。
-func (a *App) tertiaryRow(c *ui.Context) {
-	// 第一项永远存在，所以这里没有"没有选中"的中间态：SubCatIndex 的
-	// -1（全部）正好落在第 0 格。
-	names := append([]string{"全部"}, a.currentSubs()...)
-	box := measureRow(c, names, theme.TextXS, labelWeight, subChipPadH, 8, subChipMaxW)
-
-	ui.Column(c).Gap(10).Children(func() {
-		ui.Box(c).Height(1).Background(theme.Border)
-		ui.ScrollHorizontal(c).Scrollbars(false).Children(func() {
-			ui.Row(c).Gap(8).Children(func() {
-				slider(c, "sub-slide", box, a.SubCatIndex+1, subChipH, theme.RadiusXS, theme.AccentSoft)
-				a.subChip(c, -1, names[0], box.w[0])
-				for i, name := range a.currentSubs() {
-					a.subChip(c, i, name, box.w[i+1])
-				}
-			})
-		})
-	})
-}
-
-func (a *App) subChip(c *ui.Context, i int, name string, w float32) {
-	// SubCatIndex 的 -1 表示「全部」，正好对应第一个 chip
-	active := i == a.SubCatIndex || (i == -1 && a.SubCatIndex < 0)
-	chip := ui.Box(c).Height(subChipH).
-		Padding(0, subChipPadH, 0, subChipPadH).MaxWidth(subChipMaxW).
-		Radius(theme.RadiusXS).Center().Cursor(ui.CursorPointer).
-		Label("子分类:" + name)
-	hovered := chip.Hovered()
-	if !active {
-		chip.Background(hoverSurface(chip, "sub-bg", hovered, theme.FillQuaternary))
-	}
-	if chip.Clicked() {
-		if i != a.SubCatIndex {
-			// 三级也是换了一份内容，同样换代。
-			a.navFlip(&a.navSeq)
-			a.SubCatIndex = i
-			// 三级分区是列表的第三维，换了就要重新拉（feedKey 里带着它）
-			a.reloadRooms()
-		}
-	}
-	chip.Children(func() {
-		txt := ui.Text(c, name).FontSize(theme.TextXS).SingleLine()
-		switch {
-		case active:
-			txt.FontWeight(600).
-				TextColor(txt.AnimateColor("sub-ink", theme.AccentInk, theme.Slide()))
-		case hovered:
-			txt.FontWeight(500).
-				TextColor(txt.AnimateColor("sub-ink", theme.TextPrimary, theme.Slide()))
-		default:
-			txt.FontWeight(500).
-				TextColor(txt.AnimateColor("sub-ink", theme.TextTertiary, theme.Slide()))
-		}
 	})
 }
 

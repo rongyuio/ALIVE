@@ -422,7 +422,21 @@ func (a *App) danmuLayer(c *ui.Context) {
 			// 否则用设置里的字色。
 			fg := danmuColor(d, a.DanmuColorful, a.DanmuColor)
 			x := stageW - p*(stageW+tw)
-			y := float32((d.Track%tracks)*int(danmuChannel)) + 16
+			// Track 在入队时按**当时**的轨道数定死。窗口变小之后轨道数变少，
+			// 原来那颗 Track 可能已经超出可见范围。
+			//
+			// 这里钳到最后一轨，**不能取模**：取模会把两条不同轨道的弹幕映射到
+			// 同一条上（Track=7 和 Track=2 在 5 轨时都落在 2），屏幕上短暂重叠，
+			// 而且正好破坏了「Track 定死之后不会跳轨道」这件事本身。钳位则是
+			// 「宁叠不丢」那条既定取舍：多出来的挤在最后一轨，看得见、不乱跳。
+			track := d.Track
+			if track >= tracks {
+				track = tracks - 1
+			}
+			if track < 0 {
+				track = 0
+			}
+			y := float32(track*int(danmuChannel)) + 16
 
 			if d.imageOnly() {
 				if bmp, wait, anim := media.Default.EmoteFrame(d.Emotes[0].URL, imgW, c.Now()); bmp != nil {

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -18,7 +17,6 @@ type Streamer struct {
 	Name     string
 	Title    string
 	Category string
-	Sub      string // 三级分区（斗鱼才有），空串表示「全部」
 	Viewers  int
 	Live     bool
 	Hue      float32 // 封面渐变的色相种子，让每张卡有各自的气质
@@ -273,6 +271,3 @@ func viewerText(n int) string {
 	}
 	return fmt.Sprint(n)
 }
-
-// 让编译器记住 math 可能被后续的动画曲线用到。
-var _ = math.Round

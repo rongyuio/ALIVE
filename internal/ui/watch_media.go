@@ -118,8 +118,7 @@ type wallMedia struct {
 	// 直播重连里最贵的一段不是网络，是重新问平台要地址；地址还在有效期
 	// 内就直接 loadfile。只留元数据，不留引擎、不留连接。
 	resume map[string]wallResume
-	// tickPending 表示墙的心跳定时器已经排上，避免每帧重复排。
-	tickPending bool
+
 	// lastProbe 是上一次离线探测的时刻。一排离线格同时到点时错开，别让
 	// 一次 tick 把整个平台问一遍。
 	lastProbe time.Time
@@ -258,7 +257,6 @@ type watchRecord struct {
 	Name      string  `json:"name"`
 	Title     string  `json:"title,omitempty"`
 	Category  string  `json:"category,omitempty"`
-	Sub       string  `json:"sub,omitempty"`
 	Viewers   int     `json:"viewers,omitempty"`
 	Live      bool    `json:"live,omitempty"`
 	Hue       float32 `json:"hue,omitempty"`
@@ -276,7 +274,6 @@ func (a *App) watchRecordOf(s Streamer) watchRecord {
 		Name:      s.Name,
 		Title:     s.Title,
 		Category:  s.Category,
-		Sub:       s.Sub,
 		Viewers:   s.Viewers,
 		Live:      s.Live,
 		Hue:       s.Hue,
@@ -300,7 +297,6 @@ func (r watchRecord) streamer() Streamer {
 		Name:      r.Name,
 		Title:     r.Title,
 		Category:  r.Category,
-		Sub:       r.Sub,
 		Viewers:   r.Viewers,
 		Live:      r.Live,
 		Hue:       r.Hue,
@@ -1116,7 +1112,19 @@ func (a *App) watchTick(now time.Time) {
 		// 焦点由媒体层驱动（播放页的首帧/断流/换地址在 trackFirstFrame，
 		// 后台收听的音频时钟在 trackBackground）。这里再管一遍就是第二套
 		// 看门狗：同一条断流会被两边各重连一次。
-		if s == a.focus {
+		//
+		// **但媒体层只在「有一轮取流在跑」时才算数**：mediaTick 在
+		// eng()==nil 时直接返回，trackFirstFrame 也一样。于是「焦点会话
+		// 还没有引擎、loading 为真、媒体层又没有活轮次（media.ctx 为 nil）」
+		// 这一段两边都不管：墙因为它是焦点跳过，媒体层因为没有引擎跳过。
+		//
+		// 这是可达的：墙上某一格正在取流（openNative 用 context.Background，
+		// 没有超时），用户点它进播放页——ensureFocusMedia 见 s.loading 就
+		// 早早返回，不接这一路。那一下挂住，播放页就永久停在「正在拉取直播
+		// 流…」，而那个 spinner 没有重试按钮，用户没有出路。
+		//
+		// 所以焦点会话在**没有活轮次**时交给墙层看门狗，有轮次时仍然让媒体层。
+		if s == a.focus && a.media.ctx != nil {
 			continue
 		}
 		a.forwardWallMpv(s)

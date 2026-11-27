@@ -28,10 +28,12 @@ func TestCollapsedRoomCardClickDoesNotFlyTheIsland(t *testing.T) {
 
 	tt := ui.NewTester(a.Shell, 1280, 800)
 	tt.Frame()
-	// 窗口早已稳定。第一帧的 noteWindowSize 会把 resizedAt 拨到此刻，而
-	// matchable 按挂钟挡掉 resize 后 400ms 内的 Match——不摆平它，岛压根
-	// 不会挂身份，这个 bug 在测试里就复现不出来（真窗口里早就是稳定态）。
-	a.resizedAt = time.Now().Add(-time.Hour)
+	// 窗口早已稳定：把观测点推到 400ms 窗口之外。
+	//
+	// 这里用 `tt.Advance` 就够了——resizedAt 和 matchable() 用的是同一个帧钟
+	// （见 surface_motion.go 的 noteWindowSize）。以前 matchable 按挂钟判，
+	// Tester 推不动它，只能写 `time.Now().Add(-time.Hour)` 手工摆平；那正是
+	// 「构建路径读挂钟」这条债的证据。
 	tt.Advance(600 * time.Millisecond)
 	tt.Frame()
 

@@ -345,7 +345,17 @@ func (a *App) leavePlayerTo(op leaveOp, destRoute string, destSection int, actio
 	case transitionMatch:
 		// 舞台和格子画的是同一个播放器：Match 让它连续缩回去。舞台这一帧
 		// 身上可能没有身份（刚改过窗口尺寸），先补一拍，两帧后再换路由。
+		//
+		// 已经在等第二拍时又来一次「离开播放页」，**不能整条吞掉**：
+		// Esc（收起）之后紧接着点岛上的 X（真关）是最常见的连击，而 arm 到
+		// 执行要跨两趟构建（见 tickExitArm），一帧超过 16ms 的机器上这个
+		// 窗口就有 100ms+，用手指打得到。吞掉的结果是 X 消失、焦点还留着、
+		// 这一路继续出声——用户以为关掉了。
+		//
+		// 换成「替换待办」：最新一次意图覆盖前一次。key 是同一个会话，
+		// exitMatchKey 不用动；只换要执行的那个动作。
 		if a.exitArm {
+			a.exitAction = action
 			return
 		}
 		a.exitArm = true
@@ -521,7 +531,7 @@ func (a *App) backgroundEnter() {
 // 刚改过窗口尺寸的一小段时间里不能：带 Match 的元素在 resize 时会做尺寸
 // 动画，整墙的格子会一帧帧弹过去、视频每帧重新适配（用户报的「最大化会闪」）。
 func (a *App) matchable() bool {
-	return time.Since(a.resizedAt) > matchSettleAfter
+	return a.now().Sub(a.resizedAt) > matchSettleAfter
 }
 
 // matchSettleAfter 是窗口改尺寸之后多久才重新挂 Match。
@@ -537,6 +547,9 @@ func (a *App) noteWindowSize(w, h int) {
 	}
 	if a.lastWindowW != w || a.lastWindowH != h {
 		a.lastWindowW, a.lastWindowH = w, h
-		a.resizedAt = time.Now()
+		// 帧钟，不是墙钟：resizedAt 和 matchable() 必须同一个时基。用墙钟写、
+		// 帧钟读的话，Tester 里 tt.Advance 推不动它——island_card_bug_test.go
+		// 就是被这件事逼着用 time.Now().Add(-time.Hour) 手工拨的。
+		a.resizedAt = a.now()
 	}
 }

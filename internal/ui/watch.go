@@ -50,8 +50,7 @@ func (a *App) watchWall(c *ui.Context) {
 
 	items := make([]watch.Item, len(rooms))
 	for i, room := range rooms {
-		key := watchKey(room)
-		items[i] = watch.Item{Key: key, Aspect: a.watchAspect(key)}
+		items[i] = watch.Item{Key: watchKey(room), Aspect: watch.DefaultAspect}
 	}
 	rects := watch.Layout(items, b.W, b.H, theme.GridGap)
 	rm := make(map[string]watch.Rect, len(rects))
@@ -80,15 +79,13 @@ func (a *App) watchWall(c *ui.Context) {
 	})
 }
 
-// watchAspect 是观测墙统一的格子比例。
+// 观测墙统一 16:9 的格子比例。
 //
-// 墙上不再按每一路源比例排版：平台声明值并不可靠（同一批 B 站房间会给出
-// 4:3，实际是 16:9），混排会把一面墙切成高低不齐的几条。统一 16:9，
-// 视频用 Contain 放进去：16:9 的流正好铺满，竖屏/4:3 左右留黑，不裁剪。
-func (a *App) watchAspect(key string) float32 {
-	_ = key
-	return watch.DefaultAspect
-}
+// 墙上不按每一路源比例排版：平台声明值并不可靠（同一批 B 站房间会给出
+// 4:3，实际是 16:9），混排会把一面墙切成高低不齐的几条。统一 16:9，视频
+// 用 Contain 放进去：16:9 的流正好铺满，竖屏/4:3 左右留黑，不裁剪。
+// 比例只有一个值，所以直接用 watch.DefaultAspect，没有 per-room 的入口——
+// 留一个收 key 却忽略它的函数，只会让人以为"墙上按房间算比例"。
 
 func watchTileLabel(s Streamer) string {
 	return "观测:" + platformLabel(s.Platform) + " " + s.Name + " " + s.RoomID
@@ -590,10 +587,16 @@ func (a *App) watchEmpty(c *ui.Context) {
 	})
 }
 
+// watchEmptyBtn 是空态里的次要按钮（「去关注列表」「去首页」这类）。
+//
+// 常态底色必须从 hoverSurfaceRest 传进去：Background 是赋值不是叠加，
+// 先 Background(FillTertiary) 再 Background(hoverSurface(...)) 会把常态
+// 抹成透明，按钮只剩一行字浮在墙上。
 func (a *App) watchEmptyBtn(c *ui.Context, label string, on func()) {
 	btn := ui.Box(c).Height(32).Padding(0, 14, 0, 14).Radius(theme.RadiusMD).
-		Background(theme.FillTertiary).Center().Cursor(ui.CursorPointer).Label(label)
-	btn.Background(hoverSurface(btn, "watch-empty-bg", btn.Hovered(), theme.FillQuaternary))
+		Center().Cursor(ui.CursorPointer).Label(label)
+	btn.Background(hoverSurfaceRest(btn, "watch-empty-bg", btn.Hovered(),
+		theme.FillTertiary, theme.FillQuaternary))
 	if btn.Clicked() {
 		on()
 	}

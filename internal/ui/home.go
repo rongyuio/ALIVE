@@ -20,17 +20,12 @@ type App struct {
 	Platform  string
 	Streamers []Streamer
 
-	// 分区选择：一级 / 二级 / 三级（SubCatIndex 的 -1 表示「全部」）
+	// 分区选择：一级 / 二级。四个平台的分区树都只有两级
+	// （internal/live 的 CategoryGroup.Categories），没有第三级。
 	GroupIndex    int
 	CategoryIndex int
-	SubCatIndex   int
 
 	Groups []CategoryGroup
-
-	// subCategories 是二级分区到三级分区的映射。真实数据源目前没有三级
-	// 分区（B 站本身也没有），生产模式下一直是空的，三级分区控件自然不
-	// 出现。示例数据由 NewApp 填。
-	subCategories map[string][]string
 
 	// 真实数据模式：分区树与直播列表来自 internal/live。
 	// 假数据（Streamers）只留给视图测试，界面不显示。
@@ -67,8 +62,11 @@ type App struct {
 	CategoryHit        int
 	catHitQuery        string
 	// catSearchFocused 是「上一帧输入框有没有焦点」，用来取聚焦边沿。
-	// 展开必须由边沿触发一次，不能每帧按 FocusWithin 无条件写（见 category_bar.go）。
+	// catSearchQuery 是「上一帧的查询词」，用来取"用户又改了词"这个边沿。
+	// 两个边沿缺一不可——Esc 收起面板后焦点还在框里，只认聚焦边沿就再也不会
+	// 展开（见 category_bar.go）。
 	catSearchFocused     bool
+	catSearchQuery       string
 	CategorySearchHandle ui.Handle
 
 	// 「全部」浮层（二级分区放不下时出现）是否展开
@@ -322,8 +320,6 @@ type App struct {
 	// 行的身份都由它自己保持。
 	FollowsGrid ui.GridState
 	scrollKey   string
-	// 上一帧真正构建了多少张卡片：虚拟化是否生效的回归指标（测试用）
-	builtCards int
 
 	// 最近一次网格布局：列数与卡片宽度。启动层判断「首屏封面是否到齐」要用
 	gridCols  int
@@ -528,13 +524,11 @@ func newApp() *App {
 		DanmuStroke:   theme.DanmuStrokeInk,
 		DanmuPanelOn:  true,
 		DanmuPanelW:   196,
-		SubCatIndex:   -1,
 
 		GroupsByPlatform:     map[string][]CategoryGroup{},
 		subActive:            map[string]string{},
 		liveLoaded:           map[string]bool{},
 		feedCache:            map[string]feedEntry{},
-		subCategories:        map[string][]string{},
 		authAvatarPrefetched: map[string]string{},
 	}
 	// 顶栏这些 tab 是同一层级的横向页面，没有谁是「进入谁的下一层」。
@@ -716,7 +710,7 @@ func (a *App) Shell(c *ui.Context) {
 	// 会把这次变化做成尺寸/位置弹簧动画。只在仍停留在播放页时抑制——
 	// 离开播放页那一路的 Match 落点是墙格，不能被这次复位挡掉。
 	if a.Router.Path() == routePlayer && fullscreen != a.wasPlayerFullscreen {
-		a.resizedAt = time.Now()
+		a.resizedAt = a.now()
 		// 全屏边沿优先：还没过期的表面过渡窗口不能把 Match 又挂回来，
 		// 否则这次布局变化会被做成 0.5s 弹簧动画。
 		a.routeTransitionUntil = time.Time{}
@@ -814,7 +808,7 @@ func (a *App) Home(c *ui.Context) {
 	}
 	pad := a.bodyPadX(c)
 	// 换分区就回到顶部；同一个分区内（去播放页再回来）位置由 ListState 自己记住。
-	key := fmt.Sprintf("%s|%d|%d|%d", a.Platform, a.GroupIndex, a.CategoryIndex, a.SubCatIndex)
+	key := fmt.Sprintf("%s|%d|%d", a.Platform, a.GroupIndex, a.CategoryIndex)
 	if a.scrollKey != key {
 		a.scrollKey = key
 		// 换的是另一套行，整份状态从头开始，而不是只把偏移挪到 0。
@@ -924,7 +918,7 @@ func (a *App) feed() []Streamer {
 	if a.Platform == "bilibili" && len(a.Remote) > 0 {
 		return a.Remote
 	}
-	return a.filterStreamers(a.Platform, a.currentCategory(), a.currentSub())
+	return a.filterStreamers(a.Platform, a.currentCategory())
 }
 
 // feedFor 返回订阅分区某个订阅项下的直播间。
@@ -932,16 +926,15 @@ func (a *App) feedFor(sub Subscription) []Streamer {
 	if sub.PlatformID == "bilibili" && len(a.Remote) > 0 {
 		return a.Remote
 	}
-	return a.filterStreamers(sub.PlatformID, sub.Name, "")
+	return a.filterStreamers(sub.PlatformID, sub.Name)
 }
 
-func (a *App) filterStreamers(platform, category, sub string) []Streamer {
+func (a *App) filterStreamers(platform, category string) []Streamer {
 	out := make([]Streamer, 0, 16)
 	for _, s := range a.Streamers {
 		switch {
 		case s.Platform != platform:
 		case category != "" && s.Category != category:
-		case sub != "" && s.Sub != sub:
 		default:
 			out = append(out, s)
 		}
@@ -1040,7 +1033,6 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 			for i := r * cols; i < min(len(list), (r+1)*cols); i++ {
 				i := i
 				st := list[i]
-				a.builtCards++
 				card := Card(c, st, cardW, a.isFollowed(st), func() {
 					a.openRoom(st)
 				}, func() {
@@ -1140,10 +1132,7 @@ func (a *App) emptyGrid(c *ui.Context, view gridView) {
 				clear.Background(hoverSurfaceRest(clear, "empty-clear-bg", clear.Hovered(),
 					theme.Accent, theme.AccentHover))
 				if clear.Clicked() {
-					// 换到「全部」是换了一份列表：必须重新取。以前这里只改了
-					// SubCatIndex，没有 reload——空态里的这个按钮点了什么都不会
-					// 发生，用户以为按钮坏了。
-					a.SubCatIndex = -1
+					// 换到「全部」是换了一份列表：必须重新取。
 					a.reloadRooms()
 				}
 				clear.Children(func() {

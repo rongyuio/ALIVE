@@ -47,7 +47,8 @@ const (
 // 所以小窗本来就宽，归一后仍然宽：那是形状，不是误差。
 //
 // inkH 是这个字形原始的墨迹高，来自 lucide 的几何（24 网格）。换图标时
-// 重量一次，TestPlayerChromeInkNormalized 会告诉你数值对不对。
+// 重量一次——量的是 path 的包围盒，不是字号。归一化后的墨迹高应当和同排
+// 其它图标一致，否则一排按钮的字形会一大一小。
 func fitIcon(inner string, inkH float32) *ui.SVG {
 	return fitSVG(`fill="none"`, iconStroke, inner, inkH)
 }

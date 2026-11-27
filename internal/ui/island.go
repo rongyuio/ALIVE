@@ -165,9 +165,6 @@ func (a *App) Island(c *ui.Context) {
 	// 零点几像素；岛在窗口里不在整像素上，挂在上面的内容也跟着抖。取整
 	// 之后岛每次只挪一整像素。
 	island.Width(w).Left(roundDIP((winW - w) / 2))
-	if r := island.Bounds(); r.W > 0 {
-		dbgBounds = append(dbgBounds, r.W)
-	}
 
 	// ---------- 投影：走主题的两级阶梯。
 	//
@@ -363,7 +360,6 @@ func islandPlayerMeta(s Streamer) string {
 // 墙上的预览在那里是停掉的，说「取消发声」会承诺一个不存在的预览。
 // 动作只有一个——closeFocus。
 func (a *App) playerIsland(c *ui.Context, w float32) {
-	dbgW = append(dbgW, w)
 	s := a.current()
 
 	// 头像锚在**内容框左边**。位置和直径都取整到整数 DIP：亚像素坐标在
@@ -766,8 +762,6 @@ type ringStop struct {
 //
 // 只改 alpha 不改 RGB：混到纯透明黑会在暗底上拖出一圈灰边——上一版那圈
 // 「脏描边」就是 30% 的强调色铺满圆周换来的。
-var dbgW []float32
-var dbgBounds []float32
 
 var islandRingProfile = []ringStop{
 	{0, 0},

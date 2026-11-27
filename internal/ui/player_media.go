@@ -306,7 +306,6 @@ func (a *App) kickMediaTick() {
 	m := &a.media
 	if a.Win == nil {
 		m.tickPending = false
-		a.watch.tickPending = false
 		return
 	}
 	// 一条链就够：mediaTick 先 watchTick（墙）再 trackFirstFrame（焦点）。
@@ -1892,7 +1891,10 @@ const noticeDuration = 4 * time.Second
 // 只在主线程调用；不在错误层里，不影响播放状态。
 func (a *App) notifyPlayback(msg string) {
 	a.media.notice = msg
-	a.media.noticeUntil = time.Now().Add(noticeDuration)
+	// 帧钟，不是墙钟：提示的「还剩多久」由 noticePill 每帧在构建里算，
+	// 那一侧读的是 c.Now()。用墙钟写、帧钟读的话两个时基对不上——Tester
+	// 里 tt.Advance 推不动它，提示永远不消失；生产里两者相等所以看不出来。
+	a.media.noticeUntil = a.now().Add(noticeDuration)
 	a.markDirty()
 	a.invalidateWindows()
 }

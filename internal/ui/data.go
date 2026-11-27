@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -227,7 +226,8 @@ func (a *App) loadCategories(platform string) {
 			return
 		}
 		// 走 runOnMain（= 窗口的 Update）：同一件事，测试里能换成当场执行的
-		// 桩，序号守卫才算得清（见 TestLoadCategoriesKeepsOtherPlatformTree）。
+		// 桩，序号守卫才算得清。catSeq 的守卫必须在回调里、不能在 goroutine
+		// 里——回调跑在主线程，那时 a.Groups 才是这一帧的样子。
 		runOnMain(win, func() {
 			if seq != a.catSeq {
 				return
@@ -254,7 +254,6 @@ func (a *App) applyLiveGroups(platform string, _ []live.CategoryGroup, groups []
 	a.Groups = groups
 	a.GroupIndex = 0
 	a.CategoryIndex = 0
-	a.SubCatIndex = -1
 	a.MoreOpen = false
 	// 不在这里重置入场动画。
 	//
@@ -602,7 +601,7 @@ type feedEntry struct {
 // 用分区 id 而不是索引：首页和订阅页要能命中同一份缓存，
 // 而订阅项只知道「哪个平台的哪个分区」，不知道它在分区树里的位置。
 func (a *App) feedKey() string {
-	return fmt.Sprintf("%s|%s|%d", a.Platform, a.currentCategoryID(), a.SubCatIndex)
+	return a.Platform + "|" + a.currentCategoryID()
 }
 
 func convertGroups(groups []live.CategoryGroup) []CategoryGroup {
