@@ -26,18 +26,18 @@ const (
 // 抽成变量只为一件事：`mygo.NewWindow` 在 `ui.Tester` 里会一直等平台就绪
 // （实测把测试挂到 3 分钟超时），于是"小窗开着"这件事从来没被断言过——
 // 也就没人知道主窗口藏起来之后画面还在不在走。多这一行间接之后，测试可以
-// 把真窗口换成 nil，只验小窗的行为。生产路径永远是 mygo.NewWindow。
+// 把真窗口换成返回 nil 的假实现，只验小窗的行为（见 player_mini_test.go）。
+// 生产路径永远是 mygo.NewWindow。
 var newMiniWindow = mygo.NewWindow
 
-// miniOpen 报告小窗是否还活着。
+// miniOpen 报告小窗此刻是否真的开着——模式开着，而且窗口还在。
 //
 // 不依赖「关窗时清指针」的回调：窗口可能是被 Alt+F4 或系统关掉的，
 // 每次直接问窗口自己有没有被销毁，指针就永远不会指向一个死窗口。
+// 窗口为 nil 同样算没开：pipOn 只是"模式"，窗口还没建出来（或建失败）时
+// 屏幕上什么都没有，报"开着"只会给用户一颗连不到画面的"退出小窗"按钮。
 func (a *App) miniOpen() bool {
-	if !a.pipOn {
-		return false
-	}
-	return a.Mini == nil || !a.Mini.IsDestroyed()
+	return a.pipOn && a.Mini != nil && !a.Mini.IsDestroyed()
 }
 
 // togglePip 开关小窗播放。
@@ -124,7 +124,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 	a.syncPlayer()
 	a.trackFirstFrame()
 
-	root := ui.Box(c).Fill().Background(ui.RGB(0, 0, 0)).Clip()
+	root := ui.Box(c).Fill().Background(theme.Black).Clip()
 	hovered := root.Hovered()
 
 	root.Children(func() {
@@ -158,7 +158,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 		// 小窗越小越不碍事。
 		bar := ui.Row(c).Absolute().Left(8).Right(8).Bottom(8).Height(36).
 			Padding(4, 8, 4, 8).Radius(12).Gap(8).AlignItems(ui.Center).
-			Background(ui.RGBA(9, 10, 12, 0.62)).
+			Background(theme.MediaBarBg).
 			Border(1, theme.MediaHair)
 		op := bar.AnimateTo("mini-bar", boolF(hovered), theme.Micro())
 		bar.Opacity(op)
@@ -204,7 +204,7 @@ func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, label string, size float32, on
 	if btn.Clicked() {
 		on()
 	}
-	col := hoverInk(btn, "mini-btn-ink", btn.Hovered(), theme.MediaTextBody, ui.Hex("#ffffff"))
+	col := hoverInk(btn, "mini-btn-ink", btn.Hovered(), theme.MediaTextBody, theme.White)
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(size).TextColor(col)
 	})
@@ -212,8 +212,8 @@ func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, label string, size float32, on
 
 // invalidateWindows 让主窗口和小窗都重画一遍：两边读的是同一份播放状态。
 //
-// 判据是「有没有窗口」，不是「小窗模式开没开」：miniOpen 回答的是后者
-// （测试里没有真窗口但小窗模式是开的），拿它去取 a.Mini 就是空指针。
+// 判据是「有没有窗口」，不是「小窗模式开没开」：模式开着但窗口没建出来时
+// （pipOn 为真、Mini 为空），照样没有可以重画的对象。
 func (a *App) invalidateWindows() {
 	if a.Win != nil {
 		a.Win.Invalidate()
@@ -286,14 +286,14 @@ func (a *App) captionBtn(c *ui.Context, ico *ui.SVG, label string, close bool, o
 	hovered := btn.Hovered()
 	switch {
 	case hovered && close:
-		btn.Background(ui.Hex("#c42b1c"))
+		btn.Background(theme.MediaCaptionClose)
 	case hovered:
 		btn.Background(theme.MediaHair)
 	}
 	if btn.Clicked() {
 		on()
 	}
-	col := hoverInk(btn, "caption-btn-ink", hovered, theme.MediaText, ui.Hex("#ffffff"))
+	col := hoverInk(btn, "caption-btn-ink", hovered, theme.MediaText, theme.White)
 	btn.Children(func() {
 		ui.Icon(c, ico).FontSize(10).TextColor(col)
 	})

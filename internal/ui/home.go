@@ -137,8 +137,9 @@ type App struct {
 	// pipOn 是小窗模式本身，和窗口指针分开。
 	//
 	// 分开的理由是测试：ui.Tester 里开不出真窗口（mygo.NewWindow 会一直等
-	// 平台就绪），而"主窗口藏起来之后画面还在不在走"必须能被断言。窗口为
-	// nil 但 pipOn 为真，就是"小窗开着但这一帧没有真窗口"。
+	// 平台就绪），把 newMiniWindow 换成返回 nil 的假实现之后，"模式开着但
+	// 窗口不在"这个状态才断言得了——miniOpen 此时必须报没开。窗口在不在看
+	// Mini，模式开没开看它。
 	pipOn bool
 	// media 是播放页的媒体层：转封装 + 播放器 + 弹幕连接。
 	// 它们要跨帧活着，所以挂在 App 上而不是视图里。
@@ -254,7 +255,9 @@ type App struct {
 	// 这时是瞬时的；没赶上的话等它一下，也好过先摆骨架、再摆空封面卡、
 	// 等图回来才成形——三次跳变叠在一起，就是用户说的「一大片闪」。
 	pendingSwitch string
-	pendingAt     time.Time
+	// pendingTries 是已经问过几次「目标平台首屏好了没」；到 platformSwitchTries
+	// 就不再等。
+	pendingTries int
 	// navSeq / followsSeq 分别是首页、关注页内容的代次：每次真的换了一份
 	// 内容（平台、一级、二级、三级分区），序号 +1，内容层据此换 key。
 	// 只换代，不播位移——整块横滑会让内容在切换瞬间和分区栏错开。
@@ -521,8 +524,8 @@ func newApp() *App {
 		DanmuArea:     0.5,
 		DanmuOpacity:  1,
 		DanmuColorful: true,
-		DanmuColor:    ui.RGB(255, 255, 255),
-		DanmuStroke:   ui.RGB(68, 68, 68),
+		DanmuColor:    theme.White,
+		DanmuStroke:   theme.DanmuStrokeInk,
 		DanmuPanelOn:  true,
 		DanmuPanelW:   196,
 		SubCatIndex:   -1,
@@ -651,7 +654,6 @@ func (a *App) Shell(c *ui.Context) {
 	// 飞回墙格的第二拍：上一帧的舞台已经带着 Match 身份建完，这一帧换路由。
 	a.tickExitArm()
 	// 一帧只让第一个 spinner 驱动动画时钟，其余的读它的相位
-	resetSpinFrame()
 	// 窗口尺寸的观测点：刚改过尺寸时不挂 Match，避免整墙做尺寸动画。
 	if w, h := c.Size(); w > 0 {
 		a.noteWindowSize(int(w), int(h))
@@ -688,7 +690,7 @@ func (a *App) Shell(c *ui.Context) {
 	// 各平台登录头像提前进缓存：切平台换头像时才不会先画灰人再跳图。
 	a.syncAuthAvatars()
 	// 挂起的切平台在这里收尾：目标平台的首屏数据和封面齐了才换。
-	a.tickPlatformSwitch()
+	a.tickPlatformSwitch(c)
 
 	// Ctrl/Cmd + K 唤起搜索；输入框里打字时不抢
 	// 没有平台上下文的页面连搜索入口都没有，快捷键也不该把它打开。
@@ -1405,7 +1407,7 @@ func tabName(id string) string {
 }
 
 // switchTab 处理 tab 点击。
-func (a *App) switchTab(id string) {
+func (a *App) switchTab(c *ui.Context, id string) {
 	if id == "follows" {
 		a.pendingSwitch = ""
 		if a.Router.Path() == routeFollows {
@@ -1432,13 +1434,18 @@ func (a *App) switchTab(id string) {
 	// 在就绪（或等够）时收尾。等待期间不摆任何中间态，用户看到的就是
 	// 上一家的完整画面，直到下一家的完整画面接上。
 	a.pendingSwitch = id
-	a.pendingAt = time.Now()
+	a.pendingTries = 0
+	// 用计时器问下一次，不跨帧比时间戳：问够 platformSwitchTries 次就不再等。
+	c.After(platformSwitchPoll)
 }
 
-// platformSwitchWait 是切平台时等目标平台首屏就绪的上限。
-//
-// 超过它就不再等：宁可闪一次，也不能让点击几百毫秒没有内容上的回应。
-const platformSwitchWait = 700 * time.Millisecond
+// 切平台等目标平台首屏就绪：每 platformSwitchPoll 问一次，问够
+// platformSwitchTries 次就不再等——宁可闪一次，也不能让点击几百毫秒没有
+// 内容上的回应。用计时器计数，不跨帧比较时间戳。
+const (
+	platformSwitchPoll  = 50 * time.Millisecond
+	platformSwitchTries = 14 // ≈ 700ms
+)
 
 // platformSwitchReady 报告切到 id 时该有的东西是不是都准备好了：首屏列表在缓存里。
 //
@@ -1458,17 +1465,19 @@ func (a *App) platformSwitchReady(id string) bool {
 	return ok && len(entry.rooms) > 0
 }
 
-// tickPlatformSwitch 在挂起的切换就绪（或等够了）时真正切过去。
-func (a *App) tickPlatformSwitch() {
+// tickPlatformSwitch 在挂起的切换就绪（或问够了）时真正切过去。
+func (a *App) tickPlatformSwitch(c *ui.Context) {
 	if a.pendingSwitch == "" {
 		return
 	}
 	id := a.pendingSwitch
-	if !a.platformSwitchReady(id) && time.Since(a.pendingAt) < platformSwitchWait {
+	if a.platformSwitchReady(id) || a.pendingTries >= platformSwitchTries {
+		a.pendingSwitch = ""
+		a.commitPlatformSwitch(id)
 		return
 	}
-	a.pendingSwitch = ""
-	a.commitPlatformSwitch(id)
+	a.pendingTries++
+	c.After(platformSwitchPoll)
 }
 
 // commitPlatformSwitch 执行真正的切换：换数据源、换显存、换路由。
@@ -1560,7 +1569,7 @@ func (a *App) platformTabs(c *ui.Context) {
 					// 没有 Label 的话自动化（和读屏）看到的只是一串无名元素。
 					tab.Label(tabName(t.id))
 					if tab.Clicked() {
-						a.switchTab(t.id)
+						a.switchTab(c, t.id)
 					}
 					// 平台 tab 可拖拽重排（关注与订阅不参与）。
 					// 拖起来的那枚 dim 到 0.35，经过的目标描一圈 accent 65% 的内阴影。
@@ -1675,7 +1684,7 @@ func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on 
 	hovered := btn.Hovered()
 	if hovered {
 		if danger {
-			btn.Background(ui.Hex("#e5344a"))
+			btn.Background(theme.MediaDangerInk)
 		} else {
 			btn.Background(theme.FillTertiary)
 		}
@@ -1688,7 +1697,7 @@ func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on 
 		col := theme.TextSecondary
 		if hovered {
 			if danger {
-				col = ui.RGB(255, 255, 255)
+				col = theme.White
 			} else {
 				col = theme.TextPrimary
 			}

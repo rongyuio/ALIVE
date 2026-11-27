@@ -42,8 +42,9 @@ func (a *App) watchWall(c *ui.Context) {
 	box := ui.Box(c.Key("watch-wall")).Grow(1).Clip()
 	b := box.Bounds()
 	if b.W <= 0 || b.H <= 0 {
-		// Bounds 是上一帧的布局。第一帧先把容器交给布局，下一帧再摆格子。
-		c.After(time.Millisecond)
+		// Bounds 是上一帧的布局。第一帧先把容器交给布局，请下一帧再来。
+		// 用 c.Invalidate 而不是 c.After(1ms)：要的是"再建一帧"，不是"等一毫秒"。
+		c.Invalidate()
 		return
 	}
 

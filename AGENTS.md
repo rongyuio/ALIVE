@@ -95,12 +95,12 @@ make e2e        # 真构建（-tags e2e），automation 插件跟着进去
 
 本项目另外定的（不是 MyGo 的规定）：视觉令牌只有一个来源，就是 `internal/theme`——`internal/ui`
 里不写颜色字面量；协议代码不进 `internal/ui`；错误要能分类（`ErrUnsupported`、`ErrBlocked`、
-待补的 `ErrAuth`），用户可见的失败是状态不是日志；cookie/token/签名不进日志、截图、诊断包；
+`ErrAuth`），用户可见的失败是状态不是日志；cookie/token/签名不进日志、截图、诊断包；
 `internal/playback` 是薄壳，只做 headers、尺寸、alpha。
 
 ## 怎么写测试
 
-现在仓库里 0 个项目自有测试（`internal/live/README.md` 里写着"瘦身中整体移除"）。新写的按这里来。
+测试在 `internal/ui`、`internal/diag`、`internal/theme` 里，`make test` 跑它们（`-tags mock`）。新写的按这里来。
 
 - 视图测试用 `ui.NewTester(view, w, h)`；要初始偏好或深色，用 `ui.NewTesterWith(view, w, h, ui.TesterOptions{...})`。
 - 按用户看得见的东西断言：`tt.Click`、`tt.Find`、`tt.HasText`，元素按文本或 `Label` 找。
@@ -114,7 +114,7 @@ make e2e        # 真构建（-tags e2e），automation 插件跟着进去
   `wait --text` 或反复 `snapshot`。PowerShell 里 ref 要写 `'@e4'`，不加引号会被当 splatting 吃掉。
 
 ```sh
-go test ./... -count=1                  # 编译 + 单测（现在 0 个测试，只是能编译）
+go test -tags mock ./... -count=1       # 单测；`make test` 还会先清空 .mygo\test-home
 CGO_ENABLED=1 go test ./... -race       # -race 自身要 cgo，不能同时 CGO_ENABLED=0
 ```
 
@@ -124,8 +124,8 @@ CGO_ENABLED=1 go test ./... -race       # -race 自身要 cgo，不能同时 CGO
   升级 MyGo 时那 25 个文件要一起核对。`go tool mygo migrate-ui .` 在 third_party 里还会列
   14 个上游文件——那是上游的账，别顺手修。
 - **别引依赖来解决框架已有的问题**：先看 `third_party/mygo/ui/` 有没有现成控件。
-- **别把现有写法当范本**：`internal/ui` 里的颜色字面量、`ui.Scroll` 里建长列表、构建路径里的
-  墙钟去重，都是待改的，不是范式。
+- **别把现有写法当范本**：不合下面这些规矩的地方，账记在 [doc/known-debt.md](doc/known-debt.md)。
+  照抄之前先看它是不是还没改的那一条。
 - **密钥不进日志、截图、诊断包**；诊断包只打包已经脱敏的产物。
 - **只有 Windows 是目标平台。** 别为 macOS/Linux 写分支，也别引 cgo。
 
@@ -181,6 +181,6 @@ CGO_ENABLED=1 go test ./... -race       # -race 自身要 cgo，不能同时 CGO
 | 无障碍是断言面 | `third_party/mygo/docs/ui/testing.md:139「tt.AccessByRole(role, name) returns what screen readers get」` |
 | automation 插件 | `third_party/mygo/docs/plugins/automation.md:23-24「Keep it out of the app's release with a build tag」` |
 | MYGO_AUTOMATION=<socket 路径> | `third_party/mygo/docs/plugins/automation.md:39「It listens only when MYGO_AUTOMATION names the path of the socket」` |
-| 0 个项目自有测试 | `internal/live/README.md:40「本项目自有的 _test.go 目前在瘦身中整体移除，包里没有测试。」` |
+
 
 
