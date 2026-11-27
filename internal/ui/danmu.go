@@ -108,6 +108,13 @@ func danmuColor(d danmuLine, colorful bool, fallback ui.Color) ui.Color {
 	if !colorful || d.Color == "" || strings.EqualFold(d.Color, "#ffffff") {
 		return fallback
 	}
+	// ui.Hex 遇到坏值会 panic，而 d.Color 是平台下发的原始字符串。现在四个
+	// 平台都把它规整成 #RRGGBB，所以打不崩；但那是"上游替你校验"的运气，
+	// 不是这一层的不变量。任何新平台/新字段一透传原始字符串就是必崩。
+	// 同一个仓里 SC 背景色早就先过 validHexRGB 了（danmu_panel.go）。
+	if !validHexRGB(d.Color) {
+		return fallback
+	}
 	return theme.HexColor(d.Color)
 }
 
@@ -332,7 +339,9 @@ func danmuWidthEstimate(d danmuLine, font float32) float32 {
 func (a *App) tickDanmu() {
 	a.advanceDanmuClock()
 	now := a.danmuTime()
-	live := a.Danmu[:0]
+	// 新分配，不原地压缩：danmuLayer 在构建路径里直接 range a.Danmu，
+	// 两者虽然都在主线程，但一次顺序调整就会变成"边遍历边左移"。
+	live := make([]danmuLine, 0, len(a.Danmu))
 	for _, d := range a.Danmu {
 		if now.Sub(d.Born) < d.Dur {
 			live = append(live, d)

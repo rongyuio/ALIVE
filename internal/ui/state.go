@@ -179,7 +179,9 @@ func (a *App) stateSnapshot() ([]byte, bool) {
 	if !a.stateDirty {
 		return nil, false
 	}
-	a.stateDirty = false
+	// **先序列化，成功了才清 dirty。** 原来的顺序是先清后 marshal：
+	// marshal 失败就直接 return，而这一轮的改动已经标记成"写过了"——
+	// 永久丢失，连一条 warn 都不会亮。
 
 	follows := append([]FollowRecord(nil), a.Follows...)
 	subs := append([]Subscription(nil), a.Subs...)
@@ -223,8 +225,12 @@ func (a *App) stateSnapshot() ([]byte, bool) {
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
+		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
+			Str(diag.Stage, "marshal").
+			Dict(diag.ErrField, diag.Err(err)).Msg("序列化状态失败，这一轮改动保留待下次再写")
 		return nil, false
 	}
+	a.stateDirty = false
 	return data, true
 }
 
@@ -321,16 +327,16 @@ func (a *App) restore() {
 	}
 	if p.Danmu != nil {
 		if p.Danmu.Font > 0 {
-			a.DanmuFont = p.Danmu.Font
+			a.DanmuFont = clampDanmuFont(p.Danmu.Font)
 		}
 		if p.Danmu.DurMs > 0 {
-			a.DanmuDur = time.Duration(p.Danmu.DurMs) * time.Millisecond
+			a.DanmuDur = millisDuration(p.Danmu.DurMs)
 		}
 		if p.Danmu.Area > 0 {
-			a.DanmuArea = p.Danmu.Area
+			a.DanmuArea = clampDanmuArea(p.Danmu.Area)
 		}
 		if p.Danmu.Opacity > 0 {
-			a.DanmuOpacity = p.Danmu.Opacity
+			a.DanmuOpacity = clampDanmuOpacity(p.Danmu.Opacity)
 		}
 		// 颜色 / 描边只在文件里真的写了颜色时才覆盖。空段（{"danmu":{}}）
 		// 解出来是全零，alpha 也是 0——无条件覆盖会把弹幕变成全透明，

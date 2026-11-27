@@ -165,7 +165,10 @@ func (a *App) toggleSubscribe() {
 		return
 	}
 	if a.subscribed() {
-		kept := a.Subs[:0]
+		// 新分配，不原地压缩：[:0] 会把底层数组左移，而同一帧里还有别人
+		// 握着旧切片头的遍历者（订阅行、菜单、导出快照），它们会读到错位
+		// 的内容。watchMedia 的墙格删除早就因为这条改成新分配了。
+		kept := make([]Subscription, 0, len(a.Subs))
 		for _, s := range a.Subs {
 			if s.PlatformID == a.Platform && s.Group == group && s.Name == category {
 				continue

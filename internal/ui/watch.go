@@ -536,6 +536,10 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player
 		// 线路都试过仍不稳定时会保留最后一帧；这条提示必须压在画面上，
 		// 否则用户只看到一张冻住的图，不知道发生了什么。
 		msg = sess.err
+	case sess != nil && sess.reconnecting:
+		// 重连中：给的是"正在重连"，不是内部原因（首帧超时 / 地址到期）。
+		// 那是排障用的字眼，用户看到"地址到期"会以为这一路坏了。
+		msg = "正在重连…"
 	case sess != nil && player == nil && sess.loading:
 		loading = true
 	case player != nil && !player.Ready():

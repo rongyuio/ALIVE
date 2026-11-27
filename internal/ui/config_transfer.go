@@ -261,21 +261,32 @@ func (a *App) danmuState() danmuAfter {
 func (a *App) planImport(name string, f configFile) importPlan {
 	p := importPlan{FileName: name}
 
-	seenFollow := make(map[string]bool, len(a.Follows)+len(f.Follows))
-	for _, r := range a.Follows {
-		seenFollow[followIdentity(r.Platform, r.RoomID, r.Name)] = true
-	}
+	// 关注去重直接问 sameFollow，不另造一套键。
+	//
+	// sameFollow 的规则是「两侧都有房间号才比房间号，否则比昵称」，它**不是
+	// 等价关系**（A 有号、B 无号、C 有另一个号：A~B~C 但 A≁C）。所以不能用
+	// 「身份键 → 集合」那种写法：键集合要么把 A 和 C 判成同一个人（用昵称做
+	// 键），要么把 A 和 B 判成两个人（只用房间号做键）——两种都会出错。
+	// 线性比一遍，和运行时 removeFollow 用的是同一个判据。
+	known := make([]FollowRecord, 0, len(a.Follows)+len(f.Follows))
+	known = append(known, a.Follows...)
 	for _, rec := range f.Follows {
 		// 空平台 / 空昵称的记录认不出是谁，落地后既画不出来也删不掉
 		//（sameFollow 先比平台），只会变成一条幽灵关注。
 		if rec.Platform == "" || rec.Name == "" {
 			continue
 		}
-		key := followIdentity(rec.Platform, rec.RoomID, rec.Name)
-		if seenFollow[key] {
+		dup := false
+		for _, have := range known {
+			if sameFollow(have, rec.streamer()) {
+				dup = true
+				break
+			}
+		}
+		if dup {
 			continue
 		}
-		seenFollow[key] = true
+		known = append(known, rec)
 		p.Follows = append(p.Follows, rec)
 	}
 
@@ -387,16 +398,16 @@ func (a *App) planImport(name string, f configFile) importPlan {
 	if f.Danmu != nil {
 		after.On = f.Danmu.On
 		if f.Danmu.Font > 0 {
-			after.Font = f.Danmu.Font
+			after.Font = clampDanmuFont(f.Danmu.Font)
 		}
 		if f.Danmu.DurMs > 0 {
-			after.Dur = time.Duration(f.Danmu.DurMs) * time.Millisecond
+			after.Dur = millisDuration(f.Danmu.DurMs)
 		}
 		if f.Danmu.Area > 0 {
-			after.Area = f.Danmu.Area
+			after.Area = clampDanmuArea(f.Danmu.Area)
 		}
 		if f.Danmu.Opacity > 0 {
-			after.Opacity = f.Danmu.Opacity
+			after.Opacity = clampDanmuOpacity(f.Danmu.Opacity)
 		}
 		after.Color = f.Danmu.Color
 		after.Stroke = f.Danmu.Stroke
@@ -536,13 +547,9 @@ func themeModeName(mode string) string {
 	}
 }
 
-// followIdentity 是关注去重用的键：平台 + 房间号，房间号缺失时退回昵称。
-func followIdentity(platform, roomID, name string) string {
-	id := roomID
-	if id == "" {
-		id = name
-	}
-	return platform + "|" + id
+// streamer 把关注记录摊成 Streamer，用于喂 sameFollow。
+func (r FollowRecord) streamer() Streamer {
+	return Streamer{Platform: r.Platform, RoomID: r.RoomID, Name: r.Name}
 }
 
 // applyImportPlan 按预览时算好的清单落地。用户确认的就是这份清单。
@@ -800,4 +807,50 @@ func (a *App) confirmImport() {
 func (a *App) cancelImport() {
 	a.SyncPlan = nil
 	a.SyncError = ""
+}
+
+// 弹幕参数的合法区间。导入和恢复走同一套钳制：手改过的文件能把这三个
+// 写成任意值，写进去之后要么排版塌掉（字号 1e9），要么根本不显示
+// （时长为负 → tickDanmu 恒假，画面开着弹幕一条不出）。
+const (
+	danmuFontMin    float32 = 8
+	danmuFontMax    float32 = 72
+	danmuAreaMin    float32 = 0.05
+	danmuAreaMax    float32 = 1
+	danmuOpacityMin float32 = 0.05
+	danmuOpacityMax float32 = 1
+	danmuDurMinMs           = 1000
+	danmuDurMaxMs           = 60000
+)
+
+// millisDuration 把毫秒换成 Duration，先钳进合法区间。
+//
+// 不钳制的话 MaxInt64 * time.Millisecond 会溢出成负数：负时长的弹幕在
+// tickDanmu 里 `now.Sub(d.Born) < d.Dur` 恒假，每条入队当帧就被丢掉——
+// 用户看到的是「弹幕开着但一条都不显示」。
+func millisDuration(ms int64) time.Duration {
+	if ms < danmuDurMinMs {
+		ms = danmuDurMinMs
+	}
+	if ms > danmuDurMaxMs {
+		ms = danmuDurMaxMs
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func clampDanmuFont(v float32) float32 { return clampRange(v, danmuFontMin, danmuFontMax) }
+func clampDanmuArea(v float32) float32 { return clampRange(v, danmuAreaMin, danmuAreaMax) }
+func clampDanmuOpacity(v float32) float32 {
+	return clampRange(v, danmuOpacityMin, danmuOpacityMax)
+}
+
+// clampRange 把 v 夹进 [lo, hi]。
+func clampRange(v, lo, hi float32) float32 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

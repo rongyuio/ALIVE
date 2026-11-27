@@ -212,11 +212,14 @@ func (a *App) diagResult(c *ui.Context) {
 // 调用，不在每帧构建路径里分配。
 func diagnosticGroups() (groups []diagGroup, empty bool) {
 	snap := metrics.Snapshot()
-	counters := snap["counters"].(map[string]int64)
-	gauges := snap["gauges"].(map[string]int64)
-	hists := snap["histograms"].(map[string]any)
-	ff := hists["first_frame_ms"].(map[string]any)
-	wf := hists["wall_first_frame_ms"].(map[string]any)
+	// 全部用 comma-ok：Snapshot 返回的是 map[string]any，形状一变（改名、
+	// 改成按需注册直方图、被替换实现）这里就直接 panic，而它在构建路径上，
+	// 整窗会挂掉。拿不到就当成空指标，面板显示"还没有数据"。
+	counters, _ := snap["counters"].(map[string]int64)
+	gauges, _ := snap["gauges"].(map[string]int64)
+	hists, _ := snap["histograms"].(map[string]any)
+	ff, _ := hists["first_frame_ms"].(map[string]any)
+	wf, _ := hists["wall_first_frame_ms"].(map[string]any)
 
 	// latency 把一路首帧直方图拼成「p50 · p95 · 次数」。bad 只看 p95：
 	// 中位数正常、尾部很慢，正是用户能感觉到卡的那种分布。
@@ -405,6 +408,12 @@ func (a *App) exportDiagnostics() {
 	out := filepath.Join(dir, "bundle-"+time.Now().Format("20060102-150405")+".zip")
 	meta := a.diagnosticMeta()
 	win := a.Win
+	// 没有窗口就没有回主线程的入口：runOnMain / Update 会丢掉回调，
+	// SyncBusy 就永久立着，之后所有同步按钮都点不动（连"停止剖析"都进
+	// 不去）。宁可不开始，也不要开一个收不了尾的动作。
+	if win == nil {
+		return
+	}
 	a.SyncBusy = true
 	a.SyncBusyAction = syncActExport
 	a.SyncNotice = ""
@@ -444,6 +453,10 @@ func (a *App) profileCPU() {
 	}
 	out := filepath.Join(dir, "cpu-"+time.Now().Format("20060102-150405")+".pprof")
 	win := a.Win
+	// 同 exportBundle：没有窗口就没有收尾的入口，SyncBusy 会永久立着。
+	if win == nil {
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.SyncBusy = true
 	a.SyncBusyAction = syncActProfile

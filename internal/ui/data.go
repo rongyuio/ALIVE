@@ -282,7 +282,6 @@ func (a *App) loadRooms() {
 		a.ListLoading = false
 		return
 	}
-
 	platform := a.Platform
 	key := a.feedKey()
 
@@ -317,6 +316,17 @@ func (a *App) loadRooms() {
 		a.ErrText = ""
 	}
 	win := a.Win
+	// 视图测试没有窗口，不该发真实请求（别的取数入口都有这条早退）。
+	// 位置必须在这里——上面"先渲染缓存"那一半在 Tester 里同样要跑，
+	// 提前 return 会把过期缓存也挡掉。
+	if win == nil {
+		return
+	}
+	// 首屏刷新期间列表可能被「加载更多」接着往前推。那种情况下这一份首屏
+	// 属于旧代次：无条件换上去会把它从 120 条打回 40 条，而缓存里记的还是
+	// 120 条的 cursor——界面和缓存两份真相，中间那 80 条要等下次全量重取
+	// 才回得来。发请求时记下位置，回包时比一次。
+	startCursor := a.homeCursor
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -337,6 +347,11 @@ func (a *App) loadRooms() {
 				if !hit {
 					a.ErrText = "直播间加载失败：" + err.Error()
 				}
+				return
+			}
+			// 期间补页把列表推远了：这一份首屏比现有列表短，换上去就是丢数据。
+			// 补页已经写过缓存（带更远的 cursor），这里什么都不做。
+			if !a.homeFirstChunkApplies(startCursor) {
 				return
 			}
 			a.applyFirstChunk(key, chunk)
@@ -516,7 +531,10 @@ const (
 // 只影响自动补页，用户滚动触发的 EndReached 不受它约束。
 func (a *App) noteTopUpFailure() {
 	a.topUpFailures++
-	d := topUpBackoffMin << min(a.topUpFailures-1, 4)
+	// 移位数必须是正的：Go 里负移位直接 panic。这里靠 topUpFailures
+	// 刚加过 1 才安全，说清楚，别让后来人把两行调换。
+	shift := min(max(a.topUpFailures-1, 0), 4)
+	d := topUpBackoffMin << shift
 	if d > topUpBackoffMax {
 		d = topUpBackoffMax
 	}
@@ -662,8 +680,12 @@ func (a *App) syncSearch() {
 		return
 	}
 	// 视图测试没有窗口：不发真实请求，也不留后台 goroutine。
+	//
+	// SearchErr 也要清：上一个查询词的错误文案挂在新词下面是明确的谎——
+	// 用户会以为新词也失败了。这份状态在别的分支里都是"设或清"，只有
+	// 这一条以前只清了 Loading。
 	if a.Win == nil {
-		a.SearchLoading = false
+		a.SearchLoading, a.SearchErr = false, ""
 		return
 	}
 	provider, ok := providerFor(live.Platform(platform))
@@ -804,6 +826,11 @@ func (a *App) fetchSubChunk(platform, areaID, key string, seq, cursor int) {
 	if !ok {
 		return
 	}
+	// 首屏刷新（cursor 0）期间「加载更多」可能已经把列表往前推了。那一份
+	// 首屏属于旧代次：换上去会把列表从 120 条打回 40 条，而缓存里记的还是
+	// 更远的 cursor，界面和缓存两份真相。发请求时记下位置，回包时比一次。
+	// 和首页 loadRooms 同一条判据。
+	startCursor := a.subCursor
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -816,6 +843,10 @@ func (a *App) fetchSubChunk(platform, areaID, key string, seq, cursor int) {
 			// 首屏刷新会把列表重置到 cursor 0；在途的旧 cursor 属于旧代次，
 			// 不能再接到新列表后面（会把中间一段跳过）。
 			if !a.subCursorAppendAllowed(cursor) {
+				return
+			}
+			// 补页已经把这页推远了：这一份首屏比现有列表短，丢掉。
+			if cursor == 0 && !a.subFirstChunkApplies(startCursor) {
 				return
 			}
 			if err != nil {
@@ -992,4 +1023,22 @@ func (a *App) currentCategoryID() string {
 		return ""
 	}
 	return ids[a.CategoryIndex]
+}
+
+// homeFirstChunkApplies 报告一份 cursor 0 的首页回包是否还属于当前这一版列表。
+//
+// 首屏刷新在飞的时候，「加载更多」可能已经把列表往前推了（滚到底 + 缓存
+// 过期是很日常的组合）。那一份首屏属于旧代次：无条件换上去会把列表从
+// 120 条打回 40 条，而缓存里记的还是更远的 cursor——界面和缓存两份真相，
+// 中间那 80 条要等下次全量重取才回得来。
+//
+// 提成有名字的函数是为了能直接验：回包跑在 Window.Update 里，没有主循环
+// 就执行不到，测不了闭包内部。
+func (a *App) homeFirstChunkApplies(startCursor int) bool {
+	return a.homeCursor == startCursor
+}
+
+// subFirstChunkApplies 是订阅列表的同一条判据。
+func (a *App) subFirstChunkApplies(startCursor int) bool {
+	return a.subCursor == startCursor
 }

@@ -87,6 +87,10 @@ type roomSession struct {
 	stillSince time.Time
 	// stalled 表示画面停住了但还没到判死阈值：这一格在缓冲。
 	stalled bool
+	// reconnecting 表示这一格正在重连（首帧超时 / 地址到期 / 用户点了重新
+	// 加载）。和 err 分开：err 是给用户看的失败文案，reconnecting 是"还
+	// 在努力"这个状态本身。内部原因只进日志。
+	reconnecting bool
 
 	// present 是这一路该呈现多大。视图属性，由 applyPresent 从
 	// presentSizeForSession 求出来再推给引擎；值没变就不推。
@@ -632,6 +636,7 @@ func (a *App) watchOpenSession(s *roomSession) {
 	s.log = wallLog(s.key, fmt.Sprintf("watch#%d", s.seq))
 	s.loading = true
 	s.err = ""
+	s.reconnecting = false
 	s.offline = false
 	s.openedAt = time.Now()
 
@@ -758,6 +763,7 @@ func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win
 		a.learnRoomChoice(s.key, info, v)
 		s.loading = false
 		s.err = ""
+		s.reconnecting = false
 		s.firstFrame = false
 		s.refreshAt = refreshAtFor(v)
 		s.stillSince = time.Now()
@@ -1094,9 +1100,17 @@ func (a *App) watchTick(now time.Time) {
 		return
 	}
 	for _, s := range a.watch.sessions {
-		// stalled 是每帧观测量，焦点格也要算：它被用来画墙格的「缓冲中…」，
-		// 算在焦点过滤之后就只会停在历史值（该报的不报、恢复了的常驻）。
+		// stalled 是每帧观测量，焦点格也要算：它被用来画墙格的「缓冲中…」。
+		//
+		// 观测量必须跟着一起更新。以前只算不更新：stillSince 由
+		// watchDeadReason 推进，而它只跑在非焦点路径上，于是焦点格出图
+		// 1.5 秒之后 s.stalled 永久为真——那一格永远挂着「缓冲中…」，
+		// 即使画面在正常走。
+		//
+		// 这里只做观测，不做判定动作（重连/重开仍然只由下面那条非焦点路径
+		// 负责），所以不构成第二套看门狗。
 		if s.player != nil {
+			observeWallStall(s.player, &s.lastPos, &s.stillSince, now)
 			s.stalled = wallStalled(s.player.Ready(), s.player.Playing(), s.stillSince, now)
 		}
 		// 焦点由媒体层驱动（播放页的首帧/断流/换地址在 trackFirstFrame，
@@ -1282,7 +1296,12 @@ func (a *App) watchRestart(s *roomSession, reason string) {
 	s.failures++
 	s.restarts++
 	s.retryAt = time.Now().Add(watchBackoff(s.failures))
-	s.err = reason
+	// **不要**把 reason 写进 s.err：它是排障用的内部原因（「首帧超时」
+	// 「地址到期」「user-reload」），而 watchState 会把 s.err 原样画到格子
+	// 上。用户看到的是"地址到期"四个字，实际那是正常续期，读起来像故障。
+	// 重连期间格子上该显示的是"正在重连"，reason 只进日志。
+	s.err = ""
+	s.reconnecting = true
 	// 首发帧时刻是可选字段：没出过首帧的那一轮不写 since_frame_ms，
 	// 和原来的 args 拼接同一个条件。
 	e := s.event().Str(diag.Event, diag.EvWallRestart).Str(diag.Cause, reason).
@@ -1438,4 +1457,29 @@ func (a *App) watchRemove(room Streamer) {
 	}
 	a.markDirty()
 	a.invalidateWindows()
+}
+
+// observeWallStall 推进墙格「缓冲中…」的观测点。
+//
+// 和 watchDeadReason 里的那几行同源，但只观测、不判死：焦点那一格的
+// 断流判定归媒体层（trackFirstFrame），这里补的只是画格子需要的
+// lastPos / stillSince，不算第二套看门狗。
+func observeWallStall(p *ui.VideoPlayer, lastPos *time.Duration, stillSince *time.Time, now time.Time) {
+	if p == nil {
+		return
+	}
+	if !p.Ready() || !p.Playing() {
+		*stillSince = now
+		return
+	}
+	// 起点必须在第一次观测时建立：时间轴一直停在 0（图片流、刚接管的
+	// 静音预览）时 pos 永远等于 lastPos，靠 pos 变化建不了起点，那一格
+	// 就永远不会被判成缓冲。
+	if stillSince.IsZero() {
+		*lastPos, *stillSince = p.Position(), now
+		return
+	}
+	if pos := p.Position(); pos != *lastPos {
+		*lastPos, *stillSince = pos, now
+	}
 }

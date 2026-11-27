@@ -146,9 +146,15 @@ func (a *App) Island(c *ui.Context) {
 	//
 	// 只在没有别人替它持有身份时挂：播放页上身份在舞台身上，墙上在格子里。
 	// 同一帧里两个元素带同一个 Match 会把后建的那个冻在源尺寸——探针实测过。
+	// 只挂身份，**不接管宽高**：岛的宽度由下面那条 AnimateTo 弹簧驱动，
+	// 而 ElementTransition 默认会连 Position/Size 一起动画——两个弹簧追同一个
+	// 属性，岛的实际宽度会远远落后于 AnimateTo 的值（实测 w=183 时岛只有
+	// 112 宽），展开期间内容整个跑到岛外面被裁掉。
+	// 显式给 Colors 一项，等于告诉它「除颜色外都不动」。
 	if key := a.islandMatchKey(open); key != "" {
 		island.Transition(ui.ElementTransition{
 			Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
+			Colors: true,
 		})
 	}
 
@@ -159,6 +165,9 @@ func (a *App) Island(c *ui.Context) {
 	// 零点几像素；岛在窗口里不在整像素上，挂在上面的内容也跟着抖。取整
 	// 之后岛每次只挪一整像素。
 	island.Width(w).Left(roundDIP((winW - w) / 2))
+	if r := island.Bounds(); r.W > 0 {
+		dbgBounds = append(dbgBounds, r.W)
+	}
 
 	// ---------- 投影：走主题的两级阶梯。
 	//
@@ -183,7 +192,7 @@ func (a *App) Island(c *ui.Context) {
 
 		body.Children(func() {
 			if open {
-				a.playerIsland(c, w, openW)
+				a.playerIsland(c, w)
 			} else {
 				a.islandPill(c)
 			}
@@ -353,7 +362,8 @@ func islandPlayerMeta(s Streamer) string {
 // 「关闭直播间」；已经离开墙（首页 / 别的分区）也一律「关闭直播间」——
 // 墙上的预览在那里是停掉的，说「取消发声」会承诺一个不存在的预览。
 // 动作只有一个——closeFocus。
-func (a *App) playerIsland(c *ui.Context, w, openW float32) {
+func (a *App) playerIsland(c *ui.Context, w float32) {
+	dbgW = append(dbgW, w)
 	s := a.current()
 
 	// 头像锚在**内容框左边**。位置和直径都取整到整数 DIP：亚像素坐标在
@@ -362,16 +372,22 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	avatarX := roundDIP(islandPlayerPadX)
 	avatarY := roundDIP((islandContentH - avatarD) / 2)
 
-	// 文字列从头像右沿开始，让出右侧按钮组（收藏 + X）。
+	// 一切横向位置都按**当前**宽度 w（弹簧值）算，不按目标宽度 openW。
+	//
+	// 按目标宽度排的后果：展开那几百毫秒里岛沿还在往两边长，内容已经按
+	// 最终宽度摆好——右边那颗 X 落在岛外被 body 的 ClipInset 整颗裁掉
+	//（实测 t=20ms 时 X 的右沿露出 -160px），收缩时右侧空出一大截。
+	// 按当前宽度排，内容贴着沿一起长，才是「岛在展开」而不是「先拉宽再
+	// 冒出内容」。
 	textX := islandPlayerPadX + islandPlayerAvatar + islandPlayerGap
 	buttonsW := 2*islandPlayerFollowW + islandPlayerGap
-	textW := openW - 2*islandBodyInset - 2*islandPlayerPadX -
+	textW := w - 2*islandBodyInset - 2*islandPlayerPadX -
 		islandPlayerAvatar - 2*islandPlayerGap - islandPlayerTextSlack - buttonsW
 	if textW < 0 {
 		textW = 0
 	}
 	// 最右一颗固定是 X；收藏贴在它左边。
-	edgeX := openW - islandBodyInset - islandPlayerPadX - islandPlayerFollowW
+	edgeX := w - islandBodyInset - islandPlayerPadX - islandPlayerFollowW
 	followX, cancelX := edgeX-islandPlayerGap-islandPlayerFollowW, edgeX
 
 	// 文字列：垂直居中，两行固定，SingleLine 保证它不会自己换行。
@@ -750,6 +766,9 @@ type ringStop struct {
 //
 // 只改 alpha 不改 RGB：混到纯透明黑会在暗底上拖出一圈灰边——上一版那圈
 // 「脏描边」就是 30% 的强调色铺满圆周换来的。
+var dbgW []float32
+var dbgBounds []float32
+
 var islandRingProfile = []ringStop{
 	{0, 0},
 	{0.20, 0},    // 尾巴从 72° 开始接上

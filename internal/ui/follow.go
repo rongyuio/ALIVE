@@ -67,7 +67,9 @@ func sameFollow(r FollowRecord, s Streamer) bool {
 // 关注上。
 func (a *App) removeFollow(s Streamer) bool {
 	removed := false
-	kept := a.Follows[:0]
+	// 新分配，不原地压缩：[:0] 会把底层数组左移，而同一帧里 isFollowed /
+	// followsPlatforms 还在直接 range a.Follows，会读到错位的内容。
+	kept := make([]FollowRecord, 0, len(a.Follows))
 	for _, r := range a.Follows {
 		if sameFollow(r, s) {
 			removed = true

@@ -245,6 +245,12 @@ func (s playbackSession) expired() bool {
 //
 // ctx 取消后，后台取流与起 ffmpeg 的 goroutine 会自行收手；已经就绪但还没
 // 交出去的那一路，会在接纳回调里被判过期后关掉自己。
+//
+// **同时清掉热切换的在途闸门。** 闸门一端立起来、另一端只在对得上号的
+// 回包里放下（runHotSwap 的 fail 先比 seq 再清 refreshing）。这一轮已经
+// 作废时，那个回包会走「过期」分支直接 return——闸门就永远立着，此后
+// scheduleSwap 每次都在第一行退出：地址续期和断流重连一起失效，画面停住，
+// 只有用户手点重试（走 beginSession → stopPlayback）才解得开。
 func (m *playerMedia) cancelSession() {
 	if m.cancel != nil {
 		m.cancel()
@@ -252,6 +258,7 @@ func (m *playerMedia) cancelSession() {
 	}
 	m.ctx = nil
 	m.seq++
+	m.refreshing = false
 }
 
 // stalled 报告画面是不是真的停住了。
@@ -574,6 +581,12 @@ func (a *App) adoptLiveSession(s *roomSession) {
 	m.cancel = cancel
 	m.ctx = ctx
 	m.win = a.Win
+	// 上一轮的换地址进度跟着作废。从墙上接管这一路（watchActivate →
+	// ensureFocusMedia）不经过 stopPlayback，残留的 swapFailures 会让新
+	// 这一路第一次热切换失败就直接凑满阈值走「整轮重开」——用户看到的是
+	// loading 覆盖层 + 断音，而不是无缝续期。
+	m.swapFailures = 0
+	m.lastSwapAt = time.Time{}
 	m.id = fmt.Sprintf("接管#%d", m.seq)
 	m.start = time.Now()
 	m.log = newLogRef("player", s.key, m.id, m.start)
