@@ -578,10 +578,16 @@ func (a *App) overlayText(c *ui.Context, text string) {
 
 // overlayButton 是状态层上的主按钮：
 // 40 高、左右 24、纯白胶囊、深色字。
+//
+// 白底必须从 hoverSurfaceRest 传进去，不能先 Background(theme.White) 再
+// Background(hoverSurface(...))——后者常态返回 Transparent，会把白底抹掉，
+// 深色字就压在深色遮罩上了（对比度≈1.05:1）。这是取流失败/未开播时唯一
+// 能点的按钮。
 func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 	btn := ui.Row(c).Height(40).Padding(0, 24, 0, 24).Radius(theme.RadiusFull).
-		Background(theme.White).Center().Cursor(ui.CursorPointer).Label(label)
-	btn.Background(hoverSurface(btn, "overlay-btn-bg", btn.Hovered(), theme.MediaOverlayBtnHover))
+		Center().Cursor(ui.CursorPointer).Label(label)
+	btn.Background(hoverSurfaceRest(btn, "overlay-btn-bg", btn.Hovered(),
+		theme.White, theme.MediaOverlayBtnHover))
 	if btn.Clicked() {
 		on()
 	}
@@ -663,11 +669,15 @@ func (a *App) playerTopbar(c *ui.Context) {
 	a.chromeFade(row)
 	row.Children(func() {
 		// ------------------------------ 返回：44 圆钮
+		//
+		// 胶囊底走 hoverSurfaceRest 传常态色：先 Background(MediaCapsuleBg)
+		// 再 Background(hoverSurface(...)) 会让常态变成透明，画面亮的时候
+		// 这颗键就只剩一根白描边。
 		back := ui.Box(c).Size(44, 44).Radius(999).
-			Background(theme.MediaCapsuleBg).
 			Border(1, theme.MediaTrack).
 			Center().Cursor(ui.CursorPointer).Label("退出直播间")
-		back.Background(hoverSurface(back, "back-bg", back.Hovered(), theme.MediaCapsuleBgHover)).
+		back.Background(hoverSurfaceRest(back, "back-bg", back.Hovered(),
+			theme.MediaCapsuleBg, theme.MediaCapsuleBgHover)).
 			BorderColor(hoverInk(back, "back-border", back.Hovered(), theme.MediaTrack, theme.MediaHairStrong))
 		if back.Clicked() {
 			// 叉是明确退出：结束焦点、断弹幕，不留后台声音。别的离开方式

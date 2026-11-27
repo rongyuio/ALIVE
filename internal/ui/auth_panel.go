@@ -214,8 +214,8 @@ func (a *App) authAccountPanel(c *ui.Context, auth live.Authenticator, st live.A
 		logout := ui.Row(c).Height(32).FillWidth().Padding(0, 10, 0, 10).Gap(6).
 			Radius(theme.RadiusMD).AlignItems(ui.Center).
 			Cursor(ui.CursorPointer).Label("退出登录")
-		logout.Background(theme.FillTertiary)
-		logout.Background(hoverSurface(logout, "logout-bg", logout.Hovered(), theme.FillSecondary))
+		logout.Background(hoverSurfaceRest(logout, "logout-bg", logout.Hovered(),
+			theme.FillTertiary, theme.FillSecondary))
 		if logout.Clicked() {
 			auth.Logout()
 			a.AuthOpen = false

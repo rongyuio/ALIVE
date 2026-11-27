@@ -1131,10 +1131,14 @@ func (a *App) emptyGrid(c *ui.Context, view gridView) {
 			TextColor(theme.TextTertiary)
 		ui.Row(c).Gap(10).Padding(10, 0, 0, 0).Children(func() {
 			if view.allCategories {
+				// 品牌色底走 hoverSurfaceRest：先 Background(Accent) 再
+				// Background(hoverSurface(...)) 会把常态抹成透明，
+				// 这颗主按钮就只剩一行深色字浮在背景上。
 				clear := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
 					Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-					Label("查看全部分区").Background(theme.Accent)
-				clear.Background(hoverSurface(clear, "empty-clear-bg", clear.Hovered(), theme.AccentHover))
+					Label("查看全部分区")
+				clear.Background(hoverSurfaceRest(clear, "empty-clear-bg", clear.Hovered(),
+					theme.Accent, theme.AccentHover))
 				if clear.Clicked() {
 					// 换到「全部」是换了一份列表：必须重新取。以前这里只改了
 					// SubCatIndex，没有 reload——空态里的这个按钮点了什么都不会
@@ -1150,8 +1154,9 @@ func (a *App) emptyGrid(c *ui.Context, view gridView) {
 
 			retry := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
 				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-				Label("重试").Background(theme.FillTertiary)
-			retry.Background(hoverSurface(retry, "retry-bg", retry.Hovered(), theme.FillSecondary))
+				Label("重试")
+			retry.Background(hoverSurfaceRest(retry, "retry-bg", retry.Hovered(),
+				theme.FillTertiary, theme.FillSecondary))
 			if retry.Clicked() && view.retry != nil {
 				view.retry()
 			}

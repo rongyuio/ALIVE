@@ -475,12 +475,15 @@ func (a *App) categorySearchItem(c *ui.Context, i int, h categoryHit) {
 	row := ui.Row(c).Padding(8, 10, 8, 10).Gap(10).Radius(theme.RadiusXS).
 		AlignItems(ui.Center).Cursor(ui.CursorPointer).
 		Label("分区结果:" + h.Category)
+	// 选中与悬停共用一处赋值：先 Background(选中色) 再被 hoverSurfaceOn
+	// 覆盖，键盘 ↑↓ 选中的那一条就没有底色。常态色当场传进去。
+	rest := ui.Transparent
 	if active {
-		row.Background(theme.FillQuaternary)
+		rest = theme.FillQuaternary
 	}
-	// 悬停只影响绘制，不写模型：指针停在列表上时每帧写 CategoryHit 会把
+	// 指针只影响绘制，不写模型：指针停在列表上时每帧写 CategoryHit 会把
 	// 键盘 ↑↓ 刚改好的选中项覆盖掉。
-	row.Background(hoverSurfaceOn(row, "cat-hit-bg", row.Hovered(), !active, theme.FillSecondary))
+	row.Background(hoverSurfaceRestOn(row, "cat-hit-bg", row.Hovered(), !active, rest, theme.FillSecondary))
 	if row.Clicked() {
 		a.CategoryHit = i
 		a.pickCategoryHit(h)

@@ -430,8 +430,9 @@ func (a *App) playerIsland(c *ui.Context, w, openW float32) {
 	cancel := ui.Box(c).Absolute().Left(cancelX).Top((islandContentH-islandPlayerFollowW)/2).
 		Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label(cancelLabel)
-	cancel.Background(theme.MediaRow).Border(1, theme.MediaRowLine)
-	cancel.Background(hoverSurface(cancel, "island-cancel-bg", cancel.Hovered(), theme.MediaHair))
+	cancel.Background(hoverSurfaceRest(cancel, "island-cancel-bg", cancel.Hovered(),
+		theme.MediaRow, theme.MediaHair)).
+		Border(1, theme.MediaRowLine)
 	cancel.BorderColor(hoverInk(cancel, "island-cancel-border", cancel.Hovered(), theme.MediaRowLine, theme.MediaHairStrong))
 	if cancel.Clicked() {
 		a.closeFocus()

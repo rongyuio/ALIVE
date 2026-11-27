@@ -220,12 +220,16 @@ func (a *App) searchItem(c *ui.Context, i int, hit searchHit) {
 	row := ui.Row(c).Padding(8, 10, 8, 10).Gap(11).Radius(theme.RadiusMD).
 		AlignItems(ui.Center).Cursor(ui.CursorPointer).
 		Label("搜索结果:" + hit.S.Name)
+	// 选中与悬停共用一处赋值：Background 是赋值不是叠加，先写选中色再被
+	// hoverSurfaceOn 覆盖的话，键盘 ↑↓ 选中的那一行会没有底色——用户回车
+	// 会跳到一条看不见的项上。常态色（选中色 / 透明）当场传进去。
+	rest := ui.Transparent
 	if active {
-		row.Background(theme.FillQuaternary)
+		rest = theme.FillQuaternary
 	}
-	// 悬停只影响绘制，不写模型。指针停在结果上时每帧写 SearchHit，会把键盘
+	// 指针只影响绘制，不写模型。指针停在结果上时每帧写 SearchHit，会把键盘
 	// ↑↓ 刚选中的项覆盖掉——用户看到的是「按 ↑↓ 没反应，挪开鼠标又好了」。
-	row.Background(hoverSurfaceOn(row, "search-row-bg", row.Hovered(), !active, theme.FillSecondary))
+	row.Background(hoverSurfaceRestOn(row, "search-row-bg", row.Hovered(), !active, rest, theme.FillSecondary))
 	if row.Clicked() {
 		a.SearchHit = i
 		a.openSearchHit(hit)

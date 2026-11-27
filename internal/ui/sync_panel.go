@@ -344,19 +344,21 @@ func (a *App) syncButton(c *ui.Context, action string, ico *ui.SVG, label string
 	}
 	btn := ui.Box(c).Height(syncBtnH).Padding(0, 14, 0, 14).Radius(theme.RadiusFull).
 		Center().Label(btnLabel)
+	// 常态底色和悬停色一起算、一次赋值：Background 是赋值不是叠加，
+	// 先写 Accent / FillTertiary、再被 hoverSurface 覆盖，会让同一个按钮
+	// 忙碌时实心、空闲时透明（两种长相）。
+	restBg, hoverBg := theme.FillTertiary, theme.FillSecondary
 	if primary {
-		btn.Background(theme.Accent)
-	} else {
-		btn.Background(theme.FillTertiary).Border(1, theme.Border)
+		restBg, hoverBg = theme.Accent, theme.AccentHover
 	}
 	if a.SyncBusy && !stoppable {
+		btn.Background(restBg)
 		btn.Opacity(0.5).Cursor(ui.CursorDefault)
 	} else {
+		btn.Background(hoverSurfaceRest(btn, "sync-btn-bg", btn.Hovered(), restBg, hoverBg))
 		btn.Cursor(ui.CursorPointer)
-		if primary {
-			btn.Background(hoverSurface(btn, "sync-btn-bg", btn.Hovered(), theme.AccentHover))
-		} else {
-			btn.Background(hoverSurface(btn, "sync-btn-bg", btn.Hovered(), theme.FillSecondary))
+		if !primary {
+			btn.Border(1, theme.Border)
 		}
 		switch {
 		case stoppable:
