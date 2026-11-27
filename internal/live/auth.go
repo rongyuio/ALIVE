@@ -314,9 +314,6 @@ func (a *qrAuth) restore() {
 	go a.verifyAt(seq)
 }
 
-// verify 从当前代次发起一次校验。
-func (a *qrAuth) verify() { a.verifyAt(a.currentSeq()) }
-
 // verifyAt 在后台确认存下来的会话还有效。seq 是发起这次校验时的代次；
 // 请求在飞的时候用户可能已经退出 / 换了号，那之后返回的结果整份作废。
 func (a *qrAuth) verifyAt(seq int) {

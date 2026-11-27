@@ -630,11 +630,6 @@ func (a *App) applyImportPlan(p importPlan) importSummary {
 	return p.summary()
 }
 
-// applyConfig 是「先算清单、再落地」的便捷入口：测试和一次性合并走这里。
-func (a *App) applyConfig(f configFile) importSummary {
-	return a.applyImportPlan(a.planImport("", f))
-}
-
 // rgbaColor 把文件里的 4 字节颜色装成 ui.Color。
 func rgbaColor(c [4]uint8) ui.Color {
 	return ui.Color{R: c[0], G: c[1], B: c[2], A: c[3]}

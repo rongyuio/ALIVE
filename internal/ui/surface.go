@@ -13,37 +13,10 @@ import (
 // 引擎、流、音量、播放态都住在会话里，不管是墙上、播放页还是后台收听。
 // 播放页画的是焦点，岛上显示的是焦点，出声的也是焦点；墙上的 active、
 // 后台收听、呈现尺寸、岛形态全部从「焦点是谁 + 焦点此刻被画在哪」推导。
-//
-// 完整模型、七条不变量和操作路径见 doc/architecture/surfaces.md。
-
-// surface 是一个会话此刻被画在哪种表面上。
-//
-// 它不是"模式"：同一个会话在任意时刻只有一处（或零处）全尺寸视图，
-// 后台收听就是"没有任何全尺寸视图"的那一格，不是第四个并列状态。
-type surface int
-
-const (
-	// surfaceNone 表示这一路没有可见视图：后台收听、或墙不可见。
-	surfaceNone surface = iota
-	// surfaceTile 表示被画在观测墙的格子里。
-	surfaceTile
-	// surfaceFull 表示被画成播放页的全尺寸画面。
-	surfaceFull
-)
-
-func (s surface) String() string {
-	switch s {
-	case surfaceTile:
-		return "tile"
-	case surfaceFull:
-		return "full"
-	}
-	return "none"
-}
 
 // picture 是一间房的**画面归属**：这一刻，它的画面住在哪个表面上。
 //
-// 它不是呈现尺寸（surface）：surface 回答"这一间被画成多大"，picture 回答
+// 它不是呈现尺寸（presentSize）：那个回答"这一间被画成多大"，picture 回答
 // "换表面时画面从哪来、到哪去"。过渡只由它决定，不由"从哪一页进来"决定——
 // 后者是代理，换个台就过期了。
 //
@@ -208,25 +181,6 @@ func (a *App) fullSize() bool {
 // 它就是「后台收听」——不是一种模式，是 fullSize 的反面。
 func (a *App) inBackground() bool {
 	return a.focus != nil && !a.fullSize()
-}
-
-// surfaceFor 求某个会话此刻的可见表面。
-//
-// 三个判据，按优先级：播放页全尺寸 > 观测墙格子 > 无视图。
-// 后台收听时焦点仍然有引擎，所以"有播放器"不等于"有视图"。
-func (a *App) surfaceFor(key string) surface {
-	if key == "" {
-		return surfaceNone
-	}
-	if a.focus != nil && a.focus.key == key && a.fullSize() {
-		return surfaceFull
-	}
-	if a.onWatchWall() {
-		if _, ok := a.watch.rects[key]; ok {
-			return surfaceTile
-		}
-	}
-	return surfaceNone
 }
 
 // 焦点会话的音量与播放态。

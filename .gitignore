@@ -1,31 +1,27 @@
-# libmpv 运行库：116MB，不进仓库。make deps 按 sha256 下到用户缓存。
-# 上游自己也这么做（internal/nativelib/nativelib.go:355 落到 <cache>/mygo/natives/）。
-/third_party/mpv/bin/libmpv-2.dll
+# 只写三类：生成物、本机私有状态、取回来的第三方二进制。
+#
+# 不写「因为放错了位置所以藏起来」的通配。探针（*_probe_test.go、zz_*_test.go）
+# 和根目录的二进制以前就是被 ignore 掉的——于是它们混进源码树、堆在仓库根，
+# git 一声不响。现在不 ignore：它们出现，就是要被看见。
+#
+# 判据一句话：**每一条 ignore 都必须能指出一个「唯一位置」**。
+# 指不出来的，说明东西放错了地方，该搬，不该藏。
 
-# 打包产物与开发缓存
+# ---------------------------------------------------------------- 生成物
 /build/
+
+# ---------------------------------------------------------------- 本机私有状态
+# 沙箱（APPDATA/LOCALAPPDATA 指向这里）、探针、临时文件全在这两个目录里。
+# 探针只许住 .tmp/probes/<包名>/，不许住源码树——用目录当边界，不用文件名通配。
 /.mygo/
-mygo_windows_*.syso
-
-# `go build .` 会在仓库根产出同名二进制
-/ALIVE
-/ALIVE.exe
-# go build ./cmd/<工具> 在仓根产出的二进制
-/alive-*.exe
-
-# 本地临时文件
-/.task/
 /.tmp/
 
-# 探针不进仓库：要连公网、要真实流、跑不进 make check 的测试放 .tmp/probes/ 下，
-# 需要时拷回对应包。见 AGENTS.md「测试与验证」。
-*_probe_test.go
-zz_*_test.go
+# ---------------------------------------------------------------- 第三方二进制
+# libmpv 116MB，由 make deps 按 sha256 取到本机，不入库。
+/third_party/mpv/bin/libmpv-2.dll
 
-# 更新签名私钥：任何情况下都不进仓库。公钥在 mygo.json 的 updates.publicKey，
-# 私钥按 doc/decisions/0015-self-update.md 放在仓库外，构建时走环境变量。
+# mygo build 生成的资源占位
+*.syso
+
+# 更新签名私钥：任何情况下都不入库（公钥在 mygo.json）
 mygo-update.key
-
-# README 等 owner 验收后再入库。
-/README.md
-

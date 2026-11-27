@@ -32,5 +32,4 @@ echo "" >&2
 git diff --cached --name-only | sed 's/^/  /' >&2
 echo "" >&2
 echo "拆开提交；确实拆不开就在 body 里写一行「拆不开：<为什么>」。" >&2
-echo "（alive-gate 的 commits 那条守的是同一件事，这里只是让它早一步发生。）" >&2
 exit 1

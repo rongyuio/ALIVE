@@ -354,17 +354,6 @@ type videoTrack interface {
 // 判断只写在一处，所以不会出现「这条路径忘了放开」。
 type presentSize struct{ W, H int }
 
-// presentSizeFor 求这一路此刻该呈现多大。
-//
-//	播放页          → 0,0（视频原始尺寸）
-//	观测墙 active   → 格子物理像素
-//	后台收听        → 160×90（只解码不给人看）
-//
-// 判据是「这一间此刻被画在哪」，不是「谁持有它」——房间只有一个，视图有两个。
-func (a *App) presentSizeFor() presentSize {
-	return a.presentSizeForSession(a.focus)
-}
-
 // presentSizeForSession 求某一间该呈现多大。
 //
 // 同一间房在墙格和播放页之间切换时，这里就是唯一改变的东西：0,0 与

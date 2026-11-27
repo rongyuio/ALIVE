@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -16,6 +15,8 @@ import (
 const (
 	danmuPanelW   float32 = 232
 	danmuSliderW  float32 = 180 // 面板内容宽 200 − 行内 padding 20
+	danmuSliderH  float32 = 14  // 滑杆热区高度＝拇指直径
+	danmuThumbD   float32 = 14  // 拇指直径
 	danmuRowPadH  float32 = 10
 	danmuRowPadV  float32 = 8
 	danmuRowGap   float32 = 6
@@ -62,20 +63,20 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 				a.danmuColorRow(c, "描边", &a.DanmuStroke, &a.DanmuStrokeOpen)
 				a.danmuSwitchRow(c, "彩色弹幕", &a.DanmuColorful)
 				a.danmuSliderRow(c, "字体", fmt.Sprintf("%.0fpx", a.DanmuFont),
-					(a.DanmuFont-14)/16, func(f float32) {
-						a.DanmuFont = 14 + float32(math.Round(float64(f*8)))*2
+					float64(a.DanmuFont), 14, 30, 2, func(v float64) {
+						a.DanmuFont = float32(v)
 					})
 				a.danmuSliderRow(c, "速度", formatDanmuDuration(a.DanmuDur),
-					float32(a.DanmuDur.Milliseconds()-5000)/15000, func(f float32) {
-						a.DanmuDur = millis(5000 + int(math.Round(float64(f*30)))*500)
+					float64(a.DanmuDur.Milliseconds()), 5000, 20000, 500, func(v float64) {
+						a.DanmuDur = millis(int(v))
 					})
 				a.danmuSliderRow(c, "显示区域", formatDanmuArea(a.DanmuArea),
-					(a.DanmuArea-0.25)/0.75, func(f float32) {
-						a.DanmuArea = 0.25 + float32(math.Round(float64(f*3)))*0.25
+					float64(a.DanmuArea), 0.25, 1, 0.25, func(v float64) {
+						a.DanmuArea = float32(v)
 					})
 				a.danmuSliderRow(c, "透明度", fmt.Sprintf("%.0f%%", a.DanmuOpacity*100),
-					(a.DanmuOpacity-0.2)/0.8, func(f float32) {
-						a.DanmuOpacity = 0.2 + float32(math.Round(float64(f*16)))*0.05
+					float64(a.DanmuOpacity), 0.2, 1, 0.05, func(v float64) {
+						a.DanmuOpacity = float32(v)
 					})
 			})
 		})
@@ -205,14 +206,14 @@ func (a *App) danmuSwitchRow(c *ui.Context, label string, on *bool) {
 }
 
 // danmuSliderRow 是一行滑杆：标题 + 右侧当前值 + 4px 轨道（accent 进度 + 白色拇指）。
-func (a *App) danmuSliderRow(c *ui.Context, label, value string, frac float32, set func(float32)) {
-	if frac < 0 {
-		frac = 0
-	}
-	if frac > 1 {
-		frac = 1
-	}
-
+//
+// 滑杆本身用 MyGo 的 ui.SliderBase——「没有外观的滑杆」（third_party/mygo/ui/base.go:182）。
+// 拖动、方向键、Home/End、Step 吸附、以及无障碍树里的 role=slider 和
+// aria-valuemin/valuemax/valuenow 全由它提供，外观仍然自己画。
+//
+// 这里原来是手搓的 4px Box + Label：屏幕上看着一模一样，读屏只会念「字体」，
+// 念不出 20px，方向键按了也没反应——和音量条当年那个坑是同一个。
+func (a *App) danmuSliderRow(c *ui.Context, label, value string, cur, lo, hi, step float64, set func(float64)) {
 	row := ui.Column(c).Padding(danmuRowPadV, danmuRowPadH, danmuRowPadV, danmuRowPadH).
 		Gap(danmuRowGap).Radius(danmuRowRad).
 		Background(theme.MediaRow).
@@ -223,33 +224,30 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, frac float32, s
 			ui.Text(c, value).FontSize(theme.TextXS).TextColor(theme.Accent)
 		})
 
-		track := ui.Box(c).Width(danmuSliderW).Height(4).Radius(theme.RadiusFull).
-			Label(label).
-			Background(theme.MediaTrack).Cursor(ui.CursorPointer)
-		// PointerPosition 的 over 和 Pressed 都只做几何包含：指针一纵向离开
-		// 这条 4px 轨道就一起变假。Dragged 是 press 级状态，按住期间指针跑到
-		// 元素外仍为真，x 也仍然是轨道里的局部坐标——拿它判断是否还在拖，
-		// 位置本身不拿 over 当条件。否则拖到一半就冻住，松手也不落值。
-		// 音量条（player.go）是同一套写法。
-		x, _, _ := track.PointerPosition()
-		_, _, held := track.Dragged()
-		if track.Pressed() || held {
-			f := x / danmuSliderW
-			if f < 0 {
-				f = 0
+		// 局部副本：控件通过指针写回的写法见 views.md，值变了才回写模型。
+		v := cur
+		frac := float32(0)
+		if hi > lo {
+			frac = float32((v - lo) / (hi - lo))
+		}
+		track := ui.SliderBase(c, &v, lo, hi).Step(step).
+			Width(danmuSliderW).Height(danmuSliderH).Label(label)
+		track.Draw(func(p *ui.Painter, r ui.Rect) {
+			mid := r.Y + r.H/2
+			p.Fill(ui.Rect{X: r.X, Y: mid - 2, W: r.W, H: 4}, theme.MediaTrack, theme.RadiusFull)
+			if frac > 0 {
+				p.Fill(ui.Rect{X: r.X, Y: mid - 2, W: r.W * frac, H: 4}, theme.Accent, theme.RadiusFull)
 			}
-			if f > 1 {
-				f = 1
-			}
-			set(f)
+			p.Fill(ui.Rect{
+				X: r.X + r.W*frac - danmuThumbD/2,
+				Y: mid - danmuThumbD/2,
+				W: danmuThumbD, H: danmuThumbD,
+			}, ui.RGB(255, 255, 255), danmuThumbD/2)
+		})
+		if track.Changed() {
+			set(v)
 			a.markDirty()
 		}
-		track.Children(func() {
-			ui.Box(c).Absolute().Top(0).Left(0).Height(4).
-				Width(frac * danmuSliderW).Radius(theme.RadiusFull).Background(theme.Accent)
-			ui.Box(c).Absolute().Top(-5).Left(frac*danmuSliderW-7).
-				Size(14, 14).Radius(7).Background(ui.RGB(255, 255, 255))
-		})
 	})
 }
 

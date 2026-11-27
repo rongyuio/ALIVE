@@ -714,15 +714,6 @@ func biliIsFLV(u biliPlayURL) bool {
 	return strings.Contains(strings.ToLower(u.URL), ".flv")
 }
 
-// biliIsHLS 判断地址是不是 m3u8。
-func biliIsHLS(u biliPlayURL) bool {
-	name := strings.ToLower(u.Format)
-	if name == "hls" || strings.Contains(name, "ts") || strings.Contains(name, "fmp4") {
-		return true
-	}
-	return strings.Contains(u.URL, ".m3u8")
-}
-
 // biliQNSlug 给档位一个稳定的 id，跨平台保持同一套说法。
 func biliQNSlug(qn int64) string {
 	switch qn {

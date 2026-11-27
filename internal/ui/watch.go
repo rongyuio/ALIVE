@@ -101,6 +101,10 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 	tile := ui.Box(c).Absolute().Left(r.X).Top(r.Y).Width(r.W).Height(r.H).
 		Radius(theme.RadiusMD).Clip().Background(theme.BgSecondary).
 		Cursor(ui.CursorPointer).Focusable().
+		// Role + AccessSelected：读屏要听得出「哪一格在响」。只靠那颗绿点，
+		// 视觉用户在墙上一眼看见，读屏用户什么也拿不到。AccessSelected 只
+		// 上报状态、不改外观（Selected 会把格子染成强调色）。
+		Role(ui.RoleListItem).AccessSelected(active).
 		Label(watchTileLabel(room))
 	tile.InsetShadow(0, 1, 0, 0, theme.TopLight)
 	// 这一格是"同一间房"在墙上的那一份：播放页的舞台凭同一个身份飞过来，
