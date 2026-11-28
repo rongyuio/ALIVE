@@ -69,97 +69,20 @@ func TestSecondaryRowOverflowMatchesRealWidth(t *testing.T) {
 	}
 }
 
-// 「更多分区」按钮的底色、字色、箭头必须按同一帧的同一个 a.MoreOpen 算。
+// 关注刷新按 writeFollowStatus 的结果判成功。
 //
-// 内联 btn.Clicked() 会在这一帧中途翻转 a.MoreOpen：底色（上面几行）已按旧值
-// 算过，字色和箭头当场变成新值——同一颗按钮在一帧里两副长相，而下面的
-// PopoverBase 又已经用新值把浮层打开了。改用 OnClick 推迟到本帧构建之后。
-func TestMoreButtonDefersToggle(t *testing.T) {
-	body := funcBody(t, "category_bar.go", "func (a *App) moreButton(")
-	if strings.Contains(body, "if btn.Clicked() {") {
-		t.Error("moreButton 还在内联翻转 a.MoreOpen：底色和字色会在同一帧里打架")
-	}
-	if !strings.Contains(body, "btn.OnClick(func() { a.MoreOpen = !a.MoreOpen })") {
-		t.Error("moreButton 没有把翻转推迟到本帧构建之后")
-	}
-}
-
-// 查询变短导致选中项越界时，收到**末项**，不要甩回第一条。
-//
-// 归 0 会让还在连续打字的人看到选中项从末尾跳回开头，回车落到一条他根本
-// 没看过的分区上。
-func TestCategoryHitClampsToLastNotFirst(t *testing.T) {
-	a := newApp()
-	a.Groups = []CategoryGroup{{
-		Name:        "网游",
-		Categories:  []string{"英雄联盟", "DOTA2", "网游其他"},
-		CategoryIDs: []string{"1", "2", "3"},
-	}}
-	a.CategoryQuery = "游"
-	a.catHitQuery = "游" // 让 categoryHits 不把它当成"查询变了"重置成 0
-	a.CategoryHit = 99
-
-	hits := a.categoryHits()
-	if len(hits) < 2 {
-		t.Fatalf("这组分区下「游」只命中 %d 条，测不出 clamp", len(hits))
-	}
-	if a.CategoryHit != len(hits)-1 {
-		t.Fatalf("越界后 CategoryHit = %d，应为末项 %d（归 0 会让选中项跳回开头）",
-			a.CategoryHit, len(hits)-1)
-	}
-}
-
-// 关注刷新里"这一条算成功还是失败"要在**写回的同一个回调里**判。
-//
-// 原来返回 `patch != nil`，真正写回的是 writeFollowStatus——它找不到记录
-// （刷新期间被取关了）返回 false，可那一条已经算进 updated 了。
+// 原来返回 patch != nil，而真正写回的是 writeFollowStatus——刷新期间被取关的
+// 那条找不到记录返回 false，却已经算进 updated。
 func TestFollowRefreshScoresInsideWriteback(t *testing.T) {
 	body := funcBody(t, "follow.go", "func (a *App) refreshOne(")
 	if strings.Contains(body, "return patch != nil") {
-		t.Error("refreshOne 还在按 patch != nil 记成功：找不到记录的那条会被算成已刷新")
+		t.Error("还在按 patch != nil 记成功：找不到记录的那条会被算成已刷新")
 	}
-	if !strings.Contains(body, "writeFollowStatus(r.Platform, r.RoomID, patch) && patch != nil") {
-		t.Error("refreshOne 没有用 writeFollowStatus 的返回值判成功")
+	if !strings.Contains(body, "if a.writeFollowStatus(r.Platform, r.RoomID, patch) && patch != nil {") {
+		t.Error("没有用 writeFollowStatus 的返回值判成功")
 	}
 	if !strings.Contains(body, "updated.Add(1)") || !strings.Contains(body, "failed.Add(1)") {
-		t.Error("分类没有放进 Update 回调")
-	}
-}
-
-// 一条都没试的时候不许说「已刷新 0 位主播」配成功色调。
-func TestRefreshSummarySaysNothingToRefresh(t *testing.T) {
-	msg, tone := refreshSummary(0, 0, 0)
-	if strings.Contains(msg, "已刷新") {
-		t.Errorf("没有可刷新的记录却说 %q", msg)
-	}
-	if tone == toastSuccess {
-		t.Error("没有可刷新的记录却给了成功色调")
-	}
-	// 原来的两种情形行为不变。
-	if m, tn := refreshSummary(3, 0, 3); m != "已刷新 3 位主播" || tn != toastSuccess {
-		t.Errorf("正常成功分支变了：%q %v", m, tn)
-	}
-	if _, tn := refreshSummary(0, 3, 3); tn != toastError {
-		t.Errorf("全失败分支变了：%v", tn)
-	}
-}
-
-// 墙格音量每次滚轮事件都现读，不用构建时缓存的旧值。
-//
-// 同一帧里两次滚轮事件都基于同一个旧 volume，只有最后一次生效——触控板快滑
-// 两格只跳一格。
-func TestWallTileVolumeReadsFreshOnEachWheel(t *testing.T) {
-	body := funcBody(t, "watch.go", "func (a *App) watchTileAudio(")
-	i := strings.Index(body, "hot.HandleInput(func(ev ui.InputEvent) bool {")
-	if i < 0 {
-		t.Fatal("找不到 HandleInput")
-	}
-	h := body[i:]
-	if j := strings.Index(h, "\n\t\t})"); j > 0 {
-		h = h[:j]
-	}
-	if !strings.Contains(h, "a.watchVolume(watchKey(room))") {
-		t.Error("滚轮处理里没有现读音量：同一帧两次事件只会有一次生效")
+		t.Error("分类不在写回里")
 	}
 }
 

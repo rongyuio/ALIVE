@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -127,8 +128,10 @@ const danmuStickerScale float32 = 2.8
 // danmuState 是推动器的并发标志：active 由主线程写，循环读；
 // loop 保证同时只有一个 goroutine 在跑。
 type danmuState struct {
-	active atomic.Bool
-	loop   atomic.Bool
+	active  atomic.Bool
+	running bool
+	// startMu 保护 active/running 的迁移（ensureDanmuLoop / stopDanmuLoop / 循环退出）。
+	startMu sync.Mutex
 	// seq 是 danmuLine.Seq 的发号器，只在主线程里读写。
 	seq uint64
 }
@@ -146,31 +149,55 @@ func (a *App) ensureDanmuLoop() {
 	if a.Win == nil {
 		return
 	}
+	// 状态迁移全在这把锁里做：active / running 只在持锁时改。
+	//
+	// 原来是「active=true 然后 CAS(loop false→true)」，循环体每拍只看 active、
+	// 退出时把 loop 放回 false。stop→start 若发生在旧 goroutine「已读到
+	// active=false、还没跑到 defer」的那三十几毫秒里，CAS 失败直接 return，
+	// 随后旧循环退出并置 loop=false——**没有任何 goroutine 在跑而 active 为
+	// true**。恢复全靠下一次构建再调一次；播放页停止重建（窗口被遮挡、暂停）
+	// 时弹幕就冻住。
+	a.danmu.startMu.Lock()
+	defer a.danmu.startMu.Unlock()
 	if !a.DanmuOn {
 		a.danmu.active.Store(false)
 		return
 	}
 	a.danmu.active.Store(true)
-	if !a.danmu.loop.CompareAndSwap(false, true) {
-		return
+	if a.danmu.running {
+		return // 已经有循环在跑，它会继续看到 active=true
 	}
+	a.danmu.running = true
 	win := a.Win
 	go func() {
-		defer a.danmu.loop.Store(false)
 		ticker := time.NewTicker(danmuTick)
 		defer ticker.Stop()
 		for range ticker.C {
-			if !a.danmu.active.Load() {
-				return
+			if a.danmu.active.Load() {
+				win.Update(func() { a.tickDanmu() })
+				continue
 			}
-			win.Update(func() { a.tickDanmu() })
+			// 要退出：必须在锁里再确认一次 active。否则 start 可能刚刚在锁外
+			// 把它设回 true，而这一拍已经决定退出——又是一个没人跑的推动器。
+			a.danmu.startMu.Lock()
+			if a.danmu.active.Load() {
+				a.danmu.startMu.Unlock()
+				continue
+			}
+			a.danmu.running = false
+			a.danmu.startMu.Unlock()
+			return
 		}
 	}()
 }
 
 // stopDanmuLoop 停下推动器：把 active 放下，正在跑的循环下一拍退出。
 // 由播放页元素的 OnUnmount 调用——谁起的活谁收。
-func (a *App) stopDanmuLoop() { a.danmu.active.Store(false) }
+func (a *App) stopDanmuLoop() {
+	a.danmu.startMu.Lock()
+	a.danmu.active.Store(false)
+	a.danmu.startMu.Unlock()
+}
 
 // danmuTime 是弹幕当前用的时间，第一次用到时用注入的时钟落一个初值。
 func (a *App) danmuTime() time.Time {

@@ -621,13 +621,9 @@ func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool,
 			btn.Jump("action-spin-stop", phase)
 			icon.Rotate(phase)
 		} else {
-			// 收尾**往前**走完这一圈，不是倒着退回 0。
-			//
-			// 目标原来写死 0：停下的那一刻 phase 在 (0,360) 之间，AnimateTo
-			// 会倒着转掉最多一整圈——用户点「停止刷新」，图标往后甩一圈才停。
-			// 目标写 360：从当前角度继续往前，最多补满一圈，落点就是正位
-			// （360° 与 0° 在屏幕上是同一个朝向）。
-			icon.Rotate(btn.AnimateTo("action-spin-stop", followsSpinStopTarget, followsSpinStop))
+			// 图标的 transform 有 500ms 过渡，
+			// 转圈停下时图标滑回正位，而不是啪地跳回去。
+			icon.Rotate(btn.AnimateTo("action-spin-stop", 0, followsSpinStop))
 		}
 	})
 }
@@ -642,13 +638,6 @@ const (
 	// --dur-2：.panelCard / .panelName / .panelFilter 的 hover 与选中态过渡
 	followsDur2 = theme.MotionChrome
 )
-
-// followsSpinStopTarget 是收尾动画的目标角度：往前补满这一圈。
-//
-// 目标必须是 360，不能是 0。停下的那一刻 phase 落在 (0,360) 之间，目标写 0
-// 就是倒着转掉最多一整圈——用户点「停止刷新」，图标往后甩一圈才停。写 360
-// 则是从当前角度继续往前补满，落点同样是正位（360° 与 0° 屏幕朝向相同）。
-const followsSpinStopTarget float32 = 360
 
 // followsSpinStop 是 .actionBtn svg 的 transition：
 // transform 500ms cubic-bezier(0.16, 1, 0.3, 1)。和 --ease-out 不是同一条曲线。

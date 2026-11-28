@@ -275,12 +275,7 @@ func (a *App) playerFullscreen() bool {
 // 单拎出来是因为有两处只关心系统全屏、不关心窗口全屏：系统全屏下不画
 // 弹幕侧栏，飞幕的宽度也就不能扣掉面板。
 func (a *App) sysFullscreen() bool {
-	// 用 Shell 每帧记下的那份，不再直接问窗口。
-	//
-	// 同一帧里「是不是全屏」原来有两个来源：a.winFullscreen（Shell 开头写一次）
-	// 和这里直接问窗口。两次平台往返、且字段是这一帧开头的值、直接问是当下的值，
-	// 同一帧内可能不同。统一到缓存那一份。
-	return a.winFullscreen
+	return windowFullScreen(a.Win)
 }
 
 // windowFullScreen 问系统这一扇窗是不是全屏。测试里换成常量：零值

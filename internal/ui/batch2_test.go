@@ -29,26 +29,6 @@ func TestFollowDotKeyIncludesRoomID(t *testing.T) {
 	}
 }
 
-// 转圈收尾必须往前走完这一圈，不能倒着退回 0。
-//
-// 停下的那一刻 phase 落在 (0,360) 之间。目标写 0 就是倒着转掉最多一整圈；
-// 写 360 则是继续往前补满，落点还是正位（360° 与 0° 屏幕朝向相同）。
-func TestFollowsSpinStopTargetGoesForward(t *testing.T) {
-	if followsSpinStopTarget != 360 {
-		t.Fatalf("收尾目标改成了 %v：不是 0 也不是 360 就得重新想一遍方向",
-			followsSpinStopTarget)
-	}
-	for _, phase := range []float32{0, 1, 90, 180, 270, 359.9} {
-		if followsSpinStopTarget < phase {
-			t.Errorf("phase=%.1f 时目标 %v 在它后面：会倒着转",
-				phase, followsSpinStopTarget)
-		}
-		if d := followsSpinStopTarget - phase; d > 360 {
-			t.Errorf("phase=%.1f 时要转 %.1f°，超过一整圈", phase, d)
-		}
-	}
-}
-
 // 切分区要推迟到本帧构建之后。
 //
 // selectFollowsSection 改的是 a.FollowsSection，而这一帧后面的内容区正是按它

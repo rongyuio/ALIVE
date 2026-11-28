@@ -504,6 +504,21 @@ func (a *App) applyPresentTo(s *roomSession) {
 	a.setPresent(s, want)
 }
 
+// playbackEngineOf 取具体引擎（要调 Debug 一类的 mpv 专有方法时用）。
+//
+// 和 engineOf 是同一件事的两种视图：engineOf 只暴露 SetPresentSize，给呈现
+// 用；这里要整个 *playback.Engine，给诊断/连续性用。**两者必须走同一个真正
+// 的取法**——原来 trackContinuity / forwardWallMpv 各自写死类型断言，换实现时
+// 呈现那一半静默降级、诊断那一半静默丢日志，两半行为不一致且都不报错。
+func playbackEngineOf(p *ui.VideoPlayer) *playback.Engine {
+	if p == nil {
+		return nil
+	}
+	// 唯一一处真正的类型断言。要换实现只改这里。
+	e, _ := p.Engine().(*playback.Engine)
+	return e
+}
+
 // engineOf 从播放器取出它的引擎。生产实现是类型断言；测试里换成假的。
 //
 // 播放器底下不是我们的引擎（比如将来换成别的实现）时返回 nil，
@@ -512,7 +527,7 @@ var engineOf = func(p *ui.VideoPlayer) videoTrack {
 	if p == nil {
 		return nil
 	}
-	e, _ := p.Engine().(*playback.Engine)
+	e := playbackEngineOf(p)
 	if e == nil {
 		return nil
 	}
@@ -1201,7 +1216,7 @@ func (a *App) failPlayback(class, msg string, err error) {
 // 音频时钟停了而时间轴还在走才是音频这一侧的问题。两者分开，才不会把
 // 上游的锅记到我们头上。
 func (a *App) trackContinuity(p *ui.VideoPlayer, now time.Time) {
-	e, _ := p.Engine().(*playback.Engine)
+	e := playbackEngineOf(p)
 	if e == nil {
 		return
 	}
@@ -1363,7 +1378,7 @@ func (a *App) trackFirstFrame() {
 			var gpu bool
 			var gpuFrames, renders uint64
 			var displayFPS, vfps float64
-			if e, ok := p.Engine().(*playback.Engine); ok {
+			if e := playbackEngineOf(p); e != nil {
 				debug := e.Debug()
 				hwdec = debug.HWDec
 				gpu, gpuFrames, renders = debug.GPU, debug.GPUFrames, debug.Renders

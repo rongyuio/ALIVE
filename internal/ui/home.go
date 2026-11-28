@@ -711,6 +711,8 @@ func (a *App) Shell(c *ui.Context) {
 	onPlayer := a.Router.Path() == routePlayer
 	if !onPlayer && a.wasOnPlayer {
 		a.leavePlayer()
+		// 离开播放页就清掉房间记号：下次进同一个房间也要重新展开一次。
+		a.infoRoom = ""
 	}
 	a.wasOnPlayer = onPlayer
 
@@ -1003,11 +1005,9 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 	// 正文的左右 padding，再减掉常驻滚动条占的 10px：
 	// 列宽按可用宽度算，滚动条也不会压在最后一列上。
 	avail := w - 2*a.bodyPadX(c) - theme.ScrollbarW
-	// 不再把 avail 抬到 CardMinWidth。
-	//
-	// 抬上去之后 cardW 会大于真实可用宽度：窗口窄到约 240 DIP 以下时卡片横向
-	// 溢出、右边缘被裁掉。现在 main.go 的 MinWidth = 900 挡住了这条路，但那道
-	// 防线在改窗口尺寸/DPI/协议时不成立。不抬也只是"卡片比设计的窄"，不会溢出。
+	if avail < theme.CardMinWidth {
+		avail = theme.CardMinWidth
+	}
 
 	cols := int((avail + theme.GridGap) / (theme.CardMinWidth + theme.GridGap))
 	if cols < 1 {

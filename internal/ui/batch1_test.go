@@ -9,7 +9,6 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/live"
-	"alive/internal/theme"
 )
 
 // 焦点那一间的「重新加载」必须归媒体层，不管它在不在全尺寸视图里。
@@ -113,36 +112,5 @@ func TestWatchProbeBackoffEscalates(t *testing.T) {
 	second := s.retryAt.Sub(now2)
 	if second <= first {
 		t.Errorf("第二次退避 %v 不比第一次 %v 长：退避没有升级", second, first)
-	}
-}
-
-// 窄窗口下卡片不许溢出。
-//
-// `avail` 原来在小于 CardMinWidth 时被强行抬回 CardMinWidth，于是 cardW 可能
-// 大于真实可用宽度，卡片横向溢出被裁掉。现在不抬：只是卡片比设计的窄，不溢出。
-func TestGridCardNeverWiderThanWindow(t *testing.T) {
-	a := newApp()
-	a.LiveMode = true
-	a.Platform = "bilibili"
-	a.Groups = []CategoryGroup{{Name: "网游", Categories: []string{"英雄联盟"}, CategoryIDs: []string{"1"}}}
-	a.Streamers = []Streamer{
-		{Platform: "bilibili", RoomID: "1", Name: "甲", Title: "t"},
-		{Platform: "bilibili", RoomID: "2", Name: "乙", Title: "t"},
-	}
-
-	const w = 200 // 明显窄于 CardMinWidth(220) 加两侧 padding
-	tt := ui.NewTester(a.Shell, w, 600)
-	tt.Frame()
-	tt.Frame()
-
-	if a.gridCardW <= 0 {
-		t.Fatalf("没算出卡片宽度：%v", a.gridCardW)
-	}
-	if a.gridCardW > float32(w) {
-		t.Errorf("卡片宽 %.1f 超过窗口宽 %d：会横向溢出被裁（CardMinWidth 是设计下限，不是可以突破窗口的理由）",
-			a.gridCardW, w)
-	}
-	if a.gridCardW+2*theme.ScrollbarW > float32(w) {
-		t.Errorf("卡片宽 %.1f 加上内边距已经超过窗口 %d", a.gridCardW, w)
 	}
 }

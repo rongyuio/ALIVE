@@ -421,12 +421,8 @@ func (a *App) categoryHits() []categoryHit {
 	if len(hits) > 40 {
 		hits = hits[:40]
 	}
-	// 越界时收到**末项**，不要甩回第一条。
-	//
-	// 归 0 会让还在连续打字的人看到选中项从末尾跳回开头，回车落到一条他
-	// 根本没看过的分区上。查询继续变短时，末项才是"离原来那条最近的"。
-	if n := len(hits); a.CategoryHit >= n {
-		a.CategoryHit = max(0, n-1)
+	if a.CategoryHit >= len(hits) {
+		a.CategoryHit = 0
 	}
 	return hits
 }
@@ -491,14 +487,7 @@ func (a *App) categorySearchItem(c *ui.Context, i int, h categoryHit) {
 // secondaryRow 是二级分区行：chip 横滑 + 「全部」浮层入口 + 订阅按钮。
 func (a *App) secondaryRow(c *ui.Context) {
 	winW, _ := c.Size()
-	// 可用宽度按**这一行真实拿到的宽度**算，不能按整窗减两个 14。
-	//
-	// 这一行嵌在 Home 的 Column（Padding 用 bodyPadX：常态 14、≤1240 时 10）
-	// + 分区面板 Padding(12,14,14,14) + ScrollHorizontal.Padding(2) 里。
-	// 用裸的 2*14 会把可用宽度算大 10~20 DIP：二级分区刚好落在这段误差带里
-	// 时 overflow 判假，「全部」按钮不画，最后几枚 chip 被 Scroll 裁掉——
-	// 还能横滑，但入口没了。
-	avail := winW - 2*a.bodyPadX(c) - 2*14 - 2*2 - a.subscribeWidth(c) - 12
+	avail := winW - 2*14 - a.subscribeWidth(c) - 12
 
 	cats := a.currentCategories()
 	// 二级分区是这一套里最"重"的一层：滑块是实心的 accent，
@@ -575,10 +564,9 @@ func (a *App) moreButton(c *ui.Context, row ui.Element) {
 	if a.MoreOpen {
 		btn.Background(theme.AccentSoft)
 	}
-	// 用 OnClick 推迟。这一帧的底色（上面几行）已经按旧的 a.MoreOpen 算过，
-	// 内联翻转会让底色停在收起态、字色和箭头当场变成展开态——同一颗按钮在
-	// 同一帧两副长相；而下面的 PopoverBase 又已经用新值把浮层打开了。
-	btn.OnClick(func() { a.MoreOpen = !a.MoreOpen })
+	if btn.Clicked() {
+		a.MoreOpen = !a.MoreOpen
+	}
 
 	rest, on := theme.TextSecondary, theme.TextPrimary
 	if a.MoreOpen {

@@ -405,9 +405,7 @@ func (a *App) exportDiagnostics() {
 		a.SyncError = "日志目录不可用，无法导出诊断包"
 		return
 	}
-	// 文件名到毫秒：精确到秒时同一秒内导出两次，第二次会覆盖第一次，
-	// 用户以为拿到了两份证据。
-	out := filepath.Join(dir, "bundle-"+time.Now().Format("20060102-150405.000")+".zip")
+	out := filepath.Join(dir, "bundle-"+time.Now().Format("20060102-150405")+".zip")
 	meta := a.diagnosticMeta()
 	win := a.Win
 	// 没有窗口就没有回主线程的入口：runOnMain / Update 会丢掉回调，

@@ -24,8 +24,8 @@
 
 | 判决 | 条数 |
 |---|---|
-| ✔ 已修（有测试或可跑判据） | 62 |
-| ◇ 已记账（在 `doc/known-debt.md`） | 25 |
+| ✔ 已修（有测试或可跑判据） | 55 |
+| ◇ 已记账（在 `doc/known-debt.md`） | 32 |
 | ✘ 判定不成立（有反证） | 3 |
 | 待判 | 0 |
 | **合计** | **90** |
@@ -42,10 +42,10 @@
 | BUG | `internal/ui/category_bar.go:479-483` | active 时先 row.Background(FillQuaternary)（479）；紧接着 483 行无条件 | ✔ 已修 |
 | 隐患 | `internal/ui/category_bar.go:499,507` | avail := winW - 2*14 - subscribeWidth - 12，winW 来自 c.Size()（整窗）。 | ◇ 已记账（妥协 #12；公式已改但无鉴别判据） |
 | 隐患 | `internal/ui/category_bar.go:168-175` | 取消订阅时 kept := a.Subs[:0] 原地压缩 a.Subs。 | ✔ 已修 |
-| 隐患 | `internal/ui/category_bar.go:573-585` | btn 的底色在 573-575 按旧的 a.MoreOpen 算，btn.Clicked() 在 576-578 把 | ✔ 已修（moreButton 改 OnClick） |
+| 隐患 | `internal/ui/category_bar.go:573-585` | btn 的底色在 573-575 按旧的 a.MoreOpen 算，btn.Clicked() 在 576-578 把 | ◇ 已还原（曾改产品行为，已退回原状） |
 | 疑点 | `internal/ui/category_bar.go:82-84（未证实，但注释是假的）` | currentSubs() 读 a.subCategories；全仓只有 home.go:33 的声明和 | ✔ 已修 |
 | 疑点 | `internal/ui/category_bar.go:117-132` | selectCategory(i) 不校验 i 范围（selectGroup 95-98 校验），越界会把 | ✔ 已修（校验下标） |
-| 疑点 | `internal/ui/category_bar.go:435-437` | 查询变短后只把越界的 CategoryHit 归 0，不 clamp 到末项。 | ✔ 已修（越界收到末项） |
+| 疑点 | `internal/ui/category_bar.go:435-437` | 查询变短后只把越界的 CategoryHit 归 0，不 clamp 到末项。 | ◇ 已还原（曾改产品行为，已退回原状） |
 
 ### `config_transfer.go`（4）
 
@@ -61,7 +61,7 @@
 | 级别 | 位置 | 事实（报告原话摘要） | 判决 |
 |---|---|---|---|
 | 隐患 | `internal/ui/danmu.go:107-112` | danmuColor 只挡空串和 "#ffffff"，其余直接 theme.HexColor(d.Color) | ✔ 已修 |
-| 隐患 | `internal/ui/danmu.go:147-161` | ensureDanmuLoop 用 `active=true` 然后 CAS(loop false→true)；循环体每 33ms 检查 | ◇ 已记账（妥协 #19） |
+| 隐患 | `internal/ui/danmu.go:147-161` | ensureDanmuLoop 用 `active=true` 然后 CAS(loop false→true)；循环体每 33ms 检查 | ✔ 已修（锁内状态机） |
 | 隐患 | `internal/ui/danmu.go:390` | p := float32(now.Sub(d.Born)) / float32(d.Dur)。 | ✔ 已修（danmuProgress 守 Dur<=0） |
 | 隐患 | `internal/ui/danmu.go:335-341` | tickDanmu 用 live := a.Danmu[:0] 原地过滤。 | ✔ 已修 |
 | 疑点 | `internal/ui/danmu.go:416` | y := (d.Track%tracks)*danmuChannel + 16。 | ✔ 已修 |
@@ -95,23 +95,23 @@
 | 隐患 | `internal/ui/diagnostics_panel.go:214-219` | counters := snap["counters"].(map[string]int64)、hists["first_frame_ms" | ✔ 已修 |
 | 隐患 | `internal/ui/diagnostics_panel.go:415-417、458-460` | 两个后台动作都在 `if win == nil { return }` 处直接返回，而 SyncBusy / | ✔ 已修 |
 | 隐患 | `internal/ui/diagnostics_panel.go:450 + internal/ui/sync_panel.go:377` | a.ProfStarted = time.Now()（挂钟）存进去，按钮文案用 | ✔ 已修（倒计时两端都用挂钟） |
-| 疑点 | `internal/ui/diagnostics_panel.go:405` | 文件名 bundle-20060102-150405.zip，精确到秒。 | ✔ 已修（文件名到毫秒） |
+| 疑点 | `internal/ui/diagnostics_panel.go:405` | 文件名 bundle-20060102-150405.zip，精确到秒。 | ◇ 已还原（曾改产品行为，已退回原状） |
 
 ### `follow.go`（5）
 
 | 级别 | 位置 | 事实（报告原话摘要） | 判决 |
 |---|---|---|---|
-| 隐患 | `internal/ui/follow.go:371-377` | 每个 worker 处理完一条就 refreshOne → win.Update(写回) 一次，再 | ◇ 已记账 |
+| 隐患 | `internal/ui/follow.go:371-377` | 每个 worker 处理完一条就 refreshOne → win.Update(写回) 一次，再 | ◇ 已还原（曾改产品行为，已退回原状） |
 | 隐患 | `internal/ui/follow.go:386-388` | 收尾（followsBusy=false）整个挂在 runOnMain(win, ...) 里；runOnMain 在 | ◇ 已记账（妥协 #15） |
 | 隐患 | `internal/ui/follow.go:484-487` | refreshOne 无条件 win.Update(writeFollowStatus(...))，但 writeFollowStatus | ✔ 已修（分类进 Update 回调） |
 | 隐患 | `internal/ui/follow.go:70-81` | removeFollow 用 kept := a.Follows[:0] 原地压缩。 | ✔ 已修 |
-| 疑点 | `internal/ui/follow.go:342-348 + 435-438` | followsRefreshable 把没有房间号的旧记录全部跳过；若 Follows 里全是旧记录， | ✔ 已修（attempted==0 换文案与色调） |
+| 疑点 | `internal/ui/follow.go:342-348 + 435-438` | followsRefreshable 把没有房间号的旧记录全部跳过；若 Follows 里全是旧记录， | ◇ 已还原（曾改产品行为，已退回原状） |
 
 ### `follows_page.go`（4）
 
 | 级别 | 位置 | 事实（报告原话摘要） | 判决 |
 |---|---|---|---|
-| 隐患 | `internal/ui/follows_page.go:609-616` | busy 时每帧 phase := btn.Loop(...)*360 再 btn.Jump("action-spin-stop", pha | ✔ 已修（收尾往前补满一圈） |
+| 隐患 | `internal/ui/follows_page.go:609-616` | busy 时每帧 phase := btn.Loop(...)*360 再 btn.Jump("action-spin-stop", pha | ◇ 已还原（曾改产品行为，已退回原状） |
 | 疑点 | `internal/ui/follows_page.go:518` | dotKey := "live-"+Platform+"\|"+Name+"\|"+Category —— 不含 RoomID，也不带重复项 | ✔ 已修（followDotKey 带房间号） |
 | 疑点 | `internal/ui/follows_page.go:246-248` | tab 的 Clicked() 在构建里直接 a.selectFollowsSection(section)——改 a.FollowsSec | ✔ 已修（改用 OnClick 推迟） |
 | 疑点 | `internal/ui/follows_page.go:211-212 + 302-312` | a.followsSectionBox / a.followsBox 把构建期量出来的 rowBox 存进 App 字段。 | ◇ 已记账（妥协 #10） |
@@ -124,7 +124,7 @@
 | 隐患 | `home.go:707-709` | 只要不在播放页，每帧调 `a.leavePlayer()`；它无条件 `windowFullScreen(a.Win)`（= `Window | ◇ 已记账 |
 | 疑点 | `home.go:1043` | `a.builtCards++` 每次都加，全仓库**没有任何地方复位它，也没有任何地方读它**。 | ✔ 已修 |
 | 疑点 | `home.go:718-724` | 播放页里 `fullscreen != a.wasPlayerFullscreen` 的边沿会 `a.routeTransitionUnti | ◇ 已记账（妥协 #7） |
-| 疑点 | `home.go:1001-1003` | `avail` 小于 `theme.CardMinWidth` 时被强行抬回 `CardMinWidth`，于是 `cardW` 可能大于真 | ✔ 已修（去掉 avail 抬升） |
+| 疑点 | `home.go:1001-1003` | `avail` 小于 `theme.CardMinWidth` 时被强行抬回 `CardMinWidth`，于是 `cardW` 可能大于真 | ◇ 已还原（曾改产品行为，已退回原状） |
 
 ### `island.go`（5）
 
@@ -142,7 +142,7 @@
 |---|---|---|---|
 | BUG | `internal/ui/player.go:582-584` | btn 先 .Background(theme.White)，第 584 行又 btn.Background(hoverSurface(bt | ✔ 已修 |
 | BUG | `internal/ui/player.go:666-670` | 全屏返回钮同款：Background(theme.MediaCapsuleBg) 被下一行 hoverSurface 覆盖成 Transpa | ✔ 已修 |
-| 隐患 | `internal/ui/player.go:602-606（配合 player_media.go:261-273）` | bufferingPill 在构建路径里调 a.media.stalled(p)，后者读 time.Now() 并**写** | ◇ 已记账 |
+| 隐患 | `internal/ui/player.go:602-606（配合 player_media.go:261-273）` | bufferingPill 在构建路径里调 a.media.stalled(p)，后者读 time.Now() 并**写** | ✔ 已修（观测移出构建） |
 | 隐患 | `internal/ui/player.go:619-624` | noticePill 用 time.Now() 取 now；同一文件里 syncChromeIdle 用 c.Now()、islandPil | ✔ 已修 |
 | 疑点 | `internal/ui/player.go:63 vs :786` | 同一帧里"是不是全屏"问了两个来源：63 行 a.playerFullscreen()（吃 a.winFullscreen 字段）， | ◇ 已记账（妥协 #27） |
 
@@ -191,8 +191,8 @@
 | 级别 | 位置 | 事实（报告原话摘要） | 判决 |
 |---|---|---|---|
 | 隐患 | `internal/ui/watch.go:121（定义在 surface_motion.go:523-525、534-541）` | watchTile 在构建路径里调 a.matchable()，它算的是 | ✔ 已修 |
-| 隐患 | `internal/ui/watch.go:152-155 → 530-547` | 过渡窗口里把 player 置 nil 交给舞台画；但 watchState(c, room, sess, player) | ✔ 已修（判据加 player != nil） |
-| 隐患 | `internal/ui/watch.go:465,481` | volume := a.watchVolume(key) 在构建时读一次；HandleInput 里用 | ✔ 已修（滚轮里现读音量） |
+| 隐患 | `internal/ui/watch.go:152-155 → 530-547` | 过渡窗口里把 player 置 nil 交给舞台画；但 watchState(c, room, sess, player) | ◇ 已还原（曾改产品行为，已退回原状） |
+| 隐患 | `internal/ui/watch.go:465,481` | volume := a.watchVolume(key) 在构建时读一次；HandleInput 里用 | ◇ 已还原（曾改产品行为，已退回原状） |
 | 疑点 | `internal/ui/watch.go:152-155 对比 internal/ui/player.go:361` | 只有"去的那一侧=舞台"（Router.Path()==routePlayer）被挡。离开播放页的 | ◇ 已记账（妥协 #14） |
 | 疑点 | `internal/ui/watch.go:88-91` | watchAspect(key) 忽略 key，恒返回 watch.DefaultAspect，参数是死参数。 | ✔ 已修 |
 
@@ -207,7 +207,7 @@
 | 隐患 | `watch_media.go:1022` | `watchReload` 用 `if s == a.focus && a.fullSize()` 分流。焦点在墙上（`fullSize() | ✔ 已修（watchReloadBelongsToMedia） |
 | 隐患 | `watch_media.go:724-771 / 917 / 998` | `acceptWallEngine` 等三处 `runOnMain(win, ...)` 都**忽略返回值**。回调里才有 `ctx.Err | ✔ 已修（acceptWallEngine 接住 runOnMain；实测只有这一处持有引擎） |
 | 疑点 | `watch_media.go:117-118` | `wallMedia.tickPending` 全仓库只被写 false（player_media.go:302），从来没有地方写 true | ✔ 已修（wallMedia.tickPending 已删，grep 0 处） |
-| 疑点 | `watch_media.go:894 / 900 / 910` | 同一个"探测失败"的退避，`!ok` 两支用 `offlineProbeBackoff(s.failures+1, ...)` 但不 `++ | ✔ 已修（两条早退分支补 s.failures++） |
+| 疑点 | `watch_media.go:894 / 900 / 910` | 同一个"探测失败"的退避，`!ok` 两支用 `offlineProbeBackoff(s.failures+1, ...)` 但不 `++ | ◇ 已还原（曾改产品行为，已退回原状） |
 
 ## 附录 A · 已修 35 条的判据
 

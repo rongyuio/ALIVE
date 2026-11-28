@@ -301,16 +301,7 @@ func (a *App) restore() {
 	}
 	switch {
 	case p.FollowRecords != nil:
-		// 空平台 / 空昵称的记录认不出是谁：落地后既画不出来也删不掉
-		//（sameFollow 先比平台），只会变成一条永远刷不到、却一直被写回文件的
-		// 幽灵关注。手改过或旧版写坏的文件里就有这种值（比如 "douyu " 带空格）。
-		for _, r := range *p.FollowRecords {
-			if strings.TrimSpace(r.Platform) == "" || strings.TrimSpace(r.Name) == "" {
-				continue
-			}
-			r.Platform = strings.TrimSpace(r.Platform)
-			a.Follows = append(a.Follows, r)
-		}
+		a.Follows = *p.FollowRecords
 	case p.Follows != nil:
 		// 旧格式只有「平台|昵称」，没有房间号：迁移成记录，房间号留空，
 		// isFollowed 会按昵称兜底匹配，用户下次关注/取关时自然补全。

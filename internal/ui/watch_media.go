@@ -1231,7 +1231,7 @@ func (a *App) forwardWallMpv(s *roomSession) {
 	if s == nil || s.player == nil {
 		return
 	}
-	e, _ := s.player.Engine().(*playback.Engine)
+	e := playbackEngineOf(s.player)
 	if e == nil {
 		return
 	}

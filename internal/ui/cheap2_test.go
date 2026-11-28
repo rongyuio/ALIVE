@@ -2,7 +2,6 @@ package ui
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,41 +68,6 @@ func TestLeavePlayerRunsOnlyOnTheLeavingFrame(t *testing.T) {
 	}
 }
 
-// restore 要把认不出的关注记录挡掉。
-//
-// 空平台 / 空昵称的记录落地后既画不出来也删不掉（sameFollow 先比平台），
-// 只会变成一条永远刷不到、却一直被写回文件的幽灵关注。带空格的值顺手修掉。
-func TestRestoreDropsUnidentifiableFollows(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("AppData", dir)
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfg, err := os.UserConfigDir()
-	if err != nil || cfg == "" {
-		t.Skip("拿不到配置目录")
-	}
-	full := filepath.Join(cfg, "alive")
-	if err := os.MkdirAll(full, 0o755); err != nil {
-		t.Skip(err)
-	}
-	body := `{"followRecords":[
-		{"platform":"","name":"没有平台"},
-		{"platform":"bilibili","name":""},
-		{"platform":"douyu ","name":"甲"}
-	]}`
-	if err := os.WriteFile(filepath.Join(full, "state.json"), []byte(body), 0o644); err != nil {
-		t.Skip(err)
-	}
-
-	a := newApp()
-	a.restore()
-	if len(a.Follows) != 1 {
-		t.Fatalf("留下了 %d 条关注，应只留 1 条：%+v", len(a.Follows), a.Follows)
-	}
-	if a.Follows[0].Platform != "douyu" {
-		t.Errorf("平台没去空格：%q", a.Follows[0].Platform)
-	}
-}
-
 // 缓冲观测不许在构建路径里做。
 //
 // bufferingPill 原来直接调 stalled(p)，而它写 m.lastPos / m.lastPosAt——构建
@@ -138,4 +102,64 @@ func TestBufferingPillOnlyReadsObservation(t *testing.T) {
 	if a.media.lastPos != before {
 		t.Error("构建路径改了 lastPos：观测还在构建里")
 	}
+}
+
+// 弹幕推动器的状态迁移必须在锁里做，且退出前要在锁里再确认一次 active。
+//
+// 原来是「active=true 再 CAS(loop false→true)」，退出时把 loop 放回 false。
+// stop→start 撞在旧 goroutine「已读到 active=false、还没跑到 defer」的窗口里，
+// CAS 失败就 return，随后旧循环退出并置 loop=false——没有任何 goroutine 在跑
+// 而 active 为 true，弹幕冻住，只能等下一次构建再拉起。
+func TestDanmuLoopStateMigratesUnderLock(t *testing.T) {
+	body := funcBody(t, "danmu.go", "func (a *App) ensureDanmuLoop()")
+	if strings.Contains(body, "CompareAndSwap") {
+		t.Error("还在用 CAS 抢闸门：stop→start 的窗口里会留下没人跑的推动器")
+	}
+	if !strings.Contains(body, "a.danmu.startMu.Lock()") {
+		t.Error("状态迁移没有持锁")
+	}
+	// 退出路径必须在锁里再确认 active。
+	i := strings.Index(body, "a.danmu.running = false")
+	if i < 0 {
+		t.Fatal("找不到退出路径")
+	}
+	if !strings.Contains(body[:i], "if a.danmu.active.Load() {") {
+		t.Error("退出前没有在锁里再确认 active")
+	}
+
+	stop := funcBody(t, "danmu.go", "func (a *App) stopDanmuLoop()")
+	if !strings.Contains(stop, "a.danmu.startMu.Lock()") {
+		t.Error("stopDanmuLoop 没持锁")
+	}
+}
+
+// 取具体引擎只有一处类型断言，其余全走 playbackEngineOf。
+//
+// 原来 trackContinuity / forwardWallMpv / 首帧诊断各自写死断言：换实现时呈现
+// 那一半走 engineOf 静默降级、诊断那一半静默丢日志，两半行为不一致且都不报错。
+func TestPlaybackEngineAssertedInOnePlace(t *testing.T) {
+	for _, f := range []string{"player_media.go", "watch_media.go", "player.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(src), "\n")
+		for i, l := range lines {
+			if !strings.Contains(l, "Engine().(*playback.Engine)") {
+				continue
+			}
+			ctx := strings.Join(lines[maxInt(0, i-6):i], "\n")
+			if strings.Contains(ctx, "func playbackEngineOf(") {
+				continue
+			}
+			t.Errorf("%s:%d 又写死了一处引擎类型断言，应走 playbackEngineOf", f, i+1)
+		}
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

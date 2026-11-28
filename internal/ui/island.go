@@ -110,10 +110,10 @@ func (a *App) Island(c *ui.Context) {
 
 	if player {
 		a.enterPlayerIsland()
-	} else {
-		// 离开播放页就清掉房间记号：下次进同一个房间也要重新展开一次
-		a.infoRoom = ""
 	}
+	// 「离开播放页就清掉房间记号」挪到 leavePlayer 去了：那里已经保证一次离开
+	// 只跑一次。构建路径不再写 a.infoRoom——一帧可能构建多次，构建里写状态是
+	// 「构建值是临时的」这条规矩的破口（这里靠幂等兜着，但不该靠）。
 
 	// 右侧第二颗按钮：有焦点就有「结束这一路」。
 	showX := open

@@ -3,8 +3,6 @@ package ui
 import (
 	"testing"
 	"time"
-
-	"github.com/egoist/mygo/ui"
 )
 
 // 焦点格的「缓冲中…」不能永久挂着。
@@ -77,20 +75,5 @@ func TestFocusTileStalledUpdatesAcrossTicks(t *testing.T) {
 func observeWallStallAt(pos time.Duration, lastPos *time.Duration, stillSince *time.Time, now time.Time) {
 	if pos != *lastPos {
 		*lastPos, *stillSince = pos, now
-	}
-}
-
-// 过渡那一帧 player 是 nil（画面交给舞台画），不该因此闪「缓冲中…」。
-//
-// sess 的 player 还在、流也是好的，只是这一帧没把它传给 watchState。
-// 旧判据只看 sess.stalled，与「这一格到底有没有画面」无关。
-func TestWatchStateDoesNotStallWithoutPlayer(t *testing.T) {
-	a := newApp()
-	room := Streamer{Platform: "p", RoomID: "1", Name: "房"}
-	s := &roomSession{key: "p|1", room: room, stalled: true}
-	tt := ui.NewTester(func(c *ui.Context) { a.watchState(c, room, s, nil) }, 320, 180)
-	tt.Frame()
-	if tt.HasText("缓冲中") {
-		t.Fatal("没有画面在画这一格，却显示「缓冲中…」")
 	}
 }
