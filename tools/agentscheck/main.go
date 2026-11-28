@@ -7,7 +7,7 @@
 //  4. make help 与 Makefile 的目标集双向一致：help 里列的必须真存在，真存在的必须
 //     在 help 里（或写进 `# INTERNAL:` 那行白名单）。help 是自述，不验就会骗人。
 //
-// doc/reference/mygo.md 与 doc/known-debt.md 只验路径与行号（账本会随代码漂，行号越界就报）。
+// doc/reference/ 下的文档只验路径与行号（文档会随代码漂，行号越界就报）。
 //
 // 用法（仓库根）：go run ./tools/agentscheck
 package main
@@ -29,7 +29,7 @@ import (
 
 func main() {
 	agents := flag.String("agents", "AGENTS.md", "工程契约")
-	docs := flag.String("docs", "doc/reference/mygo.md,doc/known-debt.md,doc/reference/build.md", "跟着一起验的文档")
+	docs := flag.String("docs", "doc/reference/mygo.md,doc/reference/build.md,doc/reference/onevra.md", "跟着一起验的文档")
 	root := flag.String("root", ".", "仓库根")
 	mygo := flag.String("mygo", "third_party/mygo", "钉住的 MyGo 源码（相对 root）")
 	flag.Parse()

@@ -173,6 +173,16 @@ func (m *playerMedia) setRefresh(t time.Time) {
 func (m *playerMedia) isLoading() bool {
 	return m.session() != nil && m.session().loading
 }
+
+// settling 报告是不是刚换完地址：换的过程中，以及换完 swapSettle 之内。
+//
+// 只给 stageStateNow 用：那段时间里 Ready 的抖动不代表画面真的断了。
+func (m *playerMedia) settling() bool {
+	if m.refreshing {
+		return true
+	}
+	return !m.lastSwapAt.IsZero() && time.Since(m.lastSwapAt) < swapSettle
+}
 func (m *playerMedia) setLoading(v bool) {
 	if m.session() != nil {
 		m.session().loading = v
@@ -959,15 +969,23 @@ func (a *App) adoptPlayback(sess playbackSession, p *ui.VideoPlayer, upstream li
 // stopPlayback 收掉播放器，弹幕不动。
 func (a *App) stopPlayback() { a.media.stopPlayback() }
 
-// refreshLead 是提前多久换地址：留出取流 + 首帧的时间，别卡在过期那一刻。
-// 斗鱼的直链签 300 秒（实测），60 秒足够重开一路。
-const refreshLead = 60 * time.Second
-
 // swapRetryDelay 是换地址失败后多久再试。
 const swapRetryDelay = 15 * time.Second
 
 // swapMaxFailures 是连续失败多少次之后放弃无缝切换、退回整轮重来。
 const swapMaxFailures = 2
+
+// swapWarmup 是新的一路要播够多久才允许换上去。
+//
+// 出首帧只要半秒不到，但那时解复用缓冲还浅，换过去立刻要等数据。虎牙的
+// 地址寿命 5 分钟，续期每 4 分钟一次，这个判据决定了那一下卡不卡。
+const swapWarmup = 1500 * time.Millisecond
+
+// swapSettle 是换完之后「别报加载态」的宽限期。
+//
+// 新引擎挂上去要按新的呈现尺寸重配一次视频输出，Ready 会短暂变假。屏幕上
+// 画面是连续的，这时候报 stageFetching 会把加载层和整套浮层一起叫回来。
+const swapSettle = 3 * time.Second
 
 // swapRequest 是一次换地址要用的上下文：全部在主线程上取好，后台不再回读 App。
 type swapRequest struct {
@@ -979,12 +997,36 @@ type swapRequest struct {
 	background bool
 }
 
-// refreshAtFor 算出该在什么时候换地址：平台声明了寿命就提前一分钟。
+// refreshAtFor 返回「该在什么时候换地址」。**永远返回零：不按寿命提前换。**
+//
+// 平台给的 Expires 是给「下次建连」用的，不是给「这条连接还能活多久」用的。
+// HTTP-FLV 是长连接，query 里的时间戳只在建连时校验一次，连上之后 CDN 不管你。
+//
+// 一手证据是应用层实测，不是引擎探针：
+//
+//	虎牙  寿命 4m59s  在应用里跨过两次 token 过期没有断，也没有任何 swap
+//	斗鱼  寿命 5m00s  在应用里连播 15 分钟（日志里 session.begin 之后、
+//	                  下一条事件是 15 分钟后的日志心跳，中间零 swap）
+//	抖音  寿命 7 天    等于不续
+//	B站   没有 Expires 一路都没续过
+//
+// 而按 Expires 提前一分钟的做法代价很实在：开一路新流再切过去，新流从直播源
+// 的当前点起播、和旧流的时间点对不上，画面跳一下。虎牙那条路上这是每 4 分钟
+// 一次（日志里 7 次 swap_start/swap_done，准点 4 分 59 秒一轮）。而这个代价
+// 换来的是零收益——连接本来不会断。
+//
+// **别再用「开个引擎读 Position」去判这件事。** 那样量出来的「5 分钟停住」是
+// 探针自己的产物：Silent（ao=null）加上从不调 Frame() 消费帧，mpv 解码走到
+// 尽头就停在原地，position 卡住看着像断线。要判就判应用层：看日志里
+// session.begin 之后有没有 swap_start。
+//
+// 真断了还有一条路兜底：playerEnded → confirmEnded → scheduleSwap，取新地址、
+// 等新路播够 swapWarmup 再切。
+//
+// 参考实现也是一样的判断：dart_simple_live 的 huya_site / douyu_site 都只拿
+// 时间戳算签名，不做续期；重连只在播放结束之后（mediaErrorRetryCount）。
 func refreshAtFor(v live.Variant) time.Time {
-	if v.Expires.IsZero() {
-		return time.Time{}
-	}
-	return v.Expires.Add(-refreshLead)
+	return time.Time{}
 }
 
 // playerEnded 是播放页的「这一路自己停了」。
@@ -1099,25 +1141,33 @@ func (a *App) runHotSwap(sess playbackSession, req swapRequest, reason string) {
 		fail(err)
 		return
 	}
-	// 等到第一帧（音频门也在里面）：没有画面就换上去等于黑屏。
+	// 等新路真的播起来再换：出第一帧不等于能连续播。
 	//
-	// 后台收听时没人看画面，等音频时钟更贴近真正要保证的那件事：time-pos
-	// 走起来就说明这一路真的在出声，换上去之后再把它切回小尺寸呈现。
-	deadline := time.Now().Add(8 * time.Second)
+	// 原来的判据是「出过一帧就切」。实测一次续期：engine.open 到 swap_done
+	// 只隔 484ms——那时候 mpv 刚出首帧，解复用缓冲还浅，换上去立刻要等数据，
+	// 用户看到的就是「每 5 分钟卡一下」（虎牙的地址寿命正好 5 分钟，提前 1 分钟
+	// 续期，于是每 4 分钟一次）。
+	//
+	// 现在要求 time-pos 走过 swapWarmup：走到那里说明它不但在出帧，而且连续
+	// 解码了这么久，缓冲够接得住。多花的一秒多全在后台，屏幕上还是旧的一路。
+	//
+	// 后台收听时没人看画面，等的就是音频时钟——同一件事。
+	deadline := time.Now().Add(12 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
 		if sess.expired() {
 			_ = e.Close()
 			return
 		}
-		if req.background {
-			if e.Position() > 0 {
+		if e.Position() >= swapWarmup {
+			if req.background {
 				ready = true
 				break
 			}
-		} else if _, _, ok := e.Frame(time.Now()); ok {
-			ready = true
-			break
+			if _, _, ok := e.Frame(time.Now()); ok {
+				ready = true
+				break
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1432,6 +1482,8 @@ func (a *App) trackFirstFrame() {
 				}
 			}
 		}
+		// 到期续期这一支现在不会命中：refreshAtFor 永远返回零（见那里的实测）。
+		// 留着是因为「平台寿命真的会断连接」时要把那套接回来，一支就够。
 		if !m.refresh().IsZero() && !now.Before(m.refresh()) {
 			a.scheduleSwap("expire")
 		}
@@ -1481,6 +1533,7 @@ func (a *App) trackBackground(p *ui.VideoPlayer, now time.Time) {
 	}
 	m.stillPos, m.stillAt = 0, time.Time{}
 	// 地址到期同样要续：后台没人看画面，但声音不能断。
+	// 同上，这一支现在不会命中（refreshAtFor 永远返回零）。
 	if !m.refresh().IsZero() && !now.Before(m.refresh()) {
 		a.scheduleSwap("expire")
 		return

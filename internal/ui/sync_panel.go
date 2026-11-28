@@ -182,7 +182,7 @@ func (a *App) syncTab(c *ui.Context, t syncTabItem, w float32, active bool) {
 		// 图标和文字直接吃结果。以前它们各自又对 col 跑了一遍 AnimateColor，
 		// 于是换页签时颜色要过两层弹簧——第一层还没走完，第二层的目标已经在
 		// 动，看着比平台 tab 慢半拍还发飘。平台 tab 那边一直是单层的
-		// （home.go:1480「col := hoverInk(...)」→ TextColor(col)）。
+		// （home.go:1498「col := hoverInk(...)」→ TextColor(col)）。
 		col := hoverInk(tab, "sync-tab-ink-"+t.id, tab.Hovered(), rest, on)
 		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
 			components.Icon(c, t.ico).FontSize(syncTabIcoW).TextColor(col)

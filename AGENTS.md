@@ -12,9 +12,9 @@ ALIVE 是 Windows 上的直播桌面客户端。界面是 MyGo 的原生 UI（D3
   purego 回调、只为用到的功能付费。动任何 UI 代码前先读它。
 - `.agents/skills/mygo-maintenance/SKILL.md` —— MyGo 官方给应用维护者的技能（生命周期、身份、
   线程、测试、验证）。**改代码或写测试前先读它。** 技能随 CLI 版本走，`go tool mygo install-skills .` 更新。
-- [doc/reference/island.md](doc/reference/island.md) —— 灵动岛与直播间 / 观测墙 / 路由的关系
-  （Live Activity 状态表、过渡表、一帧只有一个 `ui.Video`）。**动 `island.go` 或任何
-  `surface_*.go` 之前先读它。**
+- [doc/reference/onevra.md](doc/reference/onevra.md) —— 组件库换过来了什么、哪些地方
+  **明明有对应组件却留着自绘**，以及三条踩过的机制约束（换面只能走 `Material`、按钮的
+  hover 在构造期定稿、尺寸锚在主题上）。**动 `internal/ui` 里任何 Onevra 控件之前先读它。**
 - `third_party/mygo/docs/ui/views.md` —— 构建生命周期、事件、Key、跨 goroutine。
 - [doc/reference/build.md](doc/reference/build.md) —— 构建判据：CI 与本地 `make check` 的等价表、
   每道门的失败注入实测、沙箱判据。**改 `Makefile` 或 `check.yml` 前先读它。**
@@ -22,8 +22,8 @@ ALIVE 是 Windows 上的直播桌面客户端。界面是 MyGo 的原生 UI（D3
 - `third_party/mygo/docs/ui/testing.md` —— Tester。真窗口 e2e 看 `third_party/mygo/docs/plugins/automation.md`。
 - 某个 API 在钉住的版本（v0.10.0，见 `go.mod`）里存不存在、签名是什么：读 `third_party/mygo/ui/` 源码或 `go doc`。
 
-**现有代码不是标准。** 仓库里带着不合下面规矩的遗留，账在 [doc/known-debt.md](doc/known-debt.md)。
-改到哪改对哪，别拿"代码里本来就是这样"当依据。
+**现有代码不是标准。** 仓库里带着不合下面规矩的遗留，改到哪改对哪，
+别拿"代码里本来就是这样"当依据。
 
 **`third_party/mygo` 不是上游原样。** 它被改过：5 个文件改、20 个文件新增（引擎契约导出、
 GPU 帧回读、mpv 播放引擎、安装器文案）。逐文件的原因和升级办法在
@@ -136,8 +136,7 @@ CGO_ENABLED=1 go test ./... -race       # -race 自身要 cgo，不能同时 CGO
   升级 MyGo 时那 25 个文件要一起核对。`go tool mygo migrate-ui .` 在 third_party 里还会列
   14 个上游文件——那是上游的账，别顺手修。
 - **别引依赖来解决框架已有的问题**：先看 `third_party/mygo/ui/` 有没有现成控件。
-- **别把现有写法当范本**：不合下面这些规矩的地方，账记在 [doc/known-debt.md](doc/known-debt.md)。
-  照抄之前先看它是不是还没改的那一条。
+- **别把现有写法当范本。** 照着抄之前先看它合不合下面这些规矩。
 - **密钥不进日志、截图、诊断包**；诊断包只打包已经脱敏的产物。
 - **只有 Windows 是目标平台。** 别为 macOS/Linux 写分支，也别引 cgo。
 

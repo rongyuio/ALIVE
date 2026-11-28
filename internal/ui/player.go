@@ -586,7 +586,12 @@ func (a *App) stageStateNow() stageState {
 		return stageLive
 	}
 	switch {
-	case m.isLoading() || (m.eng() != nil && !m.eng().Ready() && m.eng().Err() == nil):
+	case m.isLoading():
+		return stageFetching
+	case m.eng() != nil && !m.eng().Ready() && m.eng().Err() == nil && !a.media.settling():
+		// 刚换完地址的那几秒不报加载态。新引擎要按新的呈现尺寸重配一次输出，
+		// Ready 会短暂变假，可屏幕上的画面是连续的——这时候压一层加载态、把
+		// 浮层一起叫回来，比什么都不显示更糟。真加载（isLoading）照报。
 		return stageFetching
 	case m.errText() != "":
 		return stageFetchFailed

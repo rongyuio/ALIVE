@@ -124,7 +124,6 @@ test: check-mpv
 	$(RESET_TEST_HOME)
 	@$(TEST_ENV) $(GO) test -tags mock ./... -count=1
 
-# doc/known-debt.md 里有几条妥协写的是「靠巧合成立」的并发前提。
 # -race 是唯一能把「我觉得安全」换成「检测器没报」的东西，所以它进 check。
 # -race 要 cgo，cgo 要 gcc；缺了就说清楚缺什么，别让人对着 `exec: gcc: not found` 猜。
 race: check-mpv
