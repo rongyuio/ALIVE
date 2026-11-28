@@ -475,7 +475,11 @@ func (a *App) watchTileAudio(c *ui.Context, m controlMetrics, room Streamer) {
 			// watchWheelStep 返回的是音量增量（上滚为负、下滚为正，与播放页
 			// 的 `volume - dy*k` 同一套）；所以这里是「加增量」。以前写成
 			// `volume - watchWheelStep` 等于取负两次，上滚变小、下滚变大。
-			a.setTileVolume(room, volume+watchWheelStep(ev.DY))
+			// 音量在**事件里**现读，不用构建时缓存的 volume。
+			// 同一帧里两次滚轮事件都基于同一个旧值，只有最后一次生效——
+			// 触控板快滑两格只跳一格。播放页那条路有 volumeWheelAccum
+			// 兜着，这里没有。
+			a.setTileVolume(room, a.watchVolume(watchKey(room))+watchWheelStep(ev.DY))
 			return true
 		})
 		if hot.Clicked() {

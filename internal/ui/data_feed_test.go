@@ -26,6 +26,9 @@ func roomsN(base, n int) []live.Room {
 // 在飞。补页先回（列表 40 → 120），首屏后回（只有 40 条、cursor 40）。
 // 旧代码无条件换上去，列表被打回 40 条，而 feedCache 里记的是 120 条的
 // cursor：界面和缓存两份真相，中间 80 条要等下次全量重取才回得来。
+//
+// 守卫在 applyFirstChunk **里面**，不在调用点——所以这条测试直接调它，
+// 验的就是那条不变量本身，不依赖某个调用者记得先判一次。
 func TestHomeFirstChunkRespectsTopUp(t *testing.T) {
 	a := newApp()
 	a.LiveMode = true
@@ -37,16 +40,26 @@ func TestHomeFirstChunkRespectsTopUp(t *testing.T) {
 	startCursor := a.homeCursor
 
 	// 补页先回：把列表推到 120。
-	a.mergeMoreChunk(a.feedKey(), 40, live.Chunk{
+	if !a.mergeMoreChunk(a.feedKey(), 40, live.Chunk{
 		Rooms: roomsN(40, 80), Cursor: 120, HasMore: true,
-	})
+	}) {
+		t.Fatal("前提不成立：补页被判成旧代次")
+	}
 	if len(a.Rooms) != 120 || a.homeCursor != 120 {
-		t.Fatalf("前提不成立：补页没生效（%d 条，cursor %d）", len(a.Rooms), a.homeCursor)
+		t.Fatalf("前提不成立：补页后应有 120 条，实际 %d 条、cursor %d", len(a.Rooms), a.homeCursor)
 	}
 
-	// 首屏后回：守卫必须判它过期。
-	if a.homeFirstChunkApplies(startCursor) {
-		t.Fatal("首屏回包被判成仍然有效：列表会被打回 40 条")
+	// 首屏后回：必须被判过期，列表不能被缩短。
+	applied := a.applyFirstChunk(a.feedKey(), startCursor,
+		live.Chunk{Rooms: roomsN(0, 40), Cursor: 40, HasMore: true})
+	if applied {
+		t.Fatal("首屏回包被判成仍然有效")
+	}
+	if len(a.Rooms) != 120 {
+		t.Fatalf("列表从 120 条被打回 %d 条：补页结果被整段丢弃", len(a.Rooms))
+	}
+	if a.homeCursor != 120 {
+		t.Fatalf("homeCursor 从 120 退回 %d：和 feedCache 的 cursor 对不上", a.homeCursor)
 	}
 }
 
@@ -59,16 +72,16 @@ func TestHomeFirstChunkAppliesWhenUntouched(t *testing.T) {
 	a.homeCursor = 40
 	startCursor := a.homeCursor
 
-	if !a.homeFirstChunkApplies(startCursor) {
+	if !a.applyFirstChunk(a.feedKey(), startCursor,
+		live.Chunk{Rooms: roomsN(0, 40), Cursor: 40, HasMore: true}) {
 		t.Fatal("列表没动过，首屏却被判过期")
 	}
-	a.applyFirstChunk(a.feedKey(), live.Chunk{Rooms: roomsN(0, 40), Cursor: 40, HasMore: true})
 	if len(a.Rooms) != 40 {
 		t.Fatalf("首屏没应用：%d 条", len(a.Rooms))
 	}
 }
 
-// 订阅页同一条判据。
+// 订阅页同一条不变量。
 func TestSubFirstChunkRespectsTopUp(t *testing.T) {
 	a := newApp()
 	a.LiveMode = true
@@ -79,13 +92,21 @@ func TestSubFirstChunkRespectsTopUp(t *testing.T) {
 	startCursor := a.subCursor
 
 	// 补页先回：接到 120。
-	a.applySubChunk("k", 40, live.Chunk{Rooms: roomsN(40, 80), Cursor: 120, HasMore: true})
+	a.applySubChunk("k", 40, startCursor,
+		live.Chunk{Rooms: roomsN(40, 80), Cursor: 120, HasMore: true})
 	if len(a.SubRooms) != 120 || a.subCursor != 120 {
-		t.Fatalf("前提不成立：订阅补页没生效（%d 条，cursor %d）", len(a.SubRooms), a.subCursor)
+		t.Fatalf("前提不成立：订阅补页后应有 120 条，实际 %d 条、cursor %d",
+			len(a.SubRooms), a.subCursor)
 	}
 
-	if a.subFirstChunkApplies(startCursor) {
-		t.Fatal("订阅首屏回包被判成仍然有效：列表会被打回 40 条")
+	// 首屏后回：必须被判过期。
+	applied := a.applySubChunk("k", 0, startCursor,
+		live.Chunk{Rooms: roomsN(0, 40), Cursor: 40, HasMore: true})
+	if applied {
+		t.Fatal("订阅首屏回包被判成仍然有效")
+	}
+	if len(a.SubRooms) != 120 {
+		t.Fatalf("订阅列表从 120 条被打回 %d 条", len(a.SubRooms))
 	}
 }
 

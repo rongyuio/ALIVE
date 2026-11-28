@@ -100,9 +100,13 @@ func loadState() (persisted, bool) {
 }
 
 // stateMu 串行化写盘：拖音量时会连着触发几次保存。
-var stateMu sync.Mutex
+var (
+	stateMu sync.Mutex
+	// stateWriteSeq 是**已经写进盘**的最新快照序号。写盘只往新写。
+	stateWriteSeq uint64
+)
 
-func (a *App) writeState(data []byte) {
+func (a *App) writeState(seq uint64, data []byte) {
 	path := statePath()
 	if path == "" {
 		// 拿不到配置目录：静默返回等于「设置改了却永远不落盘」，用户在下一次
@@ -115,6 +119,15 @@ func (a *App) writeState(data []byte) {
 	}
 	stateMu.Lock()
 	defer stateMu.Unlock()
+	// 只往新写。
+	//
+	// 两次快照各起一个 goroutine，抢同一把锁——先拍的那份被调度得晚
+	// （MkdirAll/WriteFile 期间被抢占）就会后写盘，state.json 回退到旧状态：
+	// 用户看到的是"刚改的设置重启后没了"。序号比大小，旧的那份直接丢。
+	if seq < stateWriteSeq {
+		return
+	}
+	stateWriteSeq = seq
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
 			Str(diag.Stage, "mkdir").Str("path", filepath.Base(path)).
@@ -158,15 +171,18 @@ func (a *App) markDirty() {
 	}
 	a.stateSavePending = true
 	win := a.Win
-	time.AfterFunc(300*time.Millisecond, func() {
+	// 句柄存下来。不存的话 FlushState（关窗）写完之后这颗定时器仍在跑，
+	// 到点还会 saveState 一次——那一次是异步 goroutine 写盘，进程随时先退出，
+	// 写盘悬空；而且 state.json 可能被写出一份"关窗之后"的半新状态。
+	a.stateTimer = time.AfterFunc(300*time.Millisecond, func() {
 		win.Update(func() { a.saveState() })
 	})
 }
 
 // saveState 拍一份当前 UI 状态的快照并异步写盘。
 func (a *App) saveState() {
-	if data, ok := a.stateSnapshot(); ok {
-		go a.writeState(data)
+	if data, seq, ok := a.stateSnapshot(); ok {
+		go a.writeState(seq, data)
 	}
 }
 
@@ -174,10 +190,16 @@ func (a *App) saveState() {
 //
 // 顺带把排定中的定时器标记清掉：调用方既然已经把这一份写出去，定时器再来
 // 一趟看到 stateDirty 也是空的。
-func (a *App) stateSnapshot() ([]byte, bool) {
+func (a *App) stateSnapshot() ([]byte, uint64, bool) {
 	a.stateSavePending = false
+	// 取消排定中的定时器：调用方既然已经把这一份写出去/准备写了，就不该再有
+	// 一颗到点又写一次的定时器活在后面。
+	if a.stateTimer != nil {
+		a.stateTimer.Stop()
+		a.stateTimer = nil
+	}
 	if !a.stateDirty {
-		return nil, false
+		return nil, 0, false
 	}
 	// **先序列化，成功了才清 dirty。** 原来的顺序是先清后 marshal：
 	// marshal 失败就直接 return，而这一轮的改动已经标记成"写过了"——
@@ -228,10 +250,11 @@ func (a *App) stateSnapshot() ([]byte, bool) {
 		diag.L().Warn().Str(diag.Event, diag.EvStateSaveFail).
 			Str(diag.Stage, "marshal").
 			Dict(diag.ErrField, diag.Err(err)).Msg("序列化状态失败，这一轮改动保留待下次再写")
-		return nil, false
+		return nil, 0, false
 	}
 	a.stateDirty = false
-	return data, true
+	a.stateSaveSeq++
+	return data, a.stateSaveSeq, true
 }
 
 // FlushState 立刻把还没落盘的状态写出去，写完才返回（主线程调用）。
@@ -240,8 +263,8 @@ func (a *App) stateSnapshot() ([]byte, bool) {
 // 改动还停在定时器上，进程一退就丢。这里既不再排定时器，也不能交给后台
 // goroutine —— OnClose 返回后进程随时可能结束，异步写来不及。
 func (a *App) FlushState() {
-	if data, ok := a.stateSnapshot(); ok {
-		a.writeState(data)
+	if data, seq, ok := a.stateSnapshot(); ok {
+		a.writeState(seq, data)
 	}
 }
 

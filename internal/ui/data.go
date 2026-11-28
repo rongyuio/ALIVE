@@ -348,12 +348,7 @@ func (a *App) loadRooms() {
 				}
 				return
 			}
-			// 期间补页把列表推远了：这一份首屏比现有列表短，换上去就是丢数据。
-			// 补页已经写过缓存（带更远的 cursor），这里什么都不做。
-			if !a.homeFirstChunkApplies(startCursor) {
-				return
-			}
-			a.applyFirstChunk(key, chunk)
+			a.applyFirstChunk(key, startCursor, chunk)
 			// 新数据直接换上去，不播任何入场动画：卡片在最终位置、满不
 			// 透明地出现，滚动位置也不跳。这里曾经只在「从骨架换成卡片」
 			// 时播一次整屏淡入（260ms、带 10 DIP 上浮），而封面还在加载，
@@ -362,11 +357,21 @@ func (a *App) loadRooms() {
 	}()
 }
 
-// applyFirstChunk 把首屏的一段写进列表。
+// applyFirstChunk 把首屏的一段写进列表，报告这一份是否真的用上了。
 //
 // 部分结果照常换上去：Chunk 契约是「已经取到的部分照常交出来，Cursor 停在
 // 真实消费位置」，下一次从 Cursor 续，不跳也不丢（见 live.Chunk）。
-func (a *App) applyFirstChunk(key string, chunk live.Chunk) {
+//
+// startCursor 是**发起请求时**列表的位置（homeCursor）。期间「加载更多」
+// 可能已经把列表推远了：那一份首屏属于旧代次，换上去会把列表从 120 条打回
+// 40 条，而缓存里记的还是更远的 cursor——界面和缓存两份真相。
+//
+// 守卫在函数里面，不在调用点。放在调用点的话，任何新调用者（或者一条直接
+// 调它的测试）都能绕过——而这条不变量正是「丢 80 条数据」和「不丢」的分界。
+func (a *App) applyFirstChunk(key string, startCursor int, chunk live.Chunk) bool {
+	if a.homeCursor != startCursor {
+		return false
+	}
 	rooms := convertRooms(chunk.Rooms)
 	a.Rooms = rooms
 	a.ListHasMore = chunk.HasMore
@@ -377,6 +382,7 @@ func (a *App) applyFirstChunk(key string, chunk live.Chunk) {
 		rooms: rooms, cursor: chunk.Cursor, hasMore: chunk.HasMore, at: time.Now(),
 	}
 	a.noteChunkOutcome(chunk)
+	return true
 }
 
 // fetchFeedChunk 从 cursor 往后取一段。
@@ -844,10 +850,6 @@ func (a *App) fetchSubChunk(platform, areaID, key string, seq, cursor int) {
 			if !a.subCursorAppendAllowed(cursor) {
 				return
 			}
-			// 补页已经把这页推远了：这一份首屏比现有列表短，丢掉。
-			if cursor == 0 && !a.subFirstChunkApplies(startCursor) {
-				return
-			}
 			if err != nil {
 				a.noteTopUpFailure()
 				if cursor == 0 {
@@ -855,7 +857,7 @@ func (a *App) fetchSubChunk(platform, areaID, key string, seq, cursor int) {
 				}
 				return
 			}
-			a.applySubChunk(key, cursor, chunk)
+			a.applySubChunk(key, cursor, startCursor, chunk)
 		})
 	}()
 }
@@ -865,7 +867,15 @@ func (a *App) fetchSubChunk(platform, areaID, key string, seq, cursor int) {
 // cursor 是发起请求时的位置：0 是首屏重置，其余按房间号去重后接在后面。
 // 部分结果照常使用（Chunk 契约），共享缓存只往前写：订阅列表从 cursor 0
 // 重新拉时，不能把首页已经续到的更长列表覆盖成短的那一份。
-func (a *App) applySubChunk(key string, cursor int, chunk live.Chunk) {
+// startCursor 只在 cursor==0（首屏重置）时用得上：它是**发起请求时**列表的
+// 位置。期间补页已经把这页推远了的话，这一份首屏属于旧代次，换上去会把订阅
+// 列表从 120 条打回 40 条。
+//
+// 守卫在函数里面，不在调用点——和 applyFirstChunk 同一个理由。
+func (a *App) applySubChunk(key string, cursor, startCursor int, chunk live.Chunk) bool {
+	if cursor == 0 && a.subCursor != startCursor {
+		return false
+	}
 	a.SubErr = ""
 	rooms := convertRooms(chunk.Rooms)
 	if cursor == 0 {
@@ -895,6 +905,7 @@ func (a *App) applySubChunk(key string, cursor int, chunk live.Chunk) {
 		at:     time.Now(),
 	})
 	a.noteChunkOutcome(chunk)
+	return true
 }
 
 // retrySubFeed 重发当前订阅项的第一页。
@@ -1022,22 +1033,4 @@ func (a *App) currentCategoryID() string {
 		return ""
 	}
 	return ids[a.CategoryIndex]
-}
-
-// homeFirstChunkApplies 报告一份 cursor 0 的首页回包是否还属于当前这一版列表。
-//
-// 首屏刷新在飞的时候，「加载更多」可能已经把列表往前推了（滚到底 + 缓存
-// 过期是很日常的组合）。那一份首屏属于旧代次：无条件换上去会把列表从
-// 120 条打回 40 条，而缓存里记的还是更远的 cursor——界面和缓存两份真相，
-// 中间那 80 条要等下次全量重取才回得来。
-//
-// 提成有名字的函数是为了能直接验：回包跑在 Window.Update 里，没有主循环
-// 就执行不到，测不了闭包内部。
-func (a *App) homeFirstChunkApplies(startCursor int) bool {
-	return a.homeCursor == startCursor
-}
-
-// subFirstChunkApplies 是订阅列表的同一条判据。
-func (a *App) subFirstChunkApplies(startCursor int) bool {
-	return a.subCursor == startCursor
 }

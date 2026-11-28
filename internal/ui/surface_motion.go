@@ -391,7 +391,16 @@ func (a *App) leavePlayerTo(op leaveOp, destRoute string, destSection int, actio
 func (a *App) tickExitArm() {
 	// 等两趟：第一趟只是把身份挂上（Transition 新建的那一帧不参与匹配），
 	// 第二趟才把它记进「上一帧在哪」，第三趟换路由才有起点。
-	if !a.exitArm || a.buildSeq < a.exitArmAt+2 {
+	if !a.exitArm {
+		return
+	}
+	if a.buildSeq < a.exitArmAt+2 {
+		// 还没到第二拍：**自己请求下一帧**。
+		//
+		// arm 那一拍只调了一次 invalidateWindows，等于一帧。没有动画在跑时
+		// （暂停 + 弹幕关 + 指针不动）就没人再请求帧，第二拍永远不来——Esc
+		// 悬在那里，直到用户动一下鼠标。
+		a.invalidateWindows()
 		return
 	}
 	a.exitArm = false
@@ -496,8 +505,15 @@ func (a *App) foregroundEnter() {
 	m.detachedAt = time.Time{}
 	// 后台那段时间没人看画面，看门狗的基准还停在离开前；拨到现在，回来不会
 	// 立刻把「画面没动」判成卡死。
+	//
+	// bufferStallSince 也要清。它只在 deadReason 的缓冲分支里推进，判据是
+	// pos != m.stillPos || bufferStallSince.IsZero()——回来时 pos 与刚清过的
+	// stillPos 都是 0，第一条不成立；而 bufferStallSince 若还停在进后台之前，
+	// now.Sub(bufferStallSince) > 20s 立刻命中，一回播放页就派一次热切换。
+	// 这正是「进后台前正在缓冲」的回放路径。
 	m.lastPos, m.lastPosAt = 0, time.Time{}
 	m.stillPos, m.stillAt = 0, time.Time{}
+	m.bufferStallSince = time.Time{}
 	a.applyPresent()
 }
 

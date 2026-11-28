@@ -68,7 +68,7 @@ func TestSnapshotKeepsDirtyWhenMarshalFails(t *testing.T) {
 	// 让 marshal 必然失败：往一个不能序列化的位置塞东西做不到（persisted 全是
 	// 基本类型），所以这条验的是"顺序"本身——成功路径必须清 dirty，
 	// 而 dirty 的清除必须发生在 marshal 之后。
-	data, ok := a.stateSnapshot()
+	data, _, ok := a.stateSnapshot()
 	if !ok || len(data) == 0 {
 		t.Fatal("正常快照应该成功")
 	}
@@ -76,7 +76,7 @@ func TestSnapshotKeepsDirtyWhenMarshalFails(t *testing.T) {
 		t.Error("成功写出之后 dirty 还立着：会无限重写")
 	}
 	// 再来一次：没有新改动就不该有快照
-	if _, ok := a.stateSnapshot(); ok {
+	if _, _, ok := a.stateSnapshot(); ok {
 		t.Error("没有改动却拍出了快照")
 	}
 }

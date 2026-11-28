@@ -234,6 +234,15 @@ func (a *App) followsSectionRow(c *ui.Context) {
 //
 // 拖动重排和顶栏平台 tab 同一套语言：拖起来的那枚降到 0.35，
 // 指针经过的目标描一圈 accent 内阴影；松手时一次落位。
+// followDotKey 是关注页上「在线点 + 脉冲环」的元素身份。
+//
+// 必须带房间号：脉冲环的 Keyframes 绑在元素身份上，身份重合时两个主播共用
+// 一份动画状态。原来的键是 平台|昵称|分区，而关注页可以被搜索词过滤——
+// 同一平台同昵称不同房间的两条（改名前后、或多房间主播）会撞在一起。
+func followDotKey(s Streamer) string {
+	return "live-" + s.Platform + "|" + s.RoomID + "|" + s.Name + "|" + s.Category
+}
+
 func (a *App) followsSectionTab(c *ui.Context, id string) {
 	section := followsSectionOf(id)
 	name := followsSectionNames[section]
@@ -243,9 +252,10 @@ func (a *App) followsSectionTab(c *ui.Context, id string) {
 		Radius(theme.RadiusMD).Center().Cursor(ui.CursorPointer).
 		Label(name)
 	tab.Background(hoverSurfaceOn(tab, "follows-tab-bg", tab.Hovered(), !selected, theme.FillQuaternary))
-	if tab.Clicked() {
-		a.selectFollowsSection(section)
-	}
+	// 用 OnClick 推迟：selectFollowsSection 改的是 a.FollowsSection，而这一帧
+	// 后面的内容区正是按它建的。内联改会让滑块（上面按旧值算的选中位）和内容
+	// 错开一帧：点一下，滑块在新位置、列表还是旧的。
+	tab.OnClick(func() { a.selectFollowsSection(section) })
 	tab.Drag(id)
 	if _, over := ui.DragOver[string](tab); over {
 		tab.InsetShadow(0, 0, 0, 1, theme.Accent.Mix(ui.Transparent, 0.35))
@@ -515,7 +525,7 @@ func (a *App) followsRow(c *ui.Context, key string, s Streamer) {
 			// 脉冲环与点同级、先画（压在点下面），并带稳定 Key：
 			// Keyframes 的状态绑在元素身份上，身份一抖动画就每帧重置，
 			// 环会永远停在 scale 0.75、缩在点内部看不见。
-			dotKey := "live-" + s.Platform + "|" + s.Name + "|" + s.Category
+			dotKey := followDotKey(s)
 			if s.Live {
 				// 脉冲环：2px 绿环从 scale 0.75 扩到 1.85、
 				// 透明度 0.9 → 0，2s ease-out 循环，70%–100% 停在扩满的无形状态。
@@ -611,9 +621,13 @@ func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool,
 			btn.Jump("action-spin-stop", phase)
 			icon.Rotate(phase)
 		} else {
-			// 图标的 transform 有 500ms 过渡，
-			// 转圈停下时图标滑回正位，而不是啪地跳回去。
-			icon.Rotate(btn.AnimateTo("action-spin-stop", 0, followsSpinStop))
+			// 收尾**往前**走完这一圈，不是倒着退回 0。
+			//
+			// 目标原来写死 0：停下的那一刻 phase 在 (0,360) 之间，AnimateTo
+			// 会倒着转掉最多一整圈——用户点「停止刷新」，图标往后甩一圈才停。
+			// 目标写 360：从当前角度继续往前，最多补满一圈，落点就是正位
+			// （360° 与 0° 在屏幕上是同一个朝向）。
+			icon.Rotate(btn.AnimateTo("action-spin-stop", followsSpinStopTarget, followsSpinStop))
 		}
 	})
 }
@@ -628,6 +642,13 @@ const (
 	// --dur-2：.panelCard / .panelName / .panelFilter 的 hover 与选中态过渡
 	followsDur2 = theme.MotionChrome
 )
+
+// followsSpinStopTarget 是收尾动画的目标角度：往前补满这一圈。
+//
+// 目标必须是 360，不能是 0。停下的那一刻 phase 落在 (0,360) 之间，目标写 0
+// 就是倒着转掉最多一整圈——用户点「停止刷新」，图标往后甩一圈才停。写 360
+// 则是从当前角度继续往前补满，落点同样是正位（360° 与 0° 屏幕朝向相同）。
+const followsSpinStopTarget float32 = 360
 
 // followsSpinStop 是 .actionBtn svg 的 transition：
 // transform 500ms cubic-bezier(0.16, 1, 0.3, 1)。和 --ease-out 不是同一条曲线。

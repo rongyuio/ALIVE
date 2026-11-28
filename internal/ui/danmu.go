@@ -396,7 +396,7 @@ func (a *App) danmuLayer(c *ui.Context) {
 	layer := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).Clip()
 	layer.Children(func() {
 		for _, d := range a.Danmu {
-			p := float32(now.Sub(d.Born)) / float32(d.Dur)
+			p := danmuProgress(now, d.Born, d.Dur)
 			if p < 0 {
 				continue
 			}
@@ -467,4 +467,17 @@ func (a *App) danmuLayer(c *ui.Context) {
 				Absolute().Left(x).Top(y)
 		}
 	})
+}
+
+// danmuProgress 是这条弹幕走到哪了：0 刚进场，1 完全离场。
+//
+// Dur <= 0 时返回 1（当作已经走完），**不能直接相除**：0/0 是 NaN，而
+// `p < 0` 和 `p > 1` 对 NaN 都为假，NaN 会一路塞进 Absolute().Left(x)，
+// 元素位置成了 NaN。Dur 取 a.DanmuDur（只在 >0 时恢复，默认 10s），
+// 但导入/手改的文件能把它写成 0。
+func danmuProgress(now, born time.Time, dur time.Duration) float32 {
+	if dur <= 0 {
+		return 1
+	}
+	return float32(now.Sub(born)) / float32(dur)
 }

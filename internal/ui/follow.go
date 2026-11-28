@@ -370,11 +370,7 @@ func (a *App) refreshFollows(report bool, reason string) {
 			go func() {
 				defer wg.Done()
 				for r := range queue {
-					if a.refreshOne(win, r) {
-						updated.Add(1)
-					} else {
-						failed.Add(1)
-					}
+					a.refreshOne(win, r, &updated, &failed)
 					// 一条处理完（无论成败）就推进一格，圆环跟着走
 					runOnMain(win, func() { a.followRefreshDone++ })
 				}
@@ -402,7 +398,7 @@ func (a *App) refreshFollows(report bool, reason string) {
 			// 刷新结果也要落盘：下次冷启动直接显示上次的在线状态
 			a.markDirty()
 			if report {
-				msg, tone := refreshSummary(int(updated.Load()), int(failed.Load()))
+				msg, tone := refreshSummary(int(updated.Load()), int(failed.Load()), len(snapshot))
 				a.toastTone(msg, tone)
 			}
 		})
@@ -434,8 +430,12 @@ func (a *App) followRefreshLabel() string {
 // refreshSummary 是刷新结束后那条提示：
 // 全成功报数、部分失败报两边、全军覆没报失败。色调同时给出——success 打勾、
 // info 打 info、error 打三角警告，图标跟着结果变。
-func refreshSummary(updated, failed int) (string, string) {
+func refreshSummary(updated, failed, attempted int) (string, string) {
 	switch {
+	case attempted == 0:
+		// 一条都没试：关注里全是缺房间号的旧记录（或关注列表是空的）。
+		// 这时候说「已刷新 0 位主播」配成功色调是假话——用户会以为数据新了。
+		return "没有可刷新的关注（旧记录缺房间号）", toastInfo
 	case failed == 0:
 		return fmt.Sprintf("已刷新 %d 位主播", updated), toastSuccess
 	case updated > 0:
@@ -450,13 +450,21 @@ func refreshSummary(updated, failed int) (string, string) {
 // 两段式：先走轻量房间信息；挂了再退回
 // 取流接口试一次。取流更重（要签名、换播放列表），但它和房间详情走的是两条
 // 链路——某平台单独改了房间详情接口时，取流还活着就能把状态救回来。
-func (a *App) refreshOne(win *mygo.Window, r FollowRecord) bool {
+// refreshOne 查一位主播的实时状态并写回关注记录。
+//
+// 分类（updated/failed）**在写回的同一个 Update 回调里**做，不靠返回值。
+// 原来返回 `patch != nil`，而真正写回的是 writeFollowStatus——它找不到记录
+// （刷新期间被用户取关了）会返回 false。于是那一条算进 updated，「已刷新 N 位」
+// 比实际多，followSettle 的退避也跟着按错的数算。
+func (a *App) refreshOne(win *mygo.Window, r FollowRecord, updated, failed *atomic.Int32) {
 	if r.RoomID == "" {
-		return false // 旧数据没有房间号，查不了
+		failed.Add(1) // 旧数据没有房间号，查不了
+		return
 	}
 	provider, ok := live.ProviderFor(live.Platform(r.Platform))
 	if !ok {
-		return false
+		failed.Add(1)
+		return
 	}
 
 	// patch 只描述「查到了什么」，写回统一在 win.Update 里做：主路径和
@@ -484,9 +492,12 @@ func (a *App) refreshOne(win *mygo.Window, r FollowRecord) bool {
 	}
 
 	win.Update(func() {
-		a.writeFollowStatus(r.Platform, r.RoomID, patch)
+		if a.writeFollowStatus(r.Platform, r.RoomID, patch) && patch != nil {
+			updated.Add(1)
+		} else {
+			failed.Add(1)
+		}
 	})
-	return patch != nil
 }
 
 // writeFollowStatus 把一次查询结果写回关注记录；必须在主线程调用。

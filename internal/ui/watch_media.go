@@ -593,6 +593,13 @@ func (a *App) closeSession(s *roomSession, cause ...string) {
 	s.dropEngine()
 	delete(a.watch.sessions, s.key)
 	if a.focus == s {
+		// 焦点这一间被销毁：媒体层那一轮也必须一起作废。
+		//
+		// 只清 a.focus 是不够的——m.ctx 还活着，后台取流的 goroutine 不会被
+		// 取消；它回来时 applyMedia 的代次检查（`sess.expired() || seq 不等`）
+		// 也认为「这仍是当前一轮」，于是一份属于已删房间的结果照常写进
+		// a.media 的字段。cancelSession 推进 seq、清 ctx，两件事一起成立。
+		a.media.cancelSession()
 		a.focus = nil
 		a.closeDanmaku()
 		a.resetDanmuHistory()
@@ -723,7 +730,10 @@ func wallPlaybackOptions(v live.Variant, key, session string) playback.Options {
 
 // acceptWallEngine 把开好的引擎接到这一格上。必须在主线程调用（内部走 runOnMain）。
 func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win *mygo.Window, e *playback.Engine, info live.Stream, v live.Variant) {
-	runOnMain(win, func() {
+	// 接住返回值。runOnMain 在 win 为 nil 或已销毁时返回 false，回调**永远
+	// 不会跑**——而 e.Close() 写在回调里，这一枚刚开出来的引擎就此无人管：
+	// 一条流、一个解码器、一块显存。窗口销毁/重建的间隙每走过一次就漏一个。
+	if !runOnMain(win, func() {
 		if ctx.Err() != nil || a.watch.sessions[s.key] != s || s.seq != seq {
 			_ = e.Close()
 			return
@@ -770,7 +780,11 @@ func (a *App) acceptWallEngine(s *roomSession, ctx context.Context, seq int, win
 			a.applyFocusAudio()
 		}
 		a.invalidateWindows()
-	})
+	}) {
+		// 回调没跑：这个引擎是本 goroutine 刚开出来的，还没交给任何人，
+		// 就地关掉。已经在窗口销毁之后了，没有别的线程会碰它。
+		_ = e.Close()
+	}
 }
 
 // focusFailed 处理「焦点这一间没有声音了」。
@@ -893,13 +907,17 @@ func (a *App) watchProbe(s *roomSession, now time.Time) {
 	}
 	prov, ok := providerFor(live.Platform(s.room.Platform))
 	if !ok {
-		s.retryAt = now.Add(offlineProbeBackoff(s.failures+1, s.key))
+		// 失败要**记上**再算退避。原来用 failures+1 算、却不写回：每一次都拿到
+		// 同一个延迟，退避永远升不了级，一个接不进来的平台会被按固定节拍一直问。
+		s.failures++
+		s.retryAt = now.Add(offlineProbeBackoff(s.failures, s.key))
 		return
 	}
 	ri, ok := prov.(live.RoomInfoer)
 	if !ok {
-		// 平台没有单点查询：只能退回完整取流，退避照算。
-		s.retryAt = now.Add(offlineProbeBackoff(s.failures+1, s.key))
+		// 平台没有单点查询：只能退回完整取流，退避照算。同上，先记失败。
+		s.failures++
+		s.retryAt = now.Add(offlineProbeBackoff(s.failures, s.key))
 		a.watchOpenSession(s)
 		return
 	}
@@ -1015,13 +1033,31 @@ func (a *App) watchFirstFrameLost(s *roomSession) {
 // 同一间房只有一个会话：播放页上看的就是它时走媒体的整路重取（保留弹幕），
 // 墙上预览走墙的重开。两条路都先清掉终态与退避——用户点的这一次不该再等
 // 上一轮攒出来的 2 分钟。
+// watchReloadBelongsToMedia 报告这一间的「重新加载」该归谁执行。
+//
+// 焦点那一间**一律**归媒体层，**不看 fullSize()**。原来的条件是
+// `s == a.focus && a.fullSize()`：焦点收进岛（后台收听）时 fullSize() 为假，
+// 于是落到墙路径 —— watchOpenSession 会再开一枚引擎，而 acceptWallEngine 里
+// attachPlayer 只是 `s.player = p`，旧引擎不关。同一间房两个引擎，媒体层的
+// m.ctx 还描述着上一轮，看门狗和声音从此各说各话。
+func (a *App) watchReloadBelongsToMedia(s *roomSession) bool {
+	return s != nil && s == a.focus
+}
+
 func (a *App) watchReload(room Streamer) {
 	key := watchKey(room)
 	s := a.watch.sessions[key]
 	if s == nil {
 		return
 	}
-	if s == a.focus && a.fullSize() {
+	// 焦点这一间**一律**交给媒体层，不再按 fullSize 分流。
+	//
+	// 原来条件是 `s == a.focus && a.fullSize()`：焦点收进岛（后台收听）时
+	// fullSize() 为假，于是落到下面的墙路径 —— watchOpenSession 会**再开一枚
+	// 引擎**，而 acceptWallEngine 里 attachPlayer 只是 `s.player = p`，旧引擎
+	// 不关。同一间房两个引擎，媒体层的 m.ctx 还描述着上一轮。看门狗和声音
+	// 从此各说各话。媒体层才是焦点这一间的所有者，不管它在不在全尺寸视图里。
+	if a.watchReloadBelongsToMedia(s) {
 		s.offline = false
 		s.err = ""
 		s.failures = 0

@@ -376,7 +376,10 @@ func (a *App) syncButton(c *ui.Context, action string, ico *ui.SVG, label string
 	// 时钟（c.Now()），Tester 才能用 Advance 把它推到想要的位置。
 	text := label
 	if stoppable {
-		text = profileStopLabel(a.ProfStarted, c.Now())
+		// 用挂钟，不用 c.Now()。ProfStarted 是在**回调里**用 time.Now() 存的，
+		// 构建帧的时钟在 Tester 里跟它差几十年：left 恒被夹到 0，永远显示
+		// 「停止剖析 · 0s」。倒计时是给人看的真实时间，两头都用挂钟才对。
+		text = profileStopLabel(a.ProfStarted, time.Now())
 	}
 
 	btn.Children(func() {

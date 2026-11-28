@@ -386,6 +386,11 @@ type App struct {
 	// 状态落盘：300ms 内的连续变更合并成一次写盘
 	stateDirty       bool
 	stateSavePending bool
+	// stateTimer 是 markDirty 排上的那颗合并定时器。必须留句柄：FlushState
+	// 之后它还在跑，到点又异步写一次盘——进程随时先退出，那次写盘悬空。
+	stateTimer *time.Timer
+	// stateSaveSeq 是快照序号（只在主线程自增）。写盘只往新写，旧的那份丢掉。
+	stateSaveSeq uint64
 	// stateSaveFailed 是后台写盘失败留下的旗标：writeState 只置这一位，
 	// Shell 下一帧取走并变成一条通知（取一次就清）。stateSaveWarned
 	// 保证一次会话只提醒一次：持续失败反复弹会盖住别的通知。
@@ -991,9 +996,11 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 	// 正文的左右 padding，再减掉常驻滚动条占的 10px：
 	// 列宽按可用宽度算，滚动条也不会压在最后一列上。
 	avail := w - 2*a.bodyPadX(c) - theme.ScrollbarW
-	if avail < theme.CardMinWidth {
-		avail = theme.CardMinWidth
-	}
+	// 不再把 avail 抬到 CardMinWidth。
+	//
+	// 抬上去之后 cardW 会大于真实可用宽度：窗口窄到约 240 DIP 以下时卡片横向
+	// 溢出、右边缘被裁掉。现在 main.go 的 MinWidth = 900 挡住了这条路，但那道
+	// 防线在改窗口尺寸/DPI/协议时不成立。不抬也只是"卡片比设计的窄"，不会溢出。
 
 	cols := int((avail + theme.GridGap) / (theme.CardMinWidth + theme.GridGap))
 	if cols < 1 {

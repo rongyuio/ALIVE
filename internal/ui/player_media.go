@@ -109,6 +109,15 @@ type playerMedia struct {
 	detachedAt time.Time
 	// tickPending 表示后台收听的定时心跳已经排上，避免每帧重复排。
 	tickPending bool
+	// tickGen 是心跳链的代次。stopPlayback 只把 tickPending 清掉是**不够**的：
+	// 已经排上的 time.AfterFunc 不会因此取消，它到点仍会跑 main 线程分派，
+	// 而那一刻 tickPending 已经是 false——kickMediaTick 于是再排一条，两条链
+	// 各自清标记、各自重排，永久并存（mediaTick 的频率翻倍：watchTick 每拍扫
+	// 12 格 Debug()，trackFirstFrame 每拍跑一遍）。
+	//
+	// 用代次作废在途那一条：回调先比 gen，对不上就直接丢，不碰 tickPending。
+	// 多出来的那个定时器到点空转一次，代价可以忽略；但活着的链永远只有一条。
+	tickGen uint64
 }
 
 // session 是焦点那一间；nil 表示当前没有房间。
@@ -311,18 +320,45 @@ func (a *App) kickMediaTick() {
 	// 一条链就够：mediaTick 先 watchTick（墙）再 trackFirstFrame（焦点）。
 	// 以前后台收听和墙各排一条、回调还一模一样，两个条件同时成立时 watchTick
 	// 的节拍会翻倍；stopPlayback 清标记又不取消已排的定时器，还会多留一条。
-	need := (m.app.inBackground() && m.eng() != nil) || len(a.watch.sessions) > 0
-	if need && !m.tickPending {
-		m.tickPending = true
-		win := a.Win
-		time.AfterFunc(playbackHealthPollInterval, func() {
-			runOnMain(win, func() {
-				a.media.tickPending = false
-				a.mediaTick()
-				a.kickMediaTick()
-			})
-		})
+	if !a.needMediaTick() || m.tickPending {
+		return
 	}
+	m.tickPending = true
+	m.tickGen++
+	gen := m.tickGen
+	win := a.Win
+	afterFunc(playbackHealthPollInterval, func() {
+		runOnMain(win, func() {
+			// 这一代已经被 stopPlayback 作废：不碰 tickPending（它早已是
+			// false，也可能已经被新的一条立起来），也不驱动、不再排。
+			if a.media.tickGen != gen {
+				return
+			}
+			a.media.tickPending = false
+			a.mediaTick()
+			a.kickMediaTick()
+		})
+	})
+}
+
+// needMediaTick 报告此刻需不需要一条定时心跳。
+//
+// 两条来源，缺一不可：
+//
+//   - 后台收听：焦点还在出声（有引擎），但眼下没有全尺寸视图——没有元素
+//     在请求帧，看门狗得自己排。
+//   - 窗口最小化：Shell 不再重建（main.go 的 OnMinimize 注释），同样没有人
+//     请求帧。**这一条以前漏了**：inBackground() 只判「焦点在但没全尺寸」，
+//     而最小化时 fullSize() 仍是 true（还停在播放页），于是 need 为假——
+//     最小化在播放页上时，地址续期和断流重连没有任何人接管，标签里的地址
+//     过期 300 秒后回来就是一块冻住的画面，日志里连一条 session.swap_* 都没有。
+//   - 墙上有会话：墙格每帧由视图驱动，但这条兜住"没有元素在画"的窗口。
+func (a *App) needMediaTick() bool {
+	m := &a.media
+	if (m.app.inBackground() || m.app.windowHidden) && m.eng() != nil {
+		return true
+	}
+	return len(a.watch.sessions) > 0
 }
 
 // CloseMedia 在窗口关闭前结束焦点并释放所有房间会话。
@@ -1117,7 +1153,10 @@ func (m *playerMedia) stopPlayback() {
 	// 呈现状态是推导出来的（fullSize），这里不用清：引擎没了，next
 	// applyPresent 自然落到小图或空。
 	m.detachedAt = time.Time{}
+	// 清标记之外还要**作废在途那一代**：只清 bool 的话，已经排上的定时器
+	// 到点仍会跑，并在这个"false"之上再排一条——两条链永久并存。
 	m.tickPending = false
+	m.tickGen++
 	m.buffering = false
 	m.bufferingSince = time.Time{}
 	m.diagAt = time.Time{}
@@ -1965,6 +2004,13 @@ var providerFor = live.ProviderFor
 //
 // 窗口已经不在（或还没建）时返回 false，调用方立刻自己清理。抽成变量是为了
 // 在没有窗口的测试里换成可控回调队列。
+// afterFunc 是 time.AfterFunc 的接缝。
+//
+// 心跳链的"只许一条"没法用挂钟观察来验（仓库规矩：测试不 sleep、不按挂钟
+// 判过过），所以把排定时器这件事做成可替换的：测试拿到回调，自己决定什么
+// 时候调、调几次。
+var afterFunc = time.AfterFunc
+
 var runOnMain = func(win *mygo.Window, fn func()) bool {
 	if win == nil || win.IsDestroyed() {
 		return false
