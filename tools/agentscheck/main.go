@@ -3,7 +3,9 @@
 //  1. 正文里出现的每个 `make <target>` 都真的在 Makefile 里有；
 //  2. 每个反引号里的路径都存在，每个 `ui.X`/`mygo.X` 之类都是钉住版本里真实的导出名；
 //  3. §出处 那张表：右栏 file:line「原话」必须真的落在那几行，左栏那句话必须仍然出现在
-//     正文里——表和正文不可能走散。
+//     正文里——表和正文不可能走散；
+//  4. make help 与 Makefile 的目标集双向一致：help 里列的必须真存在，真存在的必须
+//     在 help 里（或写进 `# INTERNAL:` 那行白名单）。help 是自述，不验就会骗人。
 //
 // doc/reference/mygo.md 与 doc/known-debt.md 只验路径与行号（账本会随代码漂，行号越界就报）。
 //
@@ -19,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -26,7 +29,7 @@ import (
 
 func main() {
 	agents := flag.String("agents", "AGENTS.md", "工程契约")
-	docs := flag.String("docs", "doc/reference/mygo.md,doc/known-debt.md", "跟着一起验的文档")
+	docs := flag.String("docs", "doc/reference/mygo.md,doc/known-debt.md,doc/reference/build.md", "跟着一起验的文档")
 	root := flag.String("root", ".", "仓库根")
 	mygo := flag.String("mygo", "third_party/mygo", "钉住的 MyGo 源码（相对 root）")
 	flag.Parse()
@@ -41,6 +44,7 @@ func main() {
 	}
 	text := string(raw)
 	problems = append(problems, c.checkCommands(text)...)
+	problems = append(problems, c.checkMakeTargets()...)
 	problems = append(problems, c.checkPathsAndSymbols(text)...)
 	problems = append(problems, c.checkAppendix(text)...)
 
@@ -63,19 +67,21 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("agents-check ok：%d 条规矩有出处、%d 个引用立得住、%d 个路径/符号存在、%d 个 make 目标真实\n",
-		c.rules, c.cites, c.paths, c.makes)
+	fmt.Printf("agents-check ok：%d 条规矩有出处、%d 个引用立得住、%d 个路径/符号存在、"+
+		"%d 个 make 目标真实、%d 个目标与 help 对得上\n",
+		c.rules, c.cites, c.paths, c.makes, c.targets)
 }
 
 type checker struct {
 	root string
 	mygo string
 
-	rules int
-	cites int
-	paths int
-	makes int
-	syms  map[string]map[string]bool // 包名 → 导出的名字
+	rules   int
+	cites   int
+	paths   int
+	makes   int
+	targets int
+	syms    map[string]map[string]bool // 包名 → 导出的名字
 }
 
 var (
@@ -86,6 +92,12 @@ var (
 	symRe   = regexp.MustCompile(`^([a-z][a-z0-9]*)\.([A-Z][A-Za-z0-9_]*)$`)
 	lineRe  = regexp.MustCompile(`:(\d+)(?:[,-](\d+))?$`)
 	makeRe  = regexp.MustCompile(`\bmake ([a-z][a-z0-9-]*)`)
+
+	// Makefile 的目标行、HELP_TEXT 块、内部目标白名单。
+	targetLineRe = regexp.MustCompile(`(?m)^([a-z][a-z0-9-]*):`)
+	helpBlockRe  = regexp.MustCompile(`(?s)define HELP_TEXT\n(.*?)\nendef`)
+	helpEntryRe  = regexp.MustCompile(`^([a-z][a-z0-9-]+)\s`)
+	internalRe   = regexp.MustCompile(`(?m)^#\s*INTERNAL:\s*(.+)$`)
 )
 
 // 本机跑起来才有、不入库的目录：存在才查，不存在不算错。
@@ -238,6 +250,71 @@ func (c *checker) checkAppendix(text string) []string {
 		}
 	}
 	return problems
+}
+
+// checkMakeTargets：make help 是自述。help 里列的每个目标都得真存在，
+// Makefile 里每个目标也都得在 help 里露一行——除非写进 `# INTERNAL:` 那一行。
+// 不验这一条，help 迟早变成一份没人维护的旧菜单。
+func (c *checker) checkMakeTargets() []string {
+	raw, err := os.ReadFile(filepath.Join(c.root, "Makefile"))
+	if err != nil {
+		return []string{"读不到 Makefile：" + err.Error()}
+	}
+	mk := string(raw)
+
+	targets := map[string]bool{}
+	for _, m := range targetLineRe.FindAllStringSubmatch(mk, -1) {
+		targets[m[1]] = true
+	}
+	if len(targets) == 0 {
+		return []string{"Makefile 里一个目标都没找到"}
+	}
+
+	internal := map[string]bool{}
+	if blk := internalRe.FindStringSubmatch(mk); blk != nil {
+		for _, n := range strings.FieldsFunc(blk[1], func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\u3001'
+		}) {
+			internal[n] = true
+		}
+	}
+
+	blk := helpBlockRe.FindStringSubmatch(mk)
+	if blk == nil {
+		return []string{"Makefile 里找不到 define HELP_TEXT 块"}
+	}
+	listed := map[string]bool{}
+	for _, l := range strings.Split(blk[1], "\n") {
+		if m := helpEntryRe.FindStringSubmatch(l); m != nil {
+			listed[m[1]] = true
+		}
+	}
+
+	var problems []string
+	for _, t := range sortedKeys(targets) {
+		c.targets++
+		if t == "help" || internal[t] {
+			continue
+		}
+		if !listed[t] {
+			problems = append(problems, "make 目标没进 help："+t+"（help 是菜单，新目标要露一行）")
+		}
+	}
+	for _, t := range sortedKeys(listed) {
+		if !targets[t] {
+			problems = append(problems, "help 里列的目标不存在："+t)
+		}
+	}
+	return problems
+}
+
+func sortedKeys(m map[string]bool) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }
 
 func parseAliases(lines []string) map[string]string {

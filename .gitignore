@@ -18,7 +18,9 @@
 
 # ---------------------------------------------------------------- 第三方二进制
 # libmpv 116MB，由 make deps 按 sha256 取到本机，不入库。
+# .cache/ 孴下载下来的 7z（30MB）：留着就不用为了一次重装再拉一遍，也不入库。
 /third_party/mpv/bin/libmpv-2.dll
+/third_party/mpv/.cache/
 
 # mygo build 生成的资源占位
 *.syso

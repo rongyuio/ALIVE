@@ -1,13 +1,22 @@
-# 提交/PR 的全量校验：gofmt + build + vet + mygo vet + test。
+# 提交/PR 的全量校验。
 #
 # 为什么用 windows-latest 而不是 ubuntu：这个项目的运行时就是 Windows
 # （界面是 MyGo 的 D3D 后端，播放走 libmpv 的 DLL），在 Linux 上能过只能
 # 说明代码能编译，说明不了它能不能跑。CI 跟开发机保持同一平台，
 # 本地 `make check` 过了 CI 就该过。
 #
-# 为什么不用 make：GitHub 的 Windows 镜像不保证装 make，而这几步本来就
-# 是几条命令。命令和 Makefile 里的 check 目标一一对应（vet / test 都带
-# -tags mock），改 Makefile 时记得同步这里。
+# 为什么不用 make：GitHub 的 Windows 镜像不保证装 make，而这几步本来就是
+# 几条命令。逐 step 对照 Makefile 的 check 目标：
+#
+#   gofmtcheck     ↔ make fmt-check   （同一条命令，判据只有 tools/gofmtcheck 一份）
+#   build/vet×3    ↔ make vet         （无 tag / mock / e2e 三个构建面）
+#   mygo vet       ↔ make vet         （同上，构建值逃逸）
+#   agents-check   ↔ make agents-check
+#   lint           ↔ make lint        （版本钉在两边，本地不同版本会自己红）
+#   test           ↔ make test
+#   race           ↔ make race        （-race 要 cgo + gcc，所以先装 mingw）
+#
+# 改一边就同步另一边：等价表写在两边的注释里，差一个词都该看得见。
 name: check
 
 on:
@@ -18,7 +27,8 @@ on:
 jobs:
   check:
     runs-on: windows-latest
-    timeout-minutes: 15
+    # race 那一步多一次 mingw 安装，留够余量。
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -28,41 +38,52 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # 单独一条 sh 脚本：需要判断 gofmt 的输出是否为空，pwsh 下写起来更难读。
+      # 判据在 tools/gofmtcheck：排除 third_party / .tmp / .mygo / build 的规则
+      # 只写在那里。这里不再手写 `gofmt -l .` —— 那是另一份判据，会分叉。
       - name: gofmt
-        shell: bash
-        run: |
-          bad=$(gofmt -l .)
-          if [ -n "$bad" ]; then
-            echo "needs gofmt:"
-            echo "$bad"
-            echo "本地跑 make fmt 后重新提交"
-            exit 1
-          fi
+        run: go run ./tools/gofmtcheck
 
-      - name: build
-        run: go build ./...
+      - name: build + vet (no tags)
+        run: go build ./...; if ($LASTEXITCODE) { exit $LASTEXITCODE }; go vet ./...
 
-      # -tags mock 与 Makefile 的 vet / test 目标一致：假数据层
+      # -tags mock 与 Makefile 的 test / race 一致：假数据层
       # （internal/live/mock.go）只在这个构建里存在，不带标签就跳过它的测试。
-      - name: vet
+      - name: vet (mock)
         run: go vet -tags mock ./...
+
+      # automation_e2e.go 只在 e2e 标签下存在。不单独 vet 这一面，
+      # 那个文件就是零静态检查的——`make e2e` 谁也没跑过。
+      - name: build + vet (e2e)
+        run: go build -tags e2e ./...; if ($LASTEXITCODE) { exit $LASTEXITCODE }; go vet -tags e2e ./...
+
+      - name: mygo vet
+        run: go tool mygo vet .
 
       # 官方 action 自己下载官方构建的二进制；不要用 go install——那样拿不到
       # 构建元数据，官方也明说不保证可用（见 .golangci.yml）。
-      # 版本跟本地保持一致，判定结果才对得上。
+      # 版本跟 Makefile 的 LINT_VERSION 保持一致，判定结果才对得上。
       - name: lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0
           args: --build-tags mock
 
-      - name: mygo vet
-        run: go tool mygo vet .
-
-      # AGENTS.md 里每条规则、每个路径和 API 的出处都得站得住（make agents-check）。
+      # AGENTS.md 里每条规则、每个路径和 API 的出处都得站得住，make help 与
+      # Makefile 的目标集也要双向一致（make agents-check）。
       - name: agents-check
         run: go run ./tools/agentscheck
 
       - name: test
         run: go test -tags mock ./... -count=1
+
+      # -race 需要 cgo，cgo 需要 gcc。runner 上不一定有，没有就装 mingw。
+      - name: gcc (for -race)
+        run: |
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            choco install mingw -y --no-progress --limit-output
+          }
+          gcc --version
+
+      # 判据不是「代码看着没问题」，是「race detector 没报」。
+      - name: race
+        run: go test -tags mock ./... -race -count=1

@@ -4,15 +4,17 @@
 # 为什么不在钩子里顺手 gofmt -w：自动改写暂存区会让人看不到本该看到的 diff。
 # 拒绝提交、让人自己跑 make fmt 再确认一遍，才对得上「提交前看 diff」这条。
 #
+# 为什么调 tools/gofmtcheck 而不是 gofmt -l：排除规则只写在一处。钩子自己写一份
+# 排除列表，就会和 make check / CI 分叉——分叉的表现是「钩子过了，CI 红」。
+# 这里只把暂存的文件交给它，判据还是那一份。
+#
 # 安装：make hooks（把 core.hooksPath 指到 .githooks）。钩子本身进仓库，
 # 否则换一台机器就没了——规则靠人想起来装，等于没有规则。
 
 files=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
 if [ -n "$files" ]; then
-	bad=$(gofmt -l $files 2>/dev/null)
-	if [ -n "$bad" ]; then
-		echo "gofmt 未通过，先跑 make fmt：" >&2
-		echo "$bad" >&2
+	if ! go run ./tools/gofmtcheck $files; then
+		echo "先跑 make fmt 再重新提交。" >&2
 		exit 1
 	fi
 fi

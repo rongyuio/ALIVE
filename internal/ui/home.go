@@ -971,14 +971,19 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 	cardW := (avail - theme.GridGap*float32(cols-1)) / float32(cols)
 	a.gridCols, a.gridCardW = cols, cardW
 
-	// 空列表与骨架不需要虚拟化：它们只有十来个元素。
+	// 空列表不需要虚拟化。
+	//
+	// 正在取列表时**什么都不画**：切分区后屏幕上只剩页面底色，新数据到了直接
+	// 出现。以前这里画 12 张骨架卡（灰封面 + 灰头像 + 两条灰文字），那是同一块
+	// 区域里的第三种颜色——旧列表 → 骨架灰 → 新列表，多出来的那一次灰就是
+	// 用户报的「切换分区画面闪烁」。见 loadRooms 里那段注释。
 	if len(list) == 0 {
+		if view.loading {
+			ui.Box(c).Grow(1)
+			return
+		}
 		ui.Scroll(c).Grow(1).Children(func() {
-			if view.loading {
-				a.skeletonGrid(c, avail, cols, cardW)
-			} else {
-				a.emptyGrid(c, view)
-			}
+			a.emptyGrid(c, view)
 		})
 		return
 	}
@@ -1041,36 +1046,6 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 		}
 	}
 
-}
-
-// skeletonGrid 是首屏骨架：12 张卡片，封面 16:9，信息条与真卡片一模一样高。
-//
-// 骨架是静止的。它曾经挂一个 1.6s 的 Loop 让整块网格在 0.55↔1 之间呼吸：
-// 等待期间画面一直在变亮变暗，而且每张骨架每帧都在请求重绘——等待本身不该
-// 有动效（decisions/0005 的静止占位），数据到达时也不该先「停一下呼吸」。
-//
-// 几何必须和真卡逐像素对齐：信息条直接钉成 cardMetaHeight（= 真卡两行文字
-// 撑出来的 64.33），头像 32、两行用 cardLineHeight（MyGo 默认行高 = 字号
-// ×4/3）、行距 3。差 2 DIP，数据到达换屏时整行就会矮一截。
-func (a *App) skeletonGrid(c *ui.Context, avail float32, cols int, cardW float32) {
-	ui.Grid(c).Width(avail).Columns(cols).Gap(theme.GridGap).Children(func() {
-		for i := 0; i < 12; i++ {
-			sk := ui.Column(c).Width(cardW).Radius(theme.RadiusMD).
-				Background(theme.BgSecondary)
-			sk.Children(func() {
-				ui.Box(c).Width(cardW).Height(cardW * 9 / 16).Background(theme.FillTertiary)
-				ui.Row(c).Height(cardMetaHeight()).Padding(13, 12, 15, 12).Gap(10).Children(func() {
-					ui.Box(c).Size(32, 32).Radius(16).Background(theme.FillTertiary)
-					ui.Column(c).Grow(1).Gap(3).Children(func() {
-						ui.Box(c).Height(cardLineHeight(theme.TextSM)).Width(cardW * 0.55).
-							Radius(6).Background(theme.FillTertiary)
-						ui.Box(c).Height(cardLineHeight(theme.TextXS)).Width(cardW * 0.80).
-							Radius(6).Background(theme.FillTertiary)
-					})
-				})
-			})
-		}
-	})
 }
 
 // emptyGrid 是列表的空态：标题 + 提示 + 按钮。文案里的平台和按钮动作

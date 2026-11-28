@@ -16,6 +16,8 @@ ALIVE 是 Windows 上的直播桌面客户端。界面是 MyGo 的原生 UI（D3
   （Live Activity 状态表、过渡表、一帧只有一个 `ui.Video`）。**动 `island.go` 或任何
   `surface_*.go` 之前先读它。**
 - `third_party/mygo/docs/ui/views.md` —— 构建生命周期、事件、Key、跨 goroutine。
+- [doc/reference/build.md](doc/reference/build.md) —— 构建判据：CI 与本地 `make check` 的等价表、
+  每道门的失败注入实测、沙箱判据。**改 `Makefile` 或 `check.yml` 前先读它。**
 - `third_party/mygo/docs/ui/migration.md` —— Element 值、Handle、FocusBind。
 - `third_party/mygo/docs/ui/testing.md` —— Tester。真窗口 e2e 看 `third_party/mygo/docs/plugins/automation.md`。
 - 某个 API 在钉住的版本（v0.10.0，见 `go.mod`）里存不存在、签名是什么：读 `third_party/mygo/ui/` 源码或 `go doc`。
@@ -35,17 +37,24 @@ GPU 帧回读、mpv 播放引擎、安装器文案）。逐文件的原因和升
 make run        # 从源码跑，沙箱在 .mygo\dev-home，真实 %APPDATA% 一个字节不写
 make dev        # 同上，改文件自动重建
 make mock       # 假数据层（直播 + 弹幕），不联网
+make mock-blocked  # 风控失败态：取流/弹幕都返 ErrBlocked
+make mock-timeout  # 超时态：取流/弹幕都返 DeadlineExceeded
 make build      # mygo build 打包到 build\
-make deps       # 按 sha256 取 libmpv-2.dll（116MB，不入库）
+make deps       # 下 30MB 的 mpv 7z，按 sha256 验包、解出 116MB 的 DLL（都不入库）
 
 make test       # go test -tags mock，跑前清 .mygo\test-home
-make lint       # golangci-lint run --build-tags mock
-make vet        # go build + go vet + go tool mygo vet
-make check      # fmt-check + vet + lint + test + agents-check
+make race       # 同上再加 -race（要 cgo + gcc）
+make lint       # golangci-lint run --build-tags mock，版本必须与 CI 钉的一致
+make vet        # build + vet 三个构建面（无 tag / mock / e2e）+ go tool mygo vet
+make check      # fmt-check + vet + lint + test + race + agents-check
 make e2e        # 真构建（-tags e2e），automation 插件跟着进去
 ```
 
-提交前跑 `make check`。它和 [.github/workflows/check.yml](.github/workflows/check.yml) 一一对应，
+判据不是各写一份。gofmt 的检查域只在 `tools/gofmtcheck` 里；Makefile、
+[.github/workflows/check.yml](.github/workflows/check.yml)、`.githooks/pre-commit` 三处掉的
+是同一条命令。`make help` 与 Makefile 目标集的双向一致由 `make agents-check` 机器验。
+
+提交前跑 `make check`。它和 [.github/workflows/check.yml](.github/workflows/check.yml) 逐 step 一一对应，
 改一边就同步另一边。
 
 `go tool mygo` 的子命令也会用到：`vet .`（查构建值逃逸）、`migrate-ui .`（旧元素 API 迁移，

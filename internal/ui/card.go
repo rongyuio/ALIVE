@@ -214,28 +214,22 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 	return card
 }
 
-// coverArt 是封面还没到时的占位：一块安静的深色场，不转、不闪、不循环。
+// coverArt 是封面还没到时的占位：**什么都不画**，只把版式撑住。
 //
-// 这里原来是转动的圆环。一屏十几张卡一起转，等于每一帧都在提醒「你还在等」，
-// 而且每张卡各挂一个 Loop、一直在请求帧。占位要做的只是把版式撑住——
-// 信息条上已经写着主播名和标题，用户第一眼就知道这是谁，缺的只是画面。
-// 动的那一下留给封面到达，不留给等待本身。
+// 这里先后有过两版"安静的场"：转动的圆环，然后一块平涂底色（先是跟着配色
+// 走的 BgTertiary，后来是不跟配色的 MediaPlaceholder）。两版都错在同一件事
+// ——它们在封面到达的那一帧被照片整个替换掉。
+//
+// 那个替换就是用户报的「切换分区画面闪烁」。录屏逐帧量过：整屏亮度
+// 143.6 → 202.1 → 166.5，中间只有一帧。33ms 内先亮一下再暗回去，方向
+// 掉头了——闪的成因是「掉头」，不是「差多少」。
+//
+// 斗鱼和 B站 这块区域从头到尾都是透明的（实测 card / item / cover-wrap /
+// cover 四层容器的 background-color 全是 rgba(0,0,0,0)），图没到就露出页面
+// 底色，图到了直接出现：只有两种状态，没有第三种颜色，也就没得闪。
+// 这里对齐它们——不画色，只留盒子。
 func coverArt(c *ui.Context, w, h float32) {
-	art := ui.Box(c).Width(w).Height(h).Background(theme.BgTertiary)
-	// 和卡片一样的顶部受光边：占位也要有厚度，不能是一块死色。
-	art.InsetShadow(0, 1, 0, 0, theme.TopLight)
-	art.Children(func() {
-		// 中心一层极淡的柔光，给这块空场一个重心。
-		ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-			RadialGradient(ui.RadialGradient{
-				Center: ui.Point{X: 0.5, Y: 0.5},
-				Radius: h * 0.55,
-				Stops: []ui.GradientStop{
-					{Color: theme.TextPrimary.Alpha(0.035), At: 0},
-					{Color: ui.Transparent, At: 1},
-				},
-			})
-	})
+	ui.Box(c).Width(w).Height(h)
 }
 
 // avatar 画圆形头像：先用真头像，没有就退回底色 + 名字首字。

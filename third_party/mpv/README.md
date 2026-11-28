@@ -4,7 +4,12 @@ libmpv 的 Windows 运行库与头文件，供 `github.com/egoist/mygo/plugins/v
 `LoadLibrary` 绑定。
 
 - 来源：`shinchiro/mpv-winbuild-cmake` 的 `mpv-dev-x86_64-20261111-git-bcde6b93cc.7z`
-- `bin/libmpv-2.dll`：随包分发（`mygo.json` 的 `resources`），116MB，LZMA 后约 40MB
+  - 地址：https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-dev-x86_64-20261111-git-bcde6b93cc.7z
+  - 包 sha256：`273c079b11ea5575822f972756f4c9a71149a5c10130353abeb8586738938452`
+  - 包 30MB，解出来的 `libmpv-2.dll` 116MB（sha256 `88504ee5…71db1b`）
+  - `make deps` 就是干这件事：下包 → 验包 → `tar.exe` 抽单文件 → 验 DLL。
+    两个哈希都钉在 `Makefile` 里，改任一个都要同时改这里
+- `bin/libmpv-2.dll`：随包分发（`mygo.json` 的 `resources`），116MB，LZMA 后约 30MB
 - `include/mpv/render_d3d11.h`：**2026-11-23 从上游 master 补的**，D3D11 渲染
   后端（`MPV_RENDER_API_TYPE_D3D11`）的参数结构体只在这个头里。原包里没有它，
   靠记忆猜字段顺序写出过一版实现——结构体只有一个字段，猜错不影响偏移，但

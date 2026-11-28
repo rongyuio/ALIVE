@@ -45,7 +45,7 @@ make dev
 # 打包构建：build/windows-amd64/ 下的便携版和安装包
 make build
 
-# 全部检查：fmt + build + vet + mygo vet + lint + 测试
+# 全部检查：fmt + build + vet（三个构建面）+ mygo vet + lint + 测试 + race
 make check
 
 # e2e自动化插件构建
