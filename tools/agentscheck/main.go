@@ -101,7 +101,7 @@ var (
 )
 
 // 本机跑起来才有、不入库的目录：存在才查，不存在不算错。
-var runtimeDirs = []string{".tmp/", ".mygo/", "build/"}
+var runtimeDirs = []string{".tmp/", ".mygo/", "build/", "third_party/mpv/bin/"}
 
 // checkCommands：正文提到的 make 目标都得在 Makefile 里。
 func (c *checker) checkCommands(text string) []string {
