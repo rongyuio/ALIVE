@@ -91,6 +91,12 @@ func (a *App) selectGroup(i int) {
 }
 
 func (a *App) selectCategory(i int) {
+	// 校验下标。selectGroup 有这条，这里原来没有：越界会把 CategoryIndex
+	// 写成一个不存在的值，之后 currentCategory() 兜底返回 cats[0]，可二级
+	// 的滑块按 box.at(越界) 拿到 (0,0)——宽 0、透明，整行没有选中态。
+	if i < 0 || i >= len(a.currentCategories()) {
+		return
+	}
 	if i == a.CategoryIndex {
 		// 同上：点已选中的二级分区是空操作，不能重建内容层。
 		a.MoreOpen = false

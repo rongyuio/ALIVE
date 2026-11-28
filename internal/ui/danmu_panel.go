@@ -95,6 +95,12 @@ func (a *App) danmuResizer(c *ui.Context) {
 	_, _, held := rz.Dragged()
 	pressed := rz.Pressed()
 
+	// 指针被系统抢走（PressCanceled）：显式复位，不靠「pressed/held 同时为假」
+	// 这个巧合。窗口失焦、触摸被中断都会走到这里。
+	if rz.PressCanceled() {
+		a.panelDragW = 0
+		return
+	}
 	if pressed && a.panelDragW == 0 {
 		a.panelDragW = a.panelWidth()
 		a.panelDragX = ax
@@ -178,7 +184,19 @@ func (a *App) danmuPanelList(c *ui.Context) {
 	if len(list) > danmuPanelMaxLines {
 		list = list[len(list)-danmuPanelMaxLines:]
 	}
-	a.PanelList.Key = func(i int) any { return list[i].Seq }
+	// Key 不捕获这一帧的局部 list。它被存进长期 ListState：面板收起后
+	// danmuPanelList 不再执行，闭包一直是旧快照；任何在别的路径上对这个
+	// ListState 调 Key 的地方（ScrollToEnd 一族）都会拿到过期切片并越界。
+	a.PanelList.Key = func(i int) any {
+		log := a.DanmuLog
+		if len(log) > danmuPanelMaxLines {
+			log = log[len(log)-danmuPanelMaxLines:]
+		}
+		if i < 0 || i >= len(log) {
+			return i
+		}
+		return log[i].Seq
+	}
 
 	// 空列表不画占位文案：连接状态在后台，界面根本拿不到「正在连接」
 	// 这个事实——连上了只是没人在说话，也会一直挂着那行字。

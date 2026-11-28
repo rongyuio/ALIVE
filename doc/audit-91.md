@@ -24,8 +24,8 @@
 
 | 判决 | 条数 |
 |---|---|
-| ✔ 已修（有测试或可跑判据） | 57 |
-| ◇ 已记账（在 `doc/known-debt.md`） | 30 |
+| ✔ 已修（有测试或可跑判据） | 62 |
+| ◇ 已记账（在 `doc/known-debt.md`） | 25 |
 | ✘ 判定不成立（有反证） | 3 |
 | 待判 | 0 |
 | **合计** | **90** |
@@ -44,7 +44,7 @@
 | 隐患 | `internal/ui/category_bar.go:168-175` | 取消订阅时 kept := a.Subs[:0] 原地压缩 a.Subs。 | ✔ 已修 |
 | 隐患 | `internal/ui/category_bar.go:573-585` | btn 的底色在 573-575 按旧的 a.MoreOpen 算，btn.Clicked() 在 576-578 把 | ✔ 已修（moreButton 改 OnClick） |
 | 疑点 | `internal/ui/category_bar.go:82-84（未证实，但注释是假的）` | currentSubs() 读 a.subCategories；全仓只有 home.go:33 的声明和 | ✔ 已修 |
-| 疑点 | `internal/ui/category_bar.go:117-132` | selectCategory(i) 不校验 i 范围（selectGroup 95-98 校验），越界会把 | ◇ 已记账 |
+| 疑点 | `internal/ui/category_bar.go:117-132` | selectCategory(i) 不校验 i 范围（selectGroup 95-98 校验），越界会把 | ✔ 已修（校验下标） |
 | 疑点 | `internal/ui/category_bar.go:435-437` | 查询变短后只把越界的 CategoryHit 归 0，不 clamp 到末项。 | ✔ 已修（越界收到末项） |
 
 ### `config_transfer.go`（4）
@@ -73,7 +73,7 @@
 | 隐患 | `internal/ui/danmu_panel.go:181` | a.PanelList.Key = func(i int) any { return list[i].Seq } —— 闭包捕获的是 | ◇ 已记账（妥协 #20） |
 | 隐患 | `internal/ui/danmu_panel.go:168-173` | panelNewDanmu()（228-258）在构建路径里推进 a.panelSeen/a.panelMark， | ◇ 已记账（妥协 #21） |
 | 隐患 | `internal/ui/danmu_panel.go:189-204 + 248-252` | 日志满 danmuLogMax 后，上一次的结算点被挤出窗口时 n = len(log)。 | ◇ 已记账 |
-| 疑点 | `internal/ui/danmu_panel.go:98-108` | 拖拽状态存在 a.panelDragW/panelDragX 两个 App 字段上，唯一的复位路径是 | ◇ 已记账（妥协 #22） |
+| 疑点 | `internal/ui/danmu_panel.go:98-108` | 拖拽状态存在 a.panelDragW/panelDragX 两个 App 字段上，唯一的复位路径是 | ✔ 已修（认 PressCanceled） |
 
 ### `data.go`（8）
 
@@ -95,7 +95,7 @@
 | 隐患 | `internal/ui/diagnostics_panel.go:214-219` | counters := snap["counters"].(map[string]int64)、hists["first_frame_ms" | ✔ 已修 |
 | 隐患 | `internal/ui/diagnostics_panel.go:415-417、458-460` | 两个后台动作都在 `if win == nil { return }` 处直接返回，而 SyncBusy / | ✔ 已修 |
 | 隐患 | `internal/ui/diagnostics_panel.go:450 + internal/ui/sync_panel.go:377` | a.ProfStarted = time.Now()（挂钟）存进去，按钮文案用 | ✔ 已修（倒计时两端都用挂钟） |
-| 疑点 | `internal/ui/diagnostics_panel.go:405` | 文件名 bundle-20060102-150405.zip，精确到秒。 | ◇ 已记账 |
+| 疑点 | `internal/ui/diagnostics_panel.go:405` | 文件名 bundle-20060102-150405.zip，精确到秒。 | ✔ 已修（文件名到毫秒） |
 
 ### `follow.go`（5）
 
@@ -165,7 +165,7 @@
 | 隐患 | `internal/ui/state.go:167-171（配合 105-140）` | saveState 拍完快照就 `go a.writeState(data)`；writeState 里 stateMu 只保证 | ✔ 已修（写盘按序号只往新写） |
 | 隐患 | `internal/ui/state.go:178-182` | stateSnapshot 先把 stateSavePending/stateDirty 清零，再 marshal；marshal | ✔ 已修 |
 | 隐患 | `internal/ui/state.go:161-163` | markDirty 的 time.AfterFunc 句柄不保存、也不取消；FlushState（236-240）之后 | ✔ 已修（定时器留句柄、快照时取消） |
-| 疑点 | `internal/ui/state.go:207-223` | 快照结构里直接塞了 a.roomChoices（活 map）和 a.PlatformOrder（活切片）， | ◇ 已记账（妥协 #23） |
+| 疑点 | `internal/ui/state.go:207-223` | 快照结构里直接塞了 a.roomChoices（活 map）和 a.PlatformOrder（活切片）， | ✔ 已修（快照深拷贝） |
 | 疑点 | `internal/ui/state.go:288-301` | restore 对 PlatformOrder/FollowsSectionOrder 做了 normalize，对 Subs | ◇ 已记账（妥协 #24） |
 
 ### `surface_motion.go`（5）
@@ -191,7 +191,7 @@
 | 级别 | 位置 | 事实（报告原话摘要） | 判决 |
 |---|---|---|---|
 | 隐患 | `internal/ui/watch.go:121（定义在 surface_motion.go:523-525、534-541）` | watchTile 在构建路径里调 a.matchable()，它算的是 | ✔ 已修 |
-| 隐患 | `internal/ui/watch.go:152-155 → 530-547` | 过渡窗口里把 player 置 nil 交给舞台画；但 watchState(c, room, sess, player) | ◇ 已记账（妥协 #13） |
+| 隐患 | `internal/ui/watch.go:152-155 → 530-547` | 过渡窗口里把 player 置 nil 交给舞台画；但 watchState(c, room, sess, player) | ✔ 已修（判据加 player != nil） |
 | 隐患 | `internal/ui/watch.go:465,481` | volume := a.watchVolume(key) 在构建时读一次；HandleInput 里用 | ✔ 已修（滚轮里现读音量） |
 | 疑点 | `internal/ui/watch.go:152-155 对比 internal/ui/player.go:361` | 只有"去的那一侧=舞台"（Router.Path()==routePlayer）被挡。离开播放页的 | ◇ 已记账（妥协 #14） |
 | 疑点 | `internal/ui/watch.go:88-91` | watchAspect(key) 忽略 key，恒返回 watch.DefaultAspect，参数是死参数。 | ✔ 已修 |

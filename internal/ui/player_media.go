@@ -109,6 +109,12 @@ type playerMedia struct {
 	detachedAt time.Time
 	// tickPending 表示后台收听的定时心跳已经排上，避免每帧重复排。
 	tickPending bool
+	// bufferingNow 是「画面停住了但还没到判死阈值」的观测结果。
+	//
+	// 观测在 trackFirstFrame（主线程、非构建路径）里做一次，绘制只读这个字段。
+	// 原来由 bufferingPill 在**构建路径**里调 stalled(p)，而它会写
+	// m.lastPos / m.lastPosAt——构建路径写状态，违反「构建值是临时的」。
+	bufferingNow bool
 	// tickGen 是心跳链的代次。stopPlayback 只把 tickPending 清掉是**不够**的：
 	// 已经排上的 time.AfterFunc 不会因此取消，它到点仍会跑 main 线程分派，
 	// 而那一刻 tickPending 已经是 false——kickMediaTick 于是再排一条，两条链
@@ -1158,6 +1164,7 @@ func (m *playerMedia) stopPlayback() {
 	m.tickPending = false
 	m.tickGen++
 	m.buffering = false
+	m.bufferingNow = false
 	m.bufferingSince = time.Time{}
 	m.diagAt = time.Time{}
 	m.diagPos, m.diagAudio = 0, 0
@@ -1325,6 +1332,8 @@ func (a *App) trackFirstFrame() {
 	}
 	now := time.Now()
 	a.trackContinuity(p, now)
+	// 缓冲观测在这里做：主线程、每次 tick 一次，绘制只读结果。
+	m.bufferingNow = m.stalled(p)
 	if !m.firstFrame() {
 		m.observeStartupPause(a.focusPlaying(), now)
 	}

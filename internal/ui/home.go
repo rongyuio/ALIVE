@@ -388,7 +388,9 @@ type App struct {
 	stateSavePending bool
 	// stateTimer 是 markDirty 排上的那颗合并定时器。必须留句柄：FlushState
 	// 之后它还在跑，到点又异步写一次盘——进程随时先退出，那次写盘悬空。
-	stateTimer *time.Timer
+	// wasOnPlayer 是上一帧在不在播放页：leavePlayer 只在离开那一帧调一次。
+	wasOnPlayer bool
+	stateTimer  *time.Timer
 	// stateSaveSeq 是快照序号（只在主线程自增）。写盘只往新写，旧的那份丢掉。
 	stateSaveSeq uint64
 	// stateSaveFailed 是后台写盘失败留下的旗标：writeState 只置这一位，
@@ -703,9 +705,14 @@ func (a *App) Shell(c *ui.Context) {
 	//
 	// 注意它不管媒体层：后台收听要的正是「界面收了、声音留着」，
 	// 引擎的开关由焦点的存活决定（setFocus / closeFocus）。
-	if a.Router.Path() != routePlayer {
+	// 只在「刚从播放页离开」的那一帧收尾。原来写成「只要不在播放页就每帧调」：
+	// leavePlayer 里无条件 windowFullScreen(a.Win)（一次平台往返），首页/关注页
+	// 静置时每秒白花 ~60 次主线程时间，还和 shellKeys 里的另一次重复。
+	onPlayer := a.Router.Path() == routePlayer
+	if !onPlayer && a.wasOnPlayer {
 		a.leavePlayer()
 	}
+	a.wasOnPlayer = onPlayer
 
 	// 播放页的两种全屏下应用外壳整体让位给画面（外壳是 position:fixed
 	// inset:0 z-index:9999，顶栏和灵动岛都被盖住）。

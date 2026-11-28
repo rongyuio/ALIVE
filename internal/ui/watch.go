@@ -545,7 +545,7 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player
 		loading = true
 	case player != nil && !player.Ready():
 		loading = true
-	case sess != nil && sess.stalled:
+	case player != nil && sess != nil && sess.stalled:
 		// 有画面、但时间轴停住了：这一格在缓冲。不报出来的话，用户看到的
 		// 是一张冻住的图，会以为那是实时画面——比缓冲本身更糟。
 		msg = "缓冲中…"

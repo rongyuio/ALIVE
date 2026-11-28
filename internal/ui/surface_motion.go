@@ -525,8 +525,11 @@ func (a *App) backgroundEnter() {
 	m := &a.media
 	// 离开播放页时，一个没有引擎、也没在取流的焦点就是死的：没有声音，
 	// 也没有任何表面在画它。收掉它，岛才不会挂在一条已经不存在的路上。
-	if f := a.focus; f != nil && f.player == nil && !f.loading &&
-		(f.offline || f.err != "" || (f.stream.RoomID != "" && !f.stream.Live)) {
+	// 判据只看状态本身（没引擎、没在取流、已落终态），不看 stream 这个
+	// 可选字段：很多路径根本不填 stream，`stream.RoomID != ""` 恒假，于是
+	// 「没有引擎、没在取流、也没在加载」的焦点会留在岛上——岛显示一条不存在
+	// 的路。offline 已经在 watchOffline 里置位，err 覆盖失败终态。
+	if f := a.focus; f != nil && f.player == nil && !f.loading && (f.offline || f.err != "") {
 		a.setFocus(nil)
 		return
 	}
