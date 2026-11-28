@@ -363,7 +363,7 @@ func (a *App) takeDanmuTrack(now time.Time, w2 float32, span int) int {
 	// fits 报告第 i 条轨道此刻能不能接一条宽 w2 的弹幕。
 	fits := func(i int) bool {
 		l := a.danmuLanes[i]
-		if l.at.IsZero() || !now.Before(l.at.Add(dur)) { // 上一条已经完全离开
+		if l.at.IsZero() || !now.Before(l.at.Add(dur)) { // 空轨或上一条已完全离开
 			return true
 		}
 		dt := now.Sub(l.at).Seconds()
@@ -389,12 +389,18 @@ func (a *App) takeDanmuTrack(now time.Time, w2 float32, span int) int {
 		}
 		return true
 	}
+	// occupy 把 i..i+span-1 占掉：跨轨道弹幕占的那几条一起记上，后来者
+	// 按同一条追尾判据判断能不能接力——贴纸比一行字高，它跨占的那几条
+	// 在图上是一整块，x 错不开。
+	occupy := func(i int) {
+		for k := i; k < i+span; k++ {
+			a.danmuLanes[k] = danmuLane{at: now, w: w2}
+		}
+	}
 
 	for i := 0; i+span <= n; i++ {
 		if spanFits(i) {
-			for k := i; k < i+span; k++ {
-				a.danmuLanes[k] = danmuLane{at: now, w: w2}
-			}
+			occupy(i)
 			return i
 		}
 	}
@@ -407,9 +413,7 @@ func (a *App) takeDanmuTrack(now time.Time, w2 float32, span int) int {
 			best = i
 		}
 	}
-	for k := best; k < best+span && k < n; k++ {
-		a.danmuLanes[k] = danmuLane{at: now, w: w2}
-	}
+	occupy(best)
 	return best
 }
 

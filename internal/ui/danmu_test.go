@@ -210,59 +210,6 @@ func TestDanmuImageSpansTracks(t *testing.T) {
 	}
 }
 
-// TestDanmuTracksDoNotOverlap 用真的分配器排一串混合弹幕，断言**轨道够用时
-// 两条弹幕的纵向区间绝不相交**——也就是屏幕上不会出现图片压着文字。
-//
-// 这管的是主路径。轨道真的用尽时分配器会走「宁叠不丢」的兜底分支（见
-// takeDanmuTrack 末尾），那种重叠是既定取舍，不在这里断言。
-//
-// 修复前这条必红：纯图弹幕和文字弹幕都只占 1 条轨道，而图高 56px、轨道 30px，
-// 排在相邻两轨上的图和字必然相交。
-func TestDanmuTracksDoNotOverlap(t *testing.T) {
-	const font = danmuFontSize
-	const tracks = 40 // 给足：10 张图 × 2 轨 + 10 条字 × 1 轨 = 30 < 40
-	a := &App{DanmuFont: font, DanmuDur: danmuDuration}
-	a.danmuTracks = tracks
-	a.danmuStageW = 1200
-
-	lane := danmuLaneH(font)
-	base := time.Now()
-	type placed struct {
-		top, bottom float32
-		img         bool
-	}
-	placedAll := make([]placed, 0, 20)
-
-	for i := 0; i < 20; i++ {
-		var d danmuLine
-		if i%2 == 0 {
-			d = danmuLine{Emotes: []live.Emote{{URL: "u", Width: 100, Height: 100}}}
-		} else {
-			d = danmuLine{Text: "文字"}
-		}
-		now := base.Add(time.Duration(i) * time.Millisecond)
-		span := danmuLaneSpan(d, font)
-		track := a.takeDanmuTrack(now, danmuWidthEstimate(d, font), span)
-		if track+span > tracks {
-			t.Fatalf("第 %d 条分到轨道 %d + span %d，超出 %d 条轨道", i, track, span, tracks)
-		}
-		top := float32(track)*lane + 16
-		h := danmuHeightEstimate(d, font)
-		placedAll = append(placedAll, placed{top, top + h, d.imageOnly()})
-	}
-
-	for i := range placedAll {
-		for j := i + 1; j < len(placedAll); j++ {
-			x, y := placedAll[i], placedAll[j]
-			if x.top < y.bottom && y.top < x.bottom {
-				t.Errorf("第 %d 条 [%v, %v] 与第 %d 条 [%v, %v] 纵向重叠%s",
-					i, x.top, x.bottom, j, y.top, y.bottom,
-					overlapNote(x.img, y.img))
-			}
-		}
-	}
-}
-
 // TestDanmuImageTakesConsecutiveTracks 钉住「占多条轨道时整段一起占」：
 // 图片占了 track 和 track+1，下一条弹幕就不能再被分到 track+1。
 func TestDanmuImageTakesConsecutiveTracks(t *testing.T) {
@@ -285,13 +232,85 @@ func TestDanmuImageTakesConsecutiveTracks(t *testing.T) {
 	}
 }
 
-func overlapNote(a, b bool) string {
-	switch {
-	case a && b:
-		return "（两张图）"
-	case a || b:
-		return "（图压着文字）"
-	default:
-		return "（两条文字）"
+// TestDanmuImageDoesNotCoverText 是「图片弹幕和文字弹幕重叠」的回归判据。
+//
+// 判据必须是二维的：**x 与 y 同时相交才算视觉重叠**。同一条轨道上前后两条
+// 弹幕纵向本来就相交，靠 x 错开——那正是追尾模型在做的事；只比纵向会把
+// 正常情形全部误报成缺陷（我第一版测试就是这么错的）。
+//
+// 真正的缺陷是几何的：纯图弹幕高 字号×2.8 = 56px，而轨道只有 30px。它排在
+// 一条轨道里，上下各溢出 13px 压进相邻轨道，而相邻轨道上的文字跟它 x 是
+// 错开的也躲不掉——因为图片**纵向**盖过来了。
+//
+// 修法是让图片按高度占多条轨道（danmuLaneSpan）。这条测试按真实时序推进，
+// 逐对检查飞行中的弹幕矩形是否二维相交。
+func TestDanmuImageDoesNotCoverText(t *testing.T) {
+	const font = danmuFontSize
+	const S = 1425.0
+	const viewH = 893.0
+	lane := danmuLaneH(font)
+	D := danmuDuration.Seconds()
+
+	img := danmuLine{Emotes: []live.Emote{{URL: "u", Width: 64, Height: 64}}}
+	txt := danmuLine{Text: "一条文字弹幕在这里"}
+
+	// 纯图弹幕必须按高度占多条轨道，否则它就会纵向溢出。
+	if span := danmuLaneSpan(img, font); span < 2 {
+		t.Fatalf("纯图弹幕 span = %d，高 %vpx 排在 %vpx 的轨道里会溢出到相邻轨道",
+			span, danmuHeightEstimate(img, font), lane)
+	}
+
+	type flying struct {
+		born time.Time
+		y, h float64
+		w    float64
+	}
+
+	for _, every := range []int{1, 3, 0} { // 全是图 / 每三条一图 / 全是字
+		a := &App{DanmuFont: font, DanmuDur: danmuDuration}
+		a.danmuStageW = S
+		a.danmuTracks = int(viewH * danmuAreaFrac / lane)
+
+		var up []flying
+		base := time.Now()
+		const interval = 200 * time.Millisecond
+		total := int(20 * time.Second / interval)
+
+		for i := 0; i < total; i++ {
+			now := base.Add(time.Duration(i) * interval)
+			keep := up[:0]
+			for _, b := range up {
+				if now.Sub(b.born) < danmuDuration {
+					keep = append(keep, b)
+				}
+			}
+			up = keep
+			if len(up) >= danmuFlyMax {
+				continue
+			}
+
+			d := txt
+			if every > 0 && i%every == 0 {
+				d = img
+			}
+			w := float64(danmuWidthEstimate(d, font))
+			tr := a.takeDanmuTrack(now, float32(w), danmuLaneSpan(d, font))
+			h := float64(danmuHeightEstimate(d, font))
+			y := float64(tr)*float64(lane) + 16
+
+			for _, b := range up {
+				if !(y < b.y+b.h && b.y < y+h) {
+					continue // 纵向不相交，不可能重叠
+				}
+				dtA := now.Sub(b.born).Seconds()
+				xa := S - (dtA/D)*(S+b.w)
+				xb := S
+				if xa < xb+w && xb < xa+b.w {
+					t.Fatalf("every=%d 第 %d 条：纵向 y[%.0f,%.0f] 与 y[%.0f,%.0f] 相交，横向也相交——图压住了字",
+						every, i, y, y+h, b.y, b.y+b.h)
+				}
+			}
+			up = append(up, flying{now, y, h, w})
+		}
 	}
 }
