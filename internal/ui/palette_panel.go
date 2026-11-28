@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/theme"
 )
@@ -32,16 +33,17 @@ func (a *App) paletteButton(c *ui.Context) {
 		if a.PaletteOpen || hovered {
 			col = theme.TextPrimary
 		}
-		ui.Icon(c, iconPalette).FontSize(18).TextColor(col)
+		components.Icon(c, iconPalette).FontSize(18).TextColor(col)
 
 		// 小色点：用 1.5px 的地面色描边充当 box-shadow 的那圈隔离
 		ui.Box(c).Absolute().Right(9).Bottom(8).Size(6, 6).Radius(theme.RadiusFull).
 			Background(theme.Accent).Border(1.5, theme.BgPrimary)
 	})
 
-	ui.PopoverBase(c, btn, &a.PaletteOpen, func(panel ui.Element) {
+	components.Popover(c, btn, &a.PaletteOpen, func(panel ui.Element) {
+		panel = orPanel(panel, theme.BgElevated)
 		panel.Width(palettePanelW).Padding(12).Radius(theme.RadiusXL).
-			Background(theme.BgElevated).Border(1, theme.Border).
+			Border(1, theme.Border).
 			Label("配色浮层").
 			// --shadow-lg: 0 38px 72px -30px rgba(0,0,0,.85)
 			Shadow(0, 38, 72, -30, theme.ShadowModal).Shadow(0, 6, 16, 0, theme.ShadowContact).
@@ -114,7 +116,7 @@ func (a *App) palettePanel(c *ui.Context) {
 	ui.Column(c).Gap(10).Children(func() {
 		// ---- 标题行：左边标题，右边夜 / 日 / 跟随系统
 		ui.Row(c).Padding(2, 4, 8, 4).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "主题配色").FontSize(theme.TextSM).FontWeight(600).
+			components.Text(c, "主题配色").FontSize(theme.TextSM).FontWeight(600).
 				TextColor(theme.TextPrimary)
 			ui.Box(c).Grow(1)
 			a.themeModeButton(c)
@@ -150,7 +152,7 @@ func (a *App) themeModeButton(c *ui.Context) {
 	}
 	btn.Children(func() {
 		col := hoverInk(btn, "palette-mode-ink", btn.Hovered(), theme.TextSecondary, theme.TextPrimary)
-		ui.Icon(c, icon).FontSize(15).TextColor(col)
+		components.Icon(c, icon).FontSize(15).TextColor(col)
 	})
 }
 
@@ -209,7 +211,7 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 		ui.Column(c).Gap(1).Children(func() {
 			// 只留配色名：深浅由上面的圆形按钮决定，说明文字在面板宽度里
 			// 只会折成两行，压住下一格。
-			ui.Text(c, p.Name).FontSize(theme.TextXS).FontWeight(600).
+			components.Text(c, p.Name).FontSize(theme.TextXS).FontWeight(600).
 				SingleLine().TextColor(theme.TextPrimary)
 		})
 
@@ -217,7 +219,7 @@ func (a *App) paletteItem(c *ui.Context, p *theme.Palette) {
 			badge := ui.Box(c).Absolute().Top(11).Right(11).Size(18, 18).Radius(9).
 				Background(theme.Accent).Center()
 			badge.Children(func() {
-				ui.Icon(c, iconCheck).FontSize(10).TextColor(theme.AccentText)
+				components.Icon(c, iconCheck).FontSize(10).TextColor(theme.AccentText)
 			})
 		}
 	})

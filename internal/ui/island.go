@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/media"
 	"alive/internal/theme"
@@ -345,10 +346,10 @@ func (a *App) playerIsland(c *ui.Context, w float32) {
 	text := ui.Column(c).Absolute().Top(0).Bottom(0).Left(textX).Width(textW).
 		Justify(ui.Center).Gap(2)
 	text.Children(func() {
-		ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
+		components.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
 			SingleLine().TextColor(theme.MediaText).LineHeight(1.3).
 			ContentTransition(ui.ContentTransition{})
-		ui.Text(c, islandPlayerMeta(s)).
+		components.Text(c, islandPlayerMeta(s)).
 			FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
 			TextColor(theme.MediaTextDim).
 			ContentTransition(ui.ContentTransition{})
@@ -399,7 +400,7 @@ func (a *App) playerIsland(c *ui.Context, w float32) {
 	}
 	cancelDown := cancel.Pressed()
 	cancel.Children(func() {
-		ui.Icon(c, iconX).FontSize(15).TextColor(theme.MediaText)
+		components.Icon(c, iconX).FontSize(15).TextColor(theme.MediaText)
 		pressDim(c, cancelDown, theme.RadiusFull)
 	})
 
@@ -435,7 +436,7 @@ func (a *App) playerIsland(c *ui.Context, w float32) {
 		if followed {
 			ico = iconStarFilled
 		}
-		ui.Icon(c, ico).FontSize(15).TextColor(col)
+		components.Icon(c, ico).FontSize(15).TextColor(col)
 		pressDim(c, followDown, theme.RadiusFull)
 	})
 }
@@ -447,11 +448,11 @@ func (a *App) playerIsland(c *ui.Context, w float32) {
 // 右下角那一格。
 func (a *App) islandAvatar(c *ui.Context, s Streamer, size float32) {
 	if bmp := media.Default.Avatar(s.AvatarURL, islandPlayerAvatar); bmp != nil {
-		ui.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
+		components.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
 	} else {
 		ui.Box(c).Size(size, size).Radius(size / 2).
 			Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().Children(func() {
-			ui.Text(c, initial(s.Name)).FontSize(size * 0.36).FontWeight(600).
+			components.Text(c, initial(s.Name)).FontSize(size * 0.36).FontWeight(600).
 				TextColor(theme.MediaTextBody)
 		})
 	}
@@ -550,7 +551,7 @@ func (a *App) clockDigits(c *ui.Context, now time.Time, text, slot string) {
 			// 两层：旧数字向上滚出，新数字从下方滚入。只用一个文本做位移
 			// 看起来是「整块滑进来」，不是翻牌。
 			if c.Preferences().ReduceMotion {
-				ui.Text(c, ch).Font(FontClock).FontSize(clockFontSize).
+				components.Text(c, ch).Font(FontClock).FontSize(clockFontSize).
 					FontWeight(600).TextColor(theme.MediaText).SingleLine()
 				return
 			}
@@ -569,7 +570,7 @@ func (a *App) clockDigits(c *ui.Context, now time.Time, text, slot string) {
 			// 两层都垂直居中：窗口 26 比文本盒 21.4 高，贴 Top(0) 会偏上。
 			mid := (clockDigitH - clockTextH) / 2
 			// 新数字：从下方升到正中。
-			ui.Text(c, ch).Font(FontClock).FontSize(clockFontSize).
+			components.Text(c, ch).Font(FontClock).FontSize(clockFontSize).
 				FontWeight(600).TextColor(theme.MediaText).SingleLine().
 				Absolute().Top(mid).Translate(0, d*clockDigitH)
 			// 旧数字：从正中升出窗口上方。
@@ -586,7 +587,7 @@ func (a *App) clockDigits(c *ui.Context, now time.Time, text, slot string) {
 			default:
 				prev = clockDigitChar(p.Second(), i)
 			}
-			ui.Text(c, prev).Font(FontClock).FontSize(clockFontSize).
+			components.Text(c, prev).Font(FontClock).FontSize(clockFontSize).
 				FontWeight(600).TextColor(theme.MediaText).SingleLine().
 				Absolute().Top(mid).Translate(0, (d-1)*clockDigitH)
 		})
@@ -642,7 +643,7 @@ func clockRollProgress(now time.Time) float32 {
 // 颜色压到三等灰：六位数字才是要读的东西，冒号只是分隔。同级白字时它和
 // 数字一起抢边缘，整条读起来更糊；压暗之后数字浮出来，视觉上也透气。
 func clockColon(c *ui.Context) {
-	ui.Text(c, ":").Font(FontClock).FontSize(clockFontSize).FontWeight(600).
+	components.Text(c, ":").Font(FontClock).FontSize(clockFontSize).FontWeight(600).
 		TextColor(theme.MediaTextDim).SingleLine()
 }
 

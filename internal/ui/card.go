@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/media"
 	"alive/internal/theme"
@@ -111,7 +112,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 				// 但占位和图片共用同一个元素身份，Enter 根本不会播——留着
 				// 只会在以后某次结构改动里突然开始播，所以直接去掉。
 				if bmp := media.Default.Bitmap(s.CoverURL, w); bmp != nil {
-					ui.Image(c, bmp).Fill().Fit(ui.Cover)
+					components.Image(c, bmp).Fill().Fit(ui.Cover)
 				} else {
 					coverArt(c, w, coverH)
 				}
@@ -124,7 +125,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 				Padding(0, 9, 0, 9).Radius(theme.RadiusFull).
 				Background(theme.OverlayInk).Center().
 				Children(func() {
-					ui.Text(c, viewerText(s.Viewers)).
+					components.Text(c, viewerText(s.Viewers)).
 						FontSize(theme.Text2XS).FontWeight(600).
 						TextColor(theme.White94).FontFeatures("tnum")
 				})
@@ -169,10 +170,10 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 				follow.Children(func() {
 					// 未关注是空心星（白 90%），已关注是实心星（accent 底上的深色）
 					if followed {
-						ui.Icon(c, iconStarFilled).FontSize(15).TextColor(theme.AccentText)
+						components.Icon(c, iconStarFilled).FontSize(15).TextColor(theme.AccentText)
 						return
 					}
-					ui.Icon(c, iconStar).FontSize(15).TextColor(theme.White90)
+					components.Icon(c, iconStar).FontSize(15).TextColor(theme.White90)
 				})
 			}
 
@@ -184,7 +185,7 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 			if hovered {
 				ui.Box(c).Absolute().Left(w/2-23).Top(coverH/2-23).Size(46, 46).Radius(23).
 					Background(theme.OverlayInk).Center().Children(func() {
-					ui.Text(c, "▶").FontSize(15).TextColor(theme.White94)
+					components.Text(c, "▶").FontSize(15).TextColor(theme.White94)
 				})
 			}
 		})
@@ -198,12 +199,12 @@ func Card(c *ui.Context, s Streamer, w float32, followed bool, onOpen, onToggleF
 			texts := ui.Column(c).Grow(1).Gap(3)
 			texts.Clip()
 			texts.Children(func() {
-				name := ui.Text(c, s.Name).FontSize(theme.TextSM).FontWeight(600).
+				name := components.Text(c, s.Name).FontSize(theme.TextSM).FontWeight(600).
 					SingleLine().TextColor(theme.TextPrimary)
 				if hovered {
 					name.TextColor(theme.AccentInk)
 				}
-				ui.Text(c, s.Title).FontSize(theme.TextXS).SingleLine().
+				components.Text(c, s.Title).FontSize(theme.TextXS).SingleLine().
 					TextColor(theme.TextTertiary)
 			})
 
@@ -237,16 +238,17 @@ func avatar(c *ui.Context, s Streamer) {
 	avatarCircle(c, s, 32)
 }
 
-// avatarCircle 是任意直径的头像（卡片 32、搜索结果 34、关注面板 40）。
+// avatarCircle 是任意直径的头像（卡片 32、搜索结果 34、关注面板 40、
+// 播放页 28）。交给 components.Avatar：直径走 AvatarOptions.Size，
+// 图片没有时它自己退回姓名首字。
+//
+// 两处和原来不一样，记在案：占位底色从「按名字取色相的 Oklch」变成
+// t.SurfaceHover（avatar.go:59），首字从「第一个 rune」变成「前两个词的
+// 首字母」（avatar.go:112-124）—— 中文昵称只有一个词，取出来还是同一个字。
 func avatarCircle(c *ui.Context, s Streamer, size float32) {
-	if bmp := media.Default.Avatar(s.AvatarURL, size); bmp != nil {
-		ui.Image(c, bmp).Size(size, size).Radius(size / 2).Fit(ui.Cover)
-		return
-	}
-	base := ui.Oklch(0.42, 0.10, s.Hue+180)
-	ui.Box(c).Size(size, size).Radius(size / 2).Background(base).Center().Children(func() {
-		ui.Text(c, initial(s.Name)).FontSize(size * 0.4).FontWeight(600).
-			TextColor(theme.MediaTextDim)
+	components.Avatar(c, s.Name, components.AvatarOptions{
+		Image: media.Default.Avatar(s.AvatarURL, size),
+		Size:  size,
 	})
 }
 

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/theme"
 )
@@ -22,9 +23,9 @@ const danmuTVSize = playerIconSize
 func danmuTVIcon(c *ui.Context, badge *ui.SVG, body, badgeColor ui.Color) ui.Element {
 	box := ui.Box(c).Size(danmuTVSize, danmuTVSize)
 	box.Children(func() {
-		ui.Icon(c, iconDanmuTV).Size(danmuTVSize, danmuTVSize).TextColor(body)
+		components.Icon(c, iconDanmuTV).Size(danmuTVSize, danmuTVSize).TextColor(body)
 		if badge != nil {
-			ui.Icon(c, badge).Size(danmuTVSize, danmuTVSize).
+			components.Icon(c, badge).Size(danmuTVSize, danmuTVSize).
 				TextColor(badgeColor).
 				Absolute().Top(0).Left(0)
 		}

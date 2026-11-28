@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/media"
 	"alive/internal/theme"
@@ -267,7 +268,7 @@ func (a *App) followsSectionTab(c *ui.Context, id string) {
 		tab.Opacity(0.35)
 	}
 	tab.Children(func() {
-		txt := ui.Text(c, name).FontSize(groupFont)
+		txt := components.Text(c, name).FontSize(groupFont)
 		switch {
 		case selected:
 			txt.FontWeight(600).
@@ -325,7 +326,7 @@ func (a *App) followsPlatformRow(c *ui.Context) {
 		}
 	}
 
-	ui.ScrollHorizontal(c).Scrollbars(false).Padding(2).Children(func() {
+	components.ScrollView(c, components.ScrollViewOptions{Axes: components.ScrollHorizontal}).Scrollbars(false).Padding(2).Children(func() {
 		ui.Row(c).Gap(6).Children(func() {
 			slider(c, "follows-slide", box, followsActive, 34, theme.RadiusFull, theme.Accent)
 			for i, id := range followsIDs {
@@ -364,7 +365,7 @@ func (a *App) followsActions(c *ui.Context) {
 		search.Border(1, search.AnimateColor("follows-search-border", border,
 			theme.Chrome()))
 		search.Children(func() {
-			ui.Icon(c, iconSearch).FontSize(14).TextColor(theme.TextTertiary)
+			components.Icon(c, iconSearch).FontSize(14).TextColor(theme.TextTertiary)
 			ui.TextInputBase(c, &a.FollowsQuery).FontSize(theme.TextXS).Grow(1).
 				Bind(&a.FollowsSearch).
 				Placeholder("搜索主播").PlaceholderColor(theme.TextTertiary).
@@ -387,7 +388,7 @@ func (a *App) followsActions(c *ui.Context) {
 					a.FollowsQuery = ""
 				}
 				clear.Children(func() {
-					ui.Icon(c, iconX).FontSize(12).TextColor(theme.TextTertiary)
+					components.Icon(c, iconX).FontSize(12).TextColor(theme.TextTertiary)
 				})
 			}
 		})
@@ -447,7 +448,7 @@ func (a *App) followsGrid(c *ui.Context, list []Streamer) {
 		w, _ := c.Size()
 		ui.Box(c).Width(w-2*a.bodyPadX(c)-theme.ScrollbarW).
 			Padding(64, 20, 64, 20).Center().Children(func() {
-			ui.Text(c, empty).FontSize(theme.TextSM).
+			components.Text(c, empty).FontSize(theme.TextSM).
 				TextColor(theme.TextTertiary)
 		})
 		return
@@ -463,7 +464,7 @@ func (a *App) followsGrid(c *ui.Context, list []Streamer) {
 		seen[id]++
 	}
 	a.FollowsGrid.Key = func(i int) any { return keys[i] }
-	ui.GridView(c, &a.FollowsGrid, len(list), minW, rowH, func(i int) {
+	components.GridView(c, &a.FollowsGrid, len(list), minW, rowH, func(i int) {
 		a.followsRow(c, keys[i], list[i])
 	}).Grow(1).Gap(gap)
 }
@@ -509,12 +510,12 @@ func (a *App) followsRow(c *ui.Context, key string, s Streamer) {
 		wrap := ui.Box(c).Size(40, 40)
 		wrap.Children(func() {
 			if bmp := media.Default.Avatar(s.AvatarURL, 40); bmp != nil {
-				ui.Image(c, bmp).Fill().Fit(ui.Cover).Radius(theme.RadiusFull)
+				components.Image(c, bmp).Fill().Fit(ui.Cover).Radius(theme.RadiusFull)
 			} else {
 				ui.Box(c).Fill().Radius(theme.RadiusFull).
 					Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().
 					Children(func() {
-						ui.Text(c, initial(s.Name)).FontSize(14).FontWeight(600).
+						components.Text(c, initial(s.Name)).FontSize(14).FontWeight(600).
 							TextColor(theme.MediaTextDim)
 					})
 			}
@@ -560,7 +561,7 @@ func (a *App) followsRow(c *ui.Context, key string, s Streamer) {
 				nameCol = theme.AccentInk
 			}
 			// 名字同样是 190ms 过渡：hover 时才慢慢染成强调色
-			name := ui.Text(c, s.Name).FontSize(theme.TextSM).FontWeight(600).
+			name := components.Text(c, s.Name).FontSize(theme.TextSM).FontWeight(600).
 				SingleLine()
 			name.TextColor(name.AnimateColor("follows-row-name-"+key, nameCol,
 				theme.EaseOut(followsDur2)))
@@ -569,7 +570,7 @@ func (a *App) followsRow(c *ui.Context, key string, s Streamer) {
 			if title == "" {
 				title = "暂无直播标题"
 			}
-			ui.Text(c, title).FontSize(theme.TextXS).SingleLine().
+			components.Text(c, title).FontSize(theme.TextXS).SingleLine().
 				TextColor(theme.TextTertiary)
 		})
 	})
@@ -611,7 +612,7 @@ func (a *App) followsAction(c *ui.Context, ico *ui.SVG, label string, busy bool,
 		if hovered {
 			col = theme.TextPrimary
 		}
-		icon := ui.Icon(c, ico).FontSize(16).TextColor(col)
+		icon := components.Icon(c, ico).FontSize(16).TextColor(col)
 		if busy {
 			// 刷新中：0.9s 匀速转一圈，兼作进度提示
 			phase := btn.Loop("action-spin", theme.SpinPeriod, ui.Linear) * 360
@@ -702,7 +703,7 @@ func (a *App) followsPlatformChip(c *ui.Context, idx int, id, label string, w fl
 		if active {
 			rest, on = theme.AccentText, theme.AccentText
 		}
-		txt := ui.Text(c, label).FontSize(theme.TextSM)
+		txt := components.Text(c, label).FontSize(theme.TextSM)
 		txt.TextColor(hoverInk(chip, "chip-fg-"+id, chip.Hovered(), rest, on))
 		if active {
 			txt.FontWeight(600)

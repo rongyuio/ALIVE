@@ -8,6 +8,7 @@ import (
 
 	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/media"
 	"alive/internal/theme"
@@ -203,7 +204,7 @@ func (a *App) watchDropZone(c *ui.Context, r watch.Rect, n int, over bool) {
 		IgnoreInput(true)
 	zone.Center().Children(func() {
 		// 序号本身就是名字，别让读屏把数字再读一遍。
-		ui.Text(c, strconv.Itoa(n)).
+		components.Text(c, strconv.Itoa(n)).
 			FontSize(theme.Text2XL).FontWeight(700).
 			TextColor(theme.MediaText).
 			TextShadow(0, 2, 8, theme.MediaShadowStrong).
@@ -255,7 +256,7 @@ func (a *App) watchLiveDot(c *ui.Context, key string) {
 // 每层都绝对铺满整格：和视频井一样不能走流式 Fill，否则会被平分。
 func (a *App) watchCover(c *ui.Context, room Streamer, r watch.Rect, connecting bool) {
 	if bmp := media.Default.Bitmap(room.CoverURL, r.W); bmp != nil {
-		ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
+		components.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
 	} else {
 		// 和首页卡片同一套占位（coverArt）：中性底 + 中心柔光。
 		// 原来按房间色相画色块，冷启动缓存里还没有封面时整面墙先亮一片绿，
@@ -285,18 +286,18 @@ func (a *App) watchBar(c *ui.Context, room Streamer, active bool, w float32) ui.
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Box(c).Height(20).Padding(0, 8, 0, 8).Radius(theme.RadiusFull).
 					Background(platformBrand(room.Platform)).Center().Children(func() {
-					ui.Text(c, platformLabel(room.Platform)).
+					components.Text(c, platformLabel(room.Platform)).
 						FontSize(theme.Text2XS).FontWeight(600).
 						TextColor(theme.IslandInk).SingleLine()
 				})
-				ui.Text(c, room.Name).FontSize(theme.TextSM).FontWeight(600).
+				components.Text(c, room.Name).FontSize(theme.TextSM).FontWeight(600).
 					TextColor(theme.MediaText).SingleLine()
 				title := room.Title
 				if title == "" {
 					title = "暂无直播标题"
 				}
 				ui.Box(c).Grow(1).Clip().Children(func() {
-					ui.Text(c, title).FontSize(theme.Text2XS).
+					components.Text(c, title).FontSize(theme.Text2XS).
 						TextColor(theme.MediaTextDim).SingleLine()
 				})
 			})
@@ -490,7 +491,7 @@ func (a *App) watchTileAudio(c *ui.Context, m controlMetrics, room Streamer) {
 		if m.showPercent {
 			// 玻璃条是恒定暗面，不能用跟配色走的 TextSecondary：
 			// 浅色主题里那是深墨，数字直接消失。
-			ui.Text(c, fmt.Sprintf("%d%%", int(volume*100+0.5))).
+			components.Text(c, fmt.Sprintf("%d%%", int(volume*100+0.5))).
 				FontSize(theme.TextXS).TextColor(theme.MediaTextDim).
 				FontFeatures("tnum").Width(36).TextAlign(ui.End)
 		}
@@ -549,7 +550,7 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player
 	}
 	if loading {
 		a.overlayLayer(c, func() {
-			spinner(c, 30)
+			components.Spinner(c, components.SpinnerRing).Size(30, 30)
 			a.overlayText(c, "正在拉取直播流…")
 		})
 		return
@@ -563,7 +564,7 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player
 	ui.Box(c).Absolute().Top(8).Left(0).Right(0).Height(26).Center().Children(func() {
 		ui.Box(c).Height(22).Padding(0, 9, 0, 9).Radius(theme.RadiusFull).
 			Background(theme.MediaScrimSoft).Center().Children(func() {
-			ui.Text(c, msg).FontSize(theme.Text2XS).TextColor(theme.MediaTextBody)
+			components.Text(c, msg).FontSize(theme.Text2XS).TextColor(theme.MediaTextBody)
 		})
 	})
 }
@@ -572,9 +573,9 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player
 func (a *App) watchEmpty(c *ui.Context) {
 	ui.Box(c).Grow(1).Center().Children(func() {
 		ui.Column(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "观测墙是空的").FontSize(theme.TextLG).FontWeight(600).
+			components.Text(c, "观测墙是空的").FontSize(theme.TextLG).FontWeight(600).
 				TextColor(theme.TextPrimary)
-			ui.Text(c, "从关注列表或首页把直播间收进来，这里会同时显示它们的实时画面。").
+			components.Text(c, "从关注列表或首页把直播间收进来，这里会同时显示它们的实时画面。").
 				FontSize(theme.TextXS).TextColor(theme.TextTertiary)
 			ui.Row(c).Gap(8).Children(func() {
 				a.watchEmptyBtn(c, "去关注列表", func() {
@@ -603,7 +604,7 @@ func (a *App) watchEmptyBtn(c *ui.Context, label string, on func()) {
 	}
 	down := btn.Pressed()
 	btn.Children(func() {
-		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(500).
+		components.Text(c, label).FontSize(theme.TextSM).FontWeight(500).
 			TextColor(theme.TextPrimary)
 		pressDim(c, down, theme.RadiusMD)
 	})

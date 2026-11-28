@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/theme"
 )
@@ -213,7 +214,7 @@ func (a *App) primaryRow(c *ui.Context) {
 
 	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
 		// 这一行是 overflow-x:auto + 隐藏滚动条，只是能横滑
-		ui.ScrollHorizontal(c).Scrollbars(false).Grow(1).Padding(2).Children(func() {
+		components.ScrollView(c, components.ScrollViewOptions{Axes: components.ScrollHorizontal}).Scrollbars(false).Grow(1).Padding(2).Children(func() {
 			ui.Row(c).Gap(groupGap).Children(func() {
 				slider(c, "group-slide", box, a.GroupIndex, groupTabH, theme.RadiusMD, theme.AccentSoft)
 				for i, g := range a.Groups {
@@ -249,7 +250,7 @@ func (a *App) groupTab(c *ui.Context, i int, name string, w float32) {
 		a.selectGroup(i)
 	}
 	tab.Children(func() {
-		txt := ui.Text(c, name).FontSize(groupFont)
+		txt := components.Text(c, name).FontSize(groupFont)
 		switch {
 		case selected:
 			txt.FontWeight(600).
@@ -327,22 +328,23 @@ func (a *App) categorySearch(c *ui.Context) {
 			}
 			clear.Children(func() {
 				col := hoverInk(clear, "cat-clear-ink", clear.Hovered(), theme.TextTertiary, theme.TextPrimary)
-				ui.Icon(c, iconX).FontSize(12).TextColor(col)
+				components.Icon(c, iconX).FontSize(12).TextColor(col)
 			})
 		}
 
-		ui.Icon(c, iconSearch).FontSize(14).TextColor(theme.TextTertiary)
+		components.Icon(c, iconSearch).FontSize(14).TextColor(theme.TextTertiary)
 	})
 
 	// 浮层始终跟着输入框的展开状态走：空查询时渲染成 0×0 的不可见占位，
 	// 这样点外部仍会通过 PopoverBase 关闭并把焦点放掉，输入框才会收回去。
-	pop := ui.PopoverBase(c, field, &a.CategorySearchOpen, func(panel ui.Element) {
+	pop := components.Popover(c, field, &a.CategorySearchOpen, func(panel ui.Element) {
+		panel = orPanel(panel, theme.BgElevated)
 		if strings.TrimSpace(a.CategoryQuery) == "" {
 			panel.Width(0).Height(0).Padding(0)
 			return
 		}
 		panel.Width(catPanelW).Padding(6).Radius(theme.RadiusMD).
-			Background(theme.BgElevated).Border(1, theme.Border).
+			Border(1, theme.Border).
 			Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact).
 			Margin(8, 0, 0, 0).
 			AttachTo(field, ui.AnchorBottomRight, ui.AnchorTopRight)
@@ -447,11 +449,11 @@ func (a *App) pickCategoryHit(h categoryHit) {
 func (a *App) categorySearchPanel(c *ui.Context) {
 	hits := a.categoryHits()
 	if len(hits) == 0 {
-		ui.Text(c, "没有匹配的分区").FontSize(theme.TextXS).
+		components.Text(c, "没有匹配的分区").FontSize(theme.TextXS).
 			TextColor(theme.TextTertiary).Padding(18, 12, 18, 12)
 		return
 	}
-	ui.Scroll(c).MaxHeight(catPanelMaxH).Children(func() {
+	components.ScrollView(c, components.ScrollViewOptions{}).MaxHeight(catPanelMaxH).Children(func() {
 		for i, h := range hits {
 			a.categorySearchItem(c, i, h)
 		}
@@ -477,9 +479,9 @@ func (a *App) categorySearchItem(c *ui.Context, i int, h categoryHit) {
 		a.pickCategoryHit(h)
 	}
 	row.Children(func() {
-		ui.Text(c, h.Category).FontSize(theme.TextSM).SingleLine().
+		components.Text(c, h.Category).FontSize(theme.TextSM).SingleLine().
 			TextColor(theme.TextPrimary).Grow(1)
-		ui.Text(c, h.Group).FontSize(theme.Text2XS).
+		components.Text(c, h.Group).FontSize(theme.Text2XS).
 			TextColor(theme.TextTertiary).SingleLine()
 	})
 }
@@ -499,7 +501,7 @@ func (a *App) secondaryRow(c *ui.Context) {
 
 	row := ui.Row(c).Gap(12).AlignItems(ui.Center)
 	row.Children(func() {
-		ui.ScrollHorizontal(c).Scrollbars(false).Grow(1).Padding(2).Children(func() {
+		components.ScrollView(c, components.ScrollViewOptions{Axes: components.ScrollHorizontal}).Scrollbars(false).Grow(1).Padding(2).Children(func() {
 			ui.Row(c).Gap(chipGap).Children(func() {
 				slider(c, "chip-slide", box, a.CategoryIndex, chipH, theme.RadiusMD, theme.Accent)
 				for i, name := range cats {
@@ -531,7 +533,7 @@ func (a *App) categoryChip(c *ui.Context, i int, name string, w float32) {
 		a.selectCategory(i)
 	}
 	chip.Children(func() {
-		txt := ui.Text(c, name).FontSize(theme.TextSM).SingleLine()
+		txt := components.Text(c, name).FontSize(theme.TextSM).SingleLine()
 		switch {
 		case selected:
 			txt.FontWeight(600).
@@ -576,14 +578,15 @@ func (a *App) moreButton(c *ui.Context, row ui.Element) {
 	angle := btn.AnimateTo("more-caret", caretAngle(a.MoreOpen), theme.Chrome())
 
 	btn.Children(func() {
-		ui.Text(c, "全部").FontSize(theme.TextSM).FontWeight(500).TextColor(col)
-		ui.Icon(c, iconChevron).FontSize(12).TextColor(col).Rotate(angle)
+		components.Text(c, "全部").FontSize(theme.TextSM).FontWeight(500).TextColor(col)
+		components.Icon(c, iconChevron).FontSize(12).TextColor(col).Rotate(angle)
 	})
 
-	ui.PopoverBase(c, row, &a.MoreOpen, func(panel ui.Element) {
+	components.Popover(c, row, &a.MoreOpen, func(panel ui.Element) {
+		panel = orPanel(panel, theme.BgElevated)
 		w := a.morePanelWidth(c)
 		panel.Width(w).Padding(16).Radius(theme.RadiusXL).
-			Background(theme.BgElevated).Border(1, theme.Border).
+			Border(1, theme.Border).
 			Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact).
 			Margin(12, 0, 0, 0).
 			AttachTo(row, ui.AnchorBottomRight, ui.AnchorTopRight)
@@ -612,9 +615,9 @@ func (a *App) morePanel(c *ui.Context, w float32) {
 	cats := a.currentCategories()
 
 	ui.Row(c).Padding(0, 4, 10, 4).Gap(10).AlignItems(ui.Baseline).Children(func() {
-		ui.Text(c, a.currentGroup().Name).FontSize(theme.TextMD).
+		components.Text(c, a.currentGroup().Name).FontSize(theme.TextMD).
 			FontWeight(600).TextColor(theme.TextPrimary).Grow(1)
-		ui.Text(c, fmt.Sprintf("%d 个分区", len(cats))).FontSize(theme.Text2XS).
+		components.Text(c, fmt.Sprintf("%d 个分区", len(cats))).FontSize(theme.Text2XS).
 			TextColor(theme.TextTertiary)
 	})
 
@@ -623,7 +626,7 @@ func (a *App) morePanel(c *ui.Context, w float32) {
 	if cols < 1 {
 		cols = 1
 	}
-	ui.Scroll(c).MaxHeight(morePanelMaxH).Children(func() {
+	components.ScrollView(c, components.ScrollViewOptions{}).MaxHeight(morePanelMaxH).Children(func() {
 		ui.Grid(c).Columns(cols).Gap(moreItemGap).Children(func() {
 			for i, name := range cats {
 				a.morePanelItem(c, i, name)
@@ -646,7 +649,7 @@ func (a *App) morePanelItem(c *ui.Context, i int, name string) {
 		a.selectCategory(i)
 	}
 	item.Children(func() {
-		txt := ui.Text(c, name).FontSize(theme.TextSM).SingleLine()
+		txt := components.Text(c, name).FontSize(theme.TextSM).SingleLine()
 		rest, on := theme.TextSecondary, theme.TextPrimary
 		if active {
 			rest, on = theme.AccentText, theme.AccentText
@@ -683,8 +686,8 @@ func (a *App) subscribeButton(c *ui.Context) {
 		ico, label = iconCheck, "已订阅"
 	}
 	btn.Children(func() {
-		ui.Icon(c, ico).FontSize(13).TextColor(col)
-		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(600).TextColor(col)
+		components.Icon(c, ico).FontSize(13).TextColor(col)
+		components.Text(c, label).FontSize(theme.TextSM).FontWeight(600).TextColor(col)
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/theme"
 )
@@ -15,8 +16,6 @@ import (
 const (
 	danmuPanelW   float32 = 232
 	danmuSliderW  float32 = 180 // 面板内容宽 200 − 行内 padding 20
-	danmuSliderH  float32 = 14  // 滑杆热区高度＝拇指直径
-	danmuThumbD   float32 = 14  // 拇指直径
 	danmuRowPadH  float32 = 10
 	danmuRowPadV  float32 = 8
 	danmuRowGap   float32 = 6
@@ -26,9 +25,8 @@ const (
 	// 颜色 / 描边的色块就是胶囊本身：38×24、圆角 8，颜色铺到边上。
 	// 不用 ui.ColorWell 的现成外观——它内部固定 36×20 的内芯，外面还带
 	// 4px padding 和 1px 边，塞进 38×24 时内芯比内容盒还大，色块会被挤歪。
-	danmuWellW       float32 = 38
-	danmuWellH       float32 = 24
-	danmuWellChecker float32 = 6
+	danmuWellW float32 = 38
+	danmuWellH float32 = 24
 )
 
 // danmuSettingsButton 是控制台里的弹幕设置入口。
@@ -37,11 +35,6 @@ const (
 // 操作，也不像个能久留的面板。关闭交给 PopoverBase——点面板外面、按 Esc、
 // 再点一次按钮都收得回去。清晰度 / 线路那两个是纯选项列表，仍然是 hover。
 func (a *App) danmuSettingsButton(c *ui.Context) {
-	// 面板关着时取色浮层也一起收掉：它挂在面板子树里，留着开关状态，
-	// 下次打开面板会先莫名弹出一个取色器。
-	if !a.DanmuSettingsOpen {
-		a.DanmuColorOpen, a.DanmuStrokeOpen = false, false
-	}
 	// 和其它控制条按钮同一套：30×30 无底色，只变色
 	btn := ui.Box(c).Size(30, 30).Center().Cursor(ui.CursorPointer).Label("弹幕设置")
 	if btn.Clicked() {
@@ -50,7 +43,7 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 	col := playerIconColor(btn, a.DanmuSettingsOpen)
 	btn.Children(func() { danmuTVIcon(c, iconDanmuBadgeSettings, col, col) })
 
-	ui.PopoverBase(c, btn, &a.DanmuSettingsOpen, func(panel ui.Element) {
+	components.Popover(c, btn, &a.DanmuSettingsOpen, func(panel ui.Element) {
 		panel.Width(danmuPanelW).Padding(14, 16, 14, 16).Radius(16).
 			Border(1, theme.MediaHair).
 			Shadow(0, 18, 40, 0, theme.MediaShadow).
@@ -59,8 +52,8 @@ func (a *App) danmuSettingsButton(c *ui.Context) {
 		panel = mediaPanel(c, panel)
 		panel.Children(func() {
 			ui.Column(c).Gap(12).Children(func() {
-				a.danmuColorRow(c, "颜色", &a.DanmuColor, &a.DanmuColorOpen)
-				a.danmuColorRow(c, "描边", &a.DanmuStroke, &a.DanmuStrokeOpen)
+				a.danmuColorRow(c, "颜色", &a.DanmuColor)
+				a.danmuColorRow(c, "描边", &a.DanmuStroke)
 				a.danmuSwitchRow(c, "彩色弹幕", &a.DanmuColorful)
 				a.danmuSliderRow(c, "字体", fmt.Sprintf("%.0fpx", a.DanmuFont),
 					float64(a.DanmuFont), 14, 30, 2, func(v float64) {
@@ -92,54 +85,40 @@ func danmuRow(c *ui.Context) ui.Element {
 }
 
 func danmuLabel(c *ui.Context, text string) ui.Element {
-	return ui.Text(c, text).FontSize(theme.TextXS).
+	return components.Text(c, text).FontSize(theme.TextXS).
 		TextColor(theme.White.Alpha(danmuLabelAlp))
 }
 
-func (a *App) danmuColorRow(c *ui.Context, label string, color *ui.Color, open *bool) {
+func (a *App) danmuColorRow(c *ui.Context, label string, color *ui.Color) {
 	row := danmuRow(c)
 	row.Children(func() {
 		danmuLabel(c, label).Grow(1)
-		a.danmuColorWell(c, label, color, open)
+		a.danmuColorWell(c, label, color)
 	})
 }
 
 // danmuColorWell 是「颜色」「描边」右侧的色块：38×24 的胶囊铺满颜色，
-// 点一下在下方开 ui.ColorPicker。
+// 点一下弹 Onevra 的取色面板。
 //
-// 外观自己画，只有取色器还用 MyGo 的 ui.ColorPicker：ColorWell 的内芯
-// 写死 36×20，再加 4px padding 和 1px 边，比这里 38×24 的容器还大，
-// 内芯会被顶出容器，颜色也填不满。
-func (a *App) danmuColorWell(c *ui.Context, label string, color *ui.Color, open *bool) {
-	well := ui.Box(c).Size(danmuWellW, danmuWellH).Radius(theme.RadiusXS).
-		Focusable().Cursor(ui.CursorPointer).
-		Label(label).Role(ui.RoleColorWell)
-	well.Draw(func(p *ui.Painter, r ui.Rect) {
-		// 棋盘格垫底：描边色可能带 alpha，没有它看不出深浅。不透明的颜色
-		// 会把格子全盖住，那就不画。
-		if color.A < 255 {
-			danmuWellCheckers(p, r)
-		}
-		p.Fill(r, *color, theme.RadiusXS)
-		// Stroke 本来就画在矩形内侧，必须用同一个 r 和同一个半径：
-		// 手动内缩再减半径会让两条弧线对不齐，圆角上多出一圈错位的
-		// 描边（高 DPI 下看着是一排小点）。
-		p.Stroke(r, danmuWellRing(*color), theme.RadiusXS, 1)
-	})
-	if well.Clicked() {
-		*open = !*open
+// 尺寸和圆角仍然按这里的规格给：components.ColorPicker 的默认是
+// t.Space(12)×t.Space(8) = 48×32、圆角 t.Radius/2 = 6（color.go:331），
+// 文档说 Size/Border/Radius/Padding 都可以在返回的元素上定制，所以
+// 38×24 与 RadiusXS 是盖得回去的。
+//
+// 盖不回去的有两处，都记在这里：
+//   - 内芯那个 Box 的圆角写死 t.Radius/2（color.go:339），外壳 8 内芯 6；
+//   - 棋盘格是「白 + RGB(205,205,205)」（color.go:311-318），原来是
+//     「白 + 黑 12%」。
+//
+// 描边还是用 danmuWellRing 按色块亮度算一次传进去：组件只在构造时收一个
+// Border，不给每帧重算的出口。
+func (a *App) danmuColorWell(c *ui.Context, label string, color *ui.Color) {
+	well := components.ColorPicker(c, color)
+	well.Size(danmuWellW, danmuWellH).Radius(theme.RadiusXS).
+		Border(1, danmuWellRing(*color)).Label(label)
+	if well.Changed() {
+		a.markDirty()
 	}
-	ui.PopoverBase(c, well, open, func(panel ui.Element) {
-		panel.Padding(14).Radius(theme.RadiusXL).
-			Background(theme.MediaPanel).
-			Border(1, theme.MediaHair).
-			Shadow(0, 18, 40, 0, theme.MediaShadow).
-			Margin(8, 0, 0, 0)
-		picker := ui.ColorPicker(c, color)
-		if picker.Changed() {
-			a.markDirty()
-		}
-	})
 }
 
 // danmuWellRing 返回色块那圈 1px 描边。
@@ -156,63 +135,38 @@ func danmuWellRing(c ui.Color) ui.Color {
 	return theme.MediaTrackFill
 }
 
-// danmuWellCheckers 是色块底下的灰白棋盘格。
-func danmuWellCheckers(p *ui.Painter, r ui.Rect) {
-	p.Fill(r, theme.White, theme.RadiusXS)
-	p.Clip(r, theme.RadiusXS, func() {
-		for y, row := r.Y, 0; y < r.Y+r.H; y, row = y+danmuWellChecker, row+1 {
-			for x, col := r.X, 0; x < r.X+r.W; x, col = x+danmuWellChecker, col+1 {
-				if (row+col)%2 == 0 {
-					continue
-				}
-				p.Fill(ui.Rect{X: x, Y: y,
-					W: min(danmuWellChecker, r.X+r.W-x),
-					H: min(danmuWellChecker, r.Y+r.H-y)}, theme.Black.Alpha(0.12), 0)
-			}
-		}
-	})
-}
-
+// danmuSwitchRow 是一行开关。
+//
+// 开关交给 components.Switch。尺寸拿不到 34×18 —— 它锚在
+// t.Space(10)/t.Space(5)，也就是 40×20（compact 是 30×16），而这两个值只在
+// switch.go:58-69 内部算轨道与拇指行程，SwitchOptions 只有 HideLabel 和
+// Compact 两个开关，没有尺寸出口。拇指也从 14 圆点变成 1.3 倍高的胶囊。
+//
+// 换来的是真的开关语义：ui.SwitchBase 带 Focusable 和 RoleSwitch，
+// 键盘 Space/Enter 能切；原来这颗 Box 既进不了 Tab，读屏也只当它是分组。
 func (a *App) danmuSwitchRow(c *ui.Context, label string, on *bool) {
 	row := danmuRow(c)
 	row.Children(func() {
 		danmuLabel(c, label).Grow(1)
-		sw := ui.Box(c).Width(34).Height(18).Radius(theme.RadiusFull).
-			Cursor(ui.CursorPointer).Label(label)
-		if *on {
-			sw.Background(theme.Accent)
-		} else {
-			sw.Background(theme.MediaTrackFill)
-		}
-		if sw.Clicked() {
-			*on = !*on
+		// Switch 在构造期就把值写回 *on，所以比前后即可 —— 它返回的外层
+		// Row 拿不到 Changed（那个标记挂在内层的 SwitchBase 上）。
+		before := *on
+		components.Switch(c, on, label, components.SwitchOptions{HideLabel: true})
+		if *on != before {
 			a.markDirty()
 		}
-		sw.Children(func() {
-			thumb := ui.Box(c).Size(14, 14).Radius(7)
-			target := float32(2)
-			if *on {
-				target = 18
-			}
-			x := thumb.AnimateTo("danmu-switch", target, theme.Toggle())
-			thumb.Absolute().Top(2).Left(x)
-			if *on {
-				thumb.Background(theme.MediaSwitchThumbOn)
-			} else {
-				thumb.Background(theme.MediaText)
-			}
-		})
 	})
 }
 
-// danmuSliderRow 是一行滑杆：标题 + 右侧当前值 + 4px 轨道（accent 进度 + 白色拇指）。
+// danmuSliderRow 是一行滑杆：标题 + 右侧当前值 + 轨道。
 //
-// 滑杆本身用 MyGo 的 ui.SliderBase——「没有外观的滑杆」（third_party/mygo/ui/base.go:182）。
-// 拖动、方向键、Home/End、Step 吸附、以及无障碍树里的 role=slider 和
-// aria-valuemin/valuemax/valuenow 全由它提供，外观仍然自己画。
+// 行为仍然来自 ui.SliderBase（拖动、方向键、Home/End、Step 吸附、
+// role=slider 与 aria-valuenow），components.Slider 的单值路径就是
+// ui.SliderBase(c,value,lo,hi).Step(o.Step)（slider.go:92），没有另起一套。
 //
-// 这里原来是手搓的 4px Box + Label：屏幕上看着一模一样，读屏只会念「字体」，
-// 念不出 20px，方向键按了也没反应——和音量条当年那个坑是同一个。
+// 外观换成 Onevra 的：宽 180 照旧，但轨道画在 r.Y+t.Space(2.5) = +10
+// （slider.go:127），拇指是 20×16 的胶囊而不是 14 圆点，最小宽 80
+// （slider.go:98）。原来那条「4px 轨道 + 白色圆拇指」的自绘没有了。
 func (a *App) danmuSliderRow(c *ui.Context, label, value string, cur, lo, hi, step float64, set func(float64)) {
 	row := ui.Column(c).Padding(danmuRowPadV, danmuRowPadH, danmuRowPadV, danmuRowPadH).
 		Gap(danmuRowGap).Radius(danmuRowRad).
@@ -221,29 +175,13 @@ func (a *App) danmuSliderRow(c *ui.Context, label, value string, cur, lo, hi, st
 	row.Children(func() {
 		ui.Row(c).FillWidth().Children(func() {
 			danmuLabel(c, label).Grow(1)
-			ui.Text(c, value).FontSize(theme.TextXS).TextColor(theme.Accent)
+			components.Text(c, value).FontSize(theme.TextXS).TextColor(theme.Accent)
 		})
 
 		// 局部副本：控件通过指针写回的写法见 views.md，值变了才回写模型。
 		v := cur
-		frac := float32(0)
-		if hi > lo {
-			frac = float32((v - lo) / (hi - lo))
-		}
-		track := ui.SliderBase(c, &v, lo, hi).Step(step).
-			Width(danmuSliderW).Height(danmuSliderH).Label(label)
-		track.Draw(func(p *ui.Painter, r ui.Rect) {
-			mid := r.Y + r.H/2
-			p.Fill(ui.Rect{X: r.X, Y: mid - 2, W: r.W, H: 4}, theme.MediaTrack, theme.RadiusFull)
-			if frac > 0 {
-				p.Fill(ui.Rect{X: r.X, Y: mid - 2, W: r.W * frac, H: 4}, theme.Accent, theme.RadiusFull)
-			}
-			p.Fill(ui.Rect{
-				X: r.X + r.W*frac - danmuThumbD/2,
-				Y: mid - danmuThumbD/2,
-				W: danmuThumbD, H: danmuThumbD,
-			}, theme.White, danmuThumbD/2)
-		})
+		track := components.Slider(c, &v, lo, hi, components.SliderOptions{Step: step})
+		track.Width(danmuSliderW).Label(label)
 		if track.Changed() {
 			set(v)
 			a.markDirty()

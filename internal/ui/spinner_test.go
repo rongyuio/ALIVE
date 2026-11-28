@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 )
 
 // spinner 以前靠一个包级 spinDriven 标记选「本帧第一个」去挂 Loop。那是构建期状态
@@ -15,7 +16,7 @@ import (
 // 环还在请求帧、相位还在走、同一帧里多个环同相位。
 func TestSpinnerKeepsFramesComing(t *testing.T) {
 	view := func(c *ui.Context) {
-		ui.Column(c).Fill().Center().Children(func() { spinner(c, 24) })
+		ui.Column(c).Fill().Center().Children(func() { components.Spinner(c, components.SpinnerRing).Size(24, 24) })
 	}
 	tt := ui.NewTester(view, 40, 40)
 	tt.Frame()
@@ -33,8 +34,8 @@ func TestSpinnerKeepsFramesComing(t *testing.T) {
 func TestSpinnersSharePhase(t *testing.T) {
 	view := func(c *ui.Context) {
 		ui.Row(c).Fill().Center().Gap(16).Children(func() {
-			spinner(c, 24)
-			spinner(c, 24)
+			components.Spinner(c, components.SpinnerRing).Size(24, 24)
+			components.Spinner(c, components.SpinnerRing).Size(24, 24)
 		})
 	}
 	const w, h = 96, 40

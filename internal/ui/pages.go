@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/theme"
 )
@@ -128,7 +129,7 @@ func (a *App) subIndex(s Subscription) int {
 // 同一套按钮语言。
 func (a *App) subscribeRow(c *ui.Context) {
 	if len(a.Subs) == 0 {
-		ui.Text(c, "还没有订阅分区。进入任意主播列表，在分区栏点「订阅分区」即可加到这里。").
+		components.Text(c, "还没有订阅分区。进入任意主播列表，在分区栏点「订阅分区」即可加到这里。").
 			FontSize(theme.TextXS).TextColor(theme.TextTertiary).
 			Padding(0, 4, 0, 4)
 		return
@@ -144,7 +145,7 @@ func (a *App) subscribeRow(c *ui.Context) {
 	a.subsBox = box
 
 	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.ScrollHorizontal(c).Scrollbars(false).Grow(1).Padding(2).Children(func() {
+		components.ScrollView(c, components.ScrollViewOptions{Axes: components.ScrollHorizontal}).Scrollbars(false).Grow(1).Padding(2).Children(func() {
 			ui.Row(c).Gap(6).Children(func() {
 				slider(c, "subs-slide", box, a.SubIndex, 34, theme.RadiusFull, theme.Accent)
 				for i := range chips {
@@ -172,8 +173,8 @@ func (a *App) unsubscribeButton(c *ui.Context, chip subChip) {
 	}
 	btn.Children(func() {
 		col := theme.AccentInk
-		ui.Icon(c, iconMinus).FontSize(13).TextColor(col)
-		ui.Text(c, "取消订阅").FontSize(theme.TextSM).
+		components.Icon(c, iconMinus).FontSize(13).TextColor(col)
+		components.Text(c, "取消订阅").FontSize(theme.TextSM).
 			FontWeight(600).TextColor(col)
 	})
 }
@@ -206,7 +207,7 @@ func (a *App) subscribeChip(c *ui.Context, idx int, chip subChip) ui.Element {
 		if selected {
 			nameColor = theme.AccentText
 		}
-		txt := ui.Text(c, chip.Name).FontSize(theme.TextSM).SingleLine()
+		txt := components.Text(c, chip.Name).FontSize(theme.TextSM).SingleLine()
 		txt.TextColor(txt.AnimateColor("sub-name", nameColor, theme.Slide()))
 		if selected {
 			txt.FontWeight(600)
@@ -280,7 +281,7 @@ func (a *App) subPlatformTag(c *ui.Context, idx int, chip subChip, sub Subscript
 	}
 
 	tag.Children(func() {
-		txt := ui.Text(c, sub.Platform).FontSize(10).LetterSpacing(0.02)
+		txt := components.Text(c, sub.Platform).FontSize(10).LetterSpacing(0.02)
 		txt.TextColor(txt.AnimateColor("sub-tag-"+sub.PlatformID, fg, theme.Slide()))
 		if current {
 			txt.FontWeight(600)
@@ -360,11 +361,11 @@ func (a *App) subscribeEmpty(c *ui.Context) {
 				Background(theme.AccentSofter).
 				Border(1, theme.AccentSoft).Center()
 			box.Children(func() {
-				ui.Icon(c, iconBookmark).FontSize(26).TextColor(theme.AccentInk)
+				components.Icon(c, iconBookmark).FontSize(26).TextColor(theme.AccentInk)
 			})
-			ui.Text(c, "还没有订阅任何分区").FontSize(theme.TextLG).
+			components.Text(c, "还没有订阅任何分区").FontSize(theme.TextLG).
 				FontWeight(600).TextColor(theme.TextPrimary).Padding(0, 0, 6, 0)
-			ui.Text(c, "进入任意主播列表，在分区栏点击「订阅分区」即可加到这里。").
+			components.Text(c, "进入任意主播列表，在分区栏点击「订阅分区」即可加到这里。").
 				FontSize(theme.TextSM).TextColor(theme.TextTertiary)
 		})
 	})

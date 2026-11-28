@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/theme"
 )
@@ -91,12 +92,13 @@ func (a *App) searchButton(c *ui.Context) {
 		case hovered:
 			col = theme.TextPrimary
 		}
-		ui.Icon(c, iconSearch).FontSize(18).TextColor(col)
+		components.Icon(c, iconSearch).FontSize(18).TextColor(col)
 	})
 
-	pop := ui.PopoverBase(c, btn, &a.SearchOpen, func(panel ui.Element) {
+	pop := components.Popover(c, btn, &a.SearchOpen, func(panel ui.Element) {
+		panel = orPanel(panel, theme.BgElevated)
 		panel.Width(a.searchPanelWidth(c)).Padding(8).Gap(6).
-			Radius(theme.RadiusMD).Background(theme.BgElevated).
+			Radius(theme.RadiusMD).
 			Border(1, theme.Border).
 			Shadow(0, 22, 56, -22, theme.ShadowPanel).Shadow(0, 4, 12, 0, theme.ShadowContact).
 			Margin(10, 0, 0, 0).
@@ -131,7 +133,7 @@ func (a *App) searchPopover(c *ui.Context) {
 	field.Border(1, border)
 
 	field.Children(func() {
-		ui.Icon(c, iconSearch).FontSize(15).TextColor(theme.TextTertiary)
+		components.Icon(c, iconSearch).FontSize(15).TextColor(theme.TextTertiary)
 		ui.TextInputBase(c, &a.SearchQuery).FontSize(theme.TextSM).Grow(1).
 			Placeholder(searchPlaceholder(a.viewPlatform())).PlaceholderColor(theme.TextTertiary).
 			Label("搜索直播间").
@@ -140,7 +142,7 @@ func (a *App) searchPopover(c *ui.Context) {
 		// 加载中转圈；不在加载且有关键词时才给清空按钮
 		switch {
 		case a.SearchLoading:
-			spinner(c, 14)
+			components.Spinner(c, components.SpinnerRing).Size(14, 14)
 		case a.SearchQuery != "":
 			clear := ui.Box(c).Size(22, 22).Radius(11).Center().
 				Cursor(ui.CursorPointer).Label("清空搜索")
@@ -150,7 +152,7 @@ func (a *App) searchPopover(c *ui.Context) {
 			}
 			clear.Children(func() {
 				col := hoverInk(clear, "search-clear-ink", clear.Hovered(), theme.TextTertiary, theme.TextPrimary)
-				ui.Icon(c, iconX).FontSize(12).TextColor(col)
+				components.Icon(c, iconX).FontSize(12).TextColor(col)
 			})
 		}
 	})
@@ -161,7 +163,7 @@ func (a *App) searchPopover(c *ui.Context) {
 	}
 
 	// ---- 底部提示是「平台名 · 平台文案」
-	ui.Text(c, fmt.Sprintf("%s · %s", platformLabel(a.viewPlatform()), searchHint(a.viewPlatform()))).
+	components.Text(c, fmt.Sprintf("%s · %s", platformLabel(a.viewPlatform()), searchHint(a.viewPlatform()))).
 		FontSize(theme.Text2XS).LetterSpacing(0.02).
 		TextColor(theme.TextTertiary).Padding(0, 8, 2, 8).SingleLine()
 }
@@ -178,19 +180,19 @@ func (a *App) searchResults(c *ui.Context) {
 		count = "搜索中"
 	}
 	ui.Row(c).Padding(4, 8, 6, 8).Gap(10).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "搜索结果").FontSize(theme.Text2XS).FontWeight(600).
+		components.Text(c, "搜索结果").FontSize(theme.Text2XS).FontWeight(600).
 			LetterSpacing(0.04).TextColor(theme.TextTertiary).Grow(1)
 		badge := ui.Row(c).Height(18).Padding(0, 7, 0, 7).Radius(theme.RadiusFull).
 			Background(theme.FillQuaternary).Center()
 		badge.Children(func() {
-			ui.Text(c, count).FontSize(10).FontWeight(600).
+			components.Text(c, count).FontSize(10).FontWeight(600).
 				TextColor(theme.TextTertiary).FontFeatures("tnum")
 		})
 	})
 
 	switch {
 	case a.SearchErr != "":
-		ui.Text(c, a.SearchErr).FontSize(theme.TextSM).TextColor(theme.TextSecondary).
+		components.Text(c, a.SearchErr).FontSize(theme.TextSM).TextColor(theme.TextSecondary).
 			TextAlign(ui.Center).Padding(20, 12, 20, 12).Grow(1)
 		return
 	case len(hits) == 0:
@@ -201,12 +203,12 @@ func (a *App) searchResults(c *ui.Context) {
 		if a.viewPlatform() == "douyin" {
 			text = "未找到该直播间，请检查直播间号"
 		}
-		ui.Text(c, text).FontSize(theme.TextSM).TextColor(theme.TextSecondary).
+		components.Text(c, text).FontSize(theme.TextSM).TextColor(theme.TextSecondary).
 			TextAlign(ui.Center).Padding(20, 12, 20, 12).Grow(1)
 		return
 	}
 
-	ui.Scroll(c).MaxHeight(searchListMax).Children(func() {
+	components.ScrollView(c, components.ScrollViewOptions{}).MaxHeight(searchListMax).Children(func() {
 		ui.Column(c).Gap(2).Children(func() {
 			for i, hit := range hits {
 				a.searchItem(c, i, hit)
@@ -238,9 +240,9 @@ func (a *App) searchItem(c *ui.Context, i int, hit searchHit) {
 	row.Children(func() {
 		avatarCircle(c, hit.S, 34)
 		ui.Column(c).Grow(1).Gap(2).Clip().Children(func() {
-			ui.Text(c, hit.S.Name).FontSize(theme.TextSM).FontWeight(600).
+			components.Text(c, hit.S.Name).FontSize(theme.TextSM).FontWeight(600).
 				SingleLine().TextColor(theme.TextPrimary)
-			ui.Text(c, hit.S.Title).FontSize(theme.TextXS).
+			components.Text(c, hit.S.Title).FontSize(theme.TextXS).
 				SingleLine().TextColor(theme.TextTertiary)
 		})
 		// 开播状态点：7×7，在播是绿点 + 2px 18% 绿环

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/live"
 	"alive/internal/media"
@@ -467,7 +468,7 @@ func (a *App) danmuLayer(c *ui.Context) {
 
 			if d.imageOnly() {
 				if bmp, wait, anim := media.Default.EmoteFrame(d.Emotes[0].URL, imgW, c.Now()); bmp != nil {
-					ui.Image(c, bmp).Size(imgW, imgH).
+					components.Image(c, bmp).Size(imgW, imgH).
 						Opacity(a.DanmuOpacity).
 						Absolute().Left(x).Top(y)
 					if anim && wait > 0 {
@@ -487,7 +488,7 @@ func (a *App) danmuLayer(c *ui.Context) {
 				continue
 			}
 
-			ui.Text(c, d.Text).FontSize(a.DanmuFont).FontWeight(700).
+			components.Text(c, d.Text).FontSize(a.DanmuFont).FontWeight(700).
 				TextColor(fg).
 				TextStroke(1, a.DanmuStroke).
 				SingleLine().Opacity(a.DanmuOpacity).

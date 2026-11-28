@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/theme"
 )
@@ -46,40 +47,36 @@ func (a *App) openSyncPanel() {
 // 结构：标题行 + 导出 / 导入 / 诊断页签 + 内容区。导出页列本机条目并保存
 // 成文件；导入页选完文件先列改动、确认后才落地。
 func (a *App) syncOverlay(c *ui.Context) {
-	// Modal 让窗口级快捷键等待：否则遮罩挡住指针，Space / F / M 仍会
-	// 穿透到 Shell 末尾的 shellKeys，对背后正在播的那一路生效。
-	// Esc 也由这一层自己消费，和 PopoverBase / DialogBase 的层级一致，
-	// 不再依赖 handleEscape 恰好先看 SyncOpen。
-	bg := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-		Background(theme.MediaModalScrim).Center().Modal().Label("关闭数据同步")
-	if bg.Clicked() || bg.OverlayShortcut(0, ui.KeyEscape) {
-		a.SyncOpen = false
+	// 层交给 components.Dialog：Modal 让窗口级快捷键等待（否则遮罩挡住指针
+	// 时 Space / F / M 仍会穿透到 Shell 末尾的 shellKeys，对背后正在播的那
+	// 一路生效）、点面板不关、Esc 与点外部关闭，它全自带。
+	//
+	// 关闭时要把挂起的导入计划一起收掉，而 Dialog 只写 *open、不给回调，
+	// 所以在调用前后自己比一次。
+	wasOpen := a.SyncOpen
+	components.Dialog(c, &a.SyncOpen, components.DialogOptions{Label: "数据同步"},
+		func(panel ui.Element) {
+			panel = orPanel(panel, theme.BgElevated)
+			panel.Width(syncDialogW).Radius(theme.RadiusMD).
+				Border(1, theme.Border).
+				// --shadow-lg：0 38px 72px -30px rgba(0,0,0,.85)
+				Shadow(0, 38, 72, -30, theme.ShadowModal).Shadow(0, 6, 16, 0, theme.ShadowContact)
+			panel.Children(func() {
+				a.syncHeader(c)
+				a.syncTabs(c)
+				switch a.SyncTab {
+				case "import":
+					a.syncImportBody(c)
+				case "diag":
+					a.syncDiagBody(c)
+				default:
+					a.syncExportBody(c)
+				}
+			})
+		})
+	if wasOpen && !a.SyncOpen {
 		a.SyncPlan = nil
 	}
-
-	bg.Children(func() {
-		panel := ui.Column(c).Width(syncDialogW).Radius(theme.RadiusMD).
-			Background(theme.BgElevated).Border(1, theme.Border).
-			Label("数据同步").
-			// --shadow-lg：0 38px 72px -30px rgba(0,0,0,.85)
-			Shadow(0, 38, 72, -30, theme.ShadowModal).Shadow(0, 6, 16, 0, theme.ShadowContact)
-		// 点面板本身不该把它关掉
-		if panel.Clicked() {
-			a.SyncOpen = true
-		}
-		panel.Children(func() {
-			a.syncHeader(c)
-			a.syncTabs(c)
-			switch a.SyncTab {
-			case "import":
-				a.syncImportBody(c)
-			case "diag":
-				a.syncDiagBody(c)
-			default:
-				a.syncExportBody(c)
-			}
-		})
-	})
 }
 
 // syncHeader 是标题行：圆角图标块 + 标题 + 关闭键。
@@ -88,10 +85,10 @@ func (a *App) syncHeader(c *ui.Context) {
 		Gap(theme.Space3).AlignItems(ui.Center).Children(func() {
 		ui.Box(c).Size(32, 32).Radius(theme.RadiusMD).Center().
 			Background(theme.AccentSoft).Children(func() {
-			ui.Icon(c, iconMonitorSmartphone).FontSize(17).TextColor(theme.AccentInk)
+			components.Icon(c, iconMonitorSmartphone).FontSize(17).TextColor(theme.AccentInk)
 		})
 
-		ui.Text(c, "数据同步").FontSize(theme.TextMD).FontWeight(600).
+		components.Text(c, "数据同步").FontSize(theme.TextMD).FontWeight(600).
 			LetterSpacing(-0.01).TextColor(theme.TextPrimary).Grow(1)
 
 		close := ui.Box(c).Size(28, 28).Radius(theme.RadiusFull).Center().
@@ -103,7 +100,7 @@ func (a *App) syncHeader(c *ui.Context) {
 		}
 		close.Children(func() {
 			col := hoverInk(close, "sync-close-ink", close.Hovered(), theme.TextTertiary, theme.TextPrimary)
-			ui.Icon(c, iconX).FontSize(16).TextColor(col)
+			components.Icon(c, iconX).FontSize(16).TextColor(col)
 		})
 	})
 }
@@ -183,9 +180,9 @@ func (a *App) syncTab(c *ui.Context, t syncTabItem, w float32, active bool) {
 		}
 		col := hoverInk(tab, "sync-tab-ink-all", tab.Hovered(), rest, on)
 		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
-			ico := ui.Icon(c, t.ico).FontSize(syncTabIcoW)
+			ico := components.Icon(c, t.ico).FontSize(syncTabIcoW)
 			ico.TextColor(ico.AnimateColor("sync-tab-ico-"+t.id, col, theme.Slide()))
-			txt := ui.Text(c, t.label).FontSize(theme.TextXS)
+			txt := components.Text(c, t.label).FontSize(theme.TextXS)
 			txt.TextColor(txt.AnimateColor("sync-tab-ink-"+t.id, col, theme.Slide()))
 			if active {
 				txt.FontWeight(600)
@@ -223,9 +220,9 @@ func (a *App) syncImportBody(c *ui.Context) {
 					if a.SyncNotice == "" && a.SyncError == "" {
 						ui.Box(c).Size(40, 40).Radius(theme.RadiusFull).Center().
 							Background(theme.FillQuaternary).Children(func() {
-							ui.Icon(c, iconDownload).FontSize(19).TextColor(theme.TextTertiary)
+							components.Icon(c, iconDownload).FontSize(19).TextColor(theme.TextTertiary)
 						})
-						ui.Text(c, "尚未选择文件").FontSize(theme.TextXS).TextColor(theme.TextTertiary)
+						components.Text(c, "尚未选择文件").FontSize(theme.TextXS).TextColor(theme.TextTertiary)
 					}
 					a.syncButton(c, syncActImport, iconDownload, "选择文件…", true, a.pickImportFile, nil)
 				})
@@ -261,9 +258,9 @@ func (a *App) syncSnapshot(c *ui.Context) {
 				ui.Box(c).Width(1).Height(28).Background(theme.Separator)
 			}
 			ui.Column(c).Grow(1).Center().Gap(2).Children(func() {
-				ui.Text(c, strconv.Itoa(it.n)).FontSize(theme.TextLG).FontWeight(600).
+				components.Text(c, strconv.Itoa(it.n)).FontSize(theme.TextLG).FontWeight(600).
 					TextColor(theme.TextPrimary)
-				ui.Text(c, it.label).FontSize(theme.Text2XS).TextColor(theme.TextMeta)
+				components.Text(c, it.label).FontSize(theme.Text2XS).TextColor(theme.TextMeta)
 			})
 		}
 	})
@@ -273,11 +270,11 @@ func (a *App) syncSnapshot(c *ui.Context) {
 func (a *App) syncPlanCard(c *ui.Context, p *importPlan) {
 	ui.Column(c).Gap(theme.Space2).Padding(theme.Space3).Radius(theme.RadiusMD).
 		Background(theme.FillQuaternary).Children(func() {
-		ui.Text(c, p.FileName).FontSize(theme.TextSM).FontWeight(600).
+		components.Text(c, p.FileName).FontSize(theme.TextSM).FontWeight(600).
 			TextColor(theme.TextPrimary).SingleLine()
 
 		if p.empty() {
-			ui.Text(c, "没有可导入的内容：这些数据本机已经有了").
+			components.Text(c, "没有可导入的内容：这些数据本机已经有了").
 				FontSize(theme.TextXS).TextColor(theme.TextTertiary)
 			return
 		}
@@ -293,9 +290,9 @@ func (a *App) syncPlanCard(c *ui.Context, p *importPlan) {
 // syncChangeLine 是清单里的一行：左侧一枚短标签，右侧具体内容。
 func syncChangeLine(c *ui.Context, tag, text string, tint ui.Color) {
 	ui.Row(c).Gap(theme.Space2).AlignItems(ui.Start).Children(func() {
-		ui.Text(c, tag).FontSize(theme.Text2XS).FontWeight(600).TextColor(tint).
+		components.Text(c, tag).FontSize(theme.Text2XS).FontWeight(600).TextColor(tint).
 			Width(24).SingleLine()
-		ui.Text(c, text).FontSize(theme.TextXS).TextColor(theme.TextSecondary).Grow(1)
+		components.Text(c, text).FontSize(theme.TextXS).TextColor(theme.TextSecondary).Grow(1)
 	})
 }
 
@@ -303,8 +300,8 @@ func syncChangeLine(c *ui.Context, tag, text string, tint ui.Color) {
 func (a *App) syncFeedback(c *ui.Context) {
 	if a.SyncError != "" {
 		ui.Row(c).Gap(6).AlignItems(ui.Start).Children(func() {
-			ui.Icon(c, iconAlert).FontSize(14).TextColor(theme.DangerInk)
-			ui.Text(c, a.SyncError).FontSize(theme.TextXS).TextColor(theme.DangerInk).Grow(1)
+			components.Icon(c, iconAlert).FontSize(14).TextColor(theme.DangerInk)
+			components.Text(c, a.SyncError).FontSize(theme.TextXS).TextColor(theme.DangerInk).Grow(1)
 		})
 		return
 	}
@@ -314,14 +311,14 @@ func (a *App) syncFeedback(c *ui.Context) {
 	ui.Row(c).Gap(8).Padding(8, 10, 8, 10).Radius(theme.RadiusMD).
 		Background(theme.AccentSofter).Border(1, theme.AccentSoft).
 		AlignItems(ui.Center).Children(func() {
-		ui.Icon(c, iconOkCircle).FontSize(15).TextColor(theme.AccentInk)
-		ui.Text(c, a.SyncNotice).FontSize(theme.TextXS).TextColor(theme.TextSecondary).Grow(1)
+		components.Icon(c, iconOkCircle).FontSize(15).TextColor(theme.AccentInk)
+		components.Text(c, a.SyncNotice).FontSize(theme.TextXS).TextColor(theme.TextSecondary).Grow(1)
 	})
 }
 
 // syncHint 是诊断页签的一行灰色说明。
 func (a *App) syncHint(c *ui.Context, text string) {
-	ui.Text(c, text).FontSize(theme.Text2XS).TextColor(theme.TextMeta)
+	components.Text(c, text).FontSize(theme.Text2XS).TextColor(theme.TextMeta)
 }
 
 // syncButton 是面板里的胶囊按钮：32 高、圆角 full、12px 半粗。
@@ -391,15 +388,15 @@ func (a *App) syncButton(c *ui.Context, action string, ico *ui.SVG, label string
 			switch {
 			case stoppable:
 				// 方块停止图标：告诉用户这一下是按下去停，不是再转一圈。
-				ui.Icon(c, iconStop).FontSize(13).TextColor(col)
+				components.Icon(c, iconStop).FontSize(13).TextColor(col)
 			case mine:
 				// 跑着的时候图标转起来，兼作进度提示
-				ui.Icon(c, iconSync).FontSize(14).TextColor(col).Rotate(
+				components.Icon(c, iconSync).FontSize(14).TextColor(col).Rotate(
 					btn.Loop("sync-btn-spin", theme.SpinPeriod, ui.Linear) * 360)
 			default:
-				ui.Icon(c, ico).FontSize(14).TextColor(col)
+				components.Icon(c, ico).FontSize(14).TextColor(col)
 			}
-			ui.Text(c, text).FontSize(theme.TextXS).FontWeight(600).TextColor(col)
+			components.Text(c, text).FontSize(theme.TextXS).FontWeight(600).TextColor(col)
 		})
 	})
 }

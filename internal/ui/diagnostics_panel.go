@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/applog"
 	"alive/internal/buildinfo"
@@ -91,7 +92,7 @@ func (a *App) diagCard(c *ui.Context) {
 	ui.Column(c).Gap(theme.Space2).Padding(8, 12, 10, 12).Radius(theme.RadiusMD).
 		Background(theme.FillQuaternary).Children(func() {
 		ui.Row(c).Height(20).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "本次运行").FontSize(theme.Text2XS).FontWeight(600).
+			components.Text(c, "本次运行").FontSize(theme.Text2XS).FontWeight(600).
 				TextColor(theme.TextMeta).Grow(1)
 			a.diagTextAction(c, "刷新指标", func() {
 				a.DiagGroups, a.DiagEmpty = diagnosticGroups()
@@ -99,7 +100,7 @@ func (a *App) diagCard(c *ui.Context) {
 		})
 
 		if a.DiagEmpty {
-			ui.Text(c, "还没有播放记录。导出包里仍然有环境指纹、日志和指标原始值。").
+			components.Text(c, "还没有播放记录。导出包里仍然有环境指纹、日志和指标原始值。").
 				FontSize(theme.TextXS).TextColor(theme.TextMeta)
 			return
 		}
@@ -109,17 +110,17 @@ func (a *App) diagCard(c *ui.Context) {
 				ui.Box(c).Height(theme.Space1)
 			}
 			// 组标题比行标签更深、更重：不然「播放页」读起来像又一行指标。
-			ui.Text(c, g.title).FontSize(theme.Text2XS).FontWeight(600).
+			components.Text(c, g.title).FontSize(theme.Text2XS).FontWeight(600).
 				TextColor(theme.TextSecondary)
 			for _, row := range g.rows {
 				ui.Row(c).Gap(theme.Space2).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, row.label).FontSize(theme.TextXS).TextColor(theme.TextMeta).
+					components.Text(c, row.label).FontSize(theme.TextXS).TextColor(theme.TextMeta).
 						Width(diagLabelW).SingleLine()
 					col := theme.TextSecondary
 					if row.bad {
 						col = theme.DangerInk
 					}
-					ui.Text(c, row.value).FontSize(theme.TextXS).TextColor(col).
+					components.Text(c, row.value).FontSize(theme.TextXS).TextColor(col).
 						Grow(1).TextAlign(ui.End).SingleLine()
 				})
 			}
@@ -135,7 +136,7 @@ func (a *App) diagTextAction(c *ui.Context, label string, on func()) {
 		Center().Cursor(ui.CursorPointer).Label(label)
 	col := hoverInk(btn, "diag-text-ink", btn.Hovered(), theme.TextMeta, theme.TextPrimary)
 	btn.Children(func() {
-		ui.Text(c, label).FontSize(theme.Text2XS).FontWeight(600).TextColor(col)
+		components.Text(c, label).FontSize(theme.Text2XS).FontWeight(600).TextColor(col)
 	})
 	if btn.Clicked() {
 		on()
@@ -152,7 +153,7 @@ func (a *App) diagIconAction(c *ui.Context, ico *ui.SVG, label string, on func()
 		on()
 	}
 	btn.Children(func() {
-		ui.Icon(c, ico).FontSize(14).TextColor(col)
+		components.Icon(c, ico).FontSize(14).TextColor(col)
 	})
 }
 
@@ -177,8 +178,8 @@ func (a *App) diagResult(c *ui.Context) {
 	row.Children(func() {
 		switch {
 		case a.SyncError != "":
-			ui.Icon(c, iconAlert).FontSize(14).TextColor(theme.DangerInk)
-			ui.Text(c, a.SyncError).FontSize(theme.TextXS).TextColor(theme.DangerInk).Grow(1)
+			components.Icon(c, iconAlert).FontSize(14).TextColor(theme.DangerInk)
+			components.Text(c, a.SyncError).FontSize(theme.TextXS).TextColor(theme.DangerInk).Grow(1)
 
 		case a.SyncBusy && a.SyncBusyAction != syncActImport:
 			// 进行中也占住这一行：用户点完就知道在等什么、等多久。
@@ -186,12 +187,12 @@ func (a *App) diagResult(c *ui.Context) {
 			if a.SyncBusyAction == syncActProfile {
 				label = "正在剖析 30 秒样本…"
 			}
-			ui.Icon(c, iconSync).FontSize(14).TextColor(theme.TextTertiary)
-			ui.Text(c, label).FontSize(theme.TextXS).TextColor(theme.TextTertiary).Grow(1)
+			components.Icon(c, iconSync).FontSize(14).TextColor(theme.TextTertiary)
+			components.Text(c, label).FontSize(theme.TextXS).TextColor(theme.TextTertiary).Grow(1)
 
 		case a.SyncNotice != "":
-			ui.Icon(c, iconOkCircle).FontSize(15).TextColor(theme.AccentInk)
-			ui.Text(c, a.SyncNotice).FontSize(theme.TextXS).TextColor(theme.TextSecondary).
+			components.Icon(c, iconOkCircle).FontSize(15).TextColor(theme.AccentInk)
+			components.Text(c, a.SyncNotice).FontSize(theme.TextXS).TextColor(theme.TextSecondary).
 				Grow(1).SingleLine().TruncateMiddle()
 			if a.SyncPath != "" {
 				a.diagIconAction(c, iconCopy, "复制文件路径", func() {
@@ -355,9 +356,9 @@ func appVersionText() string {
 // 顶栏那唯一一个应用级入口，版本属于这里。
 func (a *App) updateLine(c *ui.Context) {
 	ui.Row(c).Gap(theme.Space2).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "版本").FontSize(theme.Text2XS).FontWeight(600).
+		components.Text(c, "版本").FontSize(theme.Text2XS).FontWeight(600).
 			TextColor(theme.TextMeta).Width(diagLabelW).SingleLine()
-		ui.Text(c, appVersionText()).FontSize(theme.TextXS).
+		components.Text(c, appVersionText()).FontSize(theme.TextXS).
 			TextColor(theme.TextSecondary).Grow(1).SingleLine()
 		if a.CheckUpdates != nil {
 			a.diagTextAction(c, "检查更新", a.CheckUpdates)

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/media"
 	"alive/internal/theme"
@@ -161,28 +162,28 @@ func (a *App) danmuPanelHandle(c *ui.Context, open bool) {
 				ico = iconChevronRightBold
 			}
 			tab.Children(func() {
-				ui.Icon(c, ico).FontSize(14).TextColor(theme.AccentText)
+				components.Icon(c, ico).FontSize(14).TextColor(theme.AccentText)
 			})
 		})
 	})
 }
 
 func (a *App) danmuPanelList(c *ui.Context) {
-	// 贴底由 ListState.FollowEnd 自己管：贴底时新弹幕把底推上来，用户上滑就脱离、
-	// 滑回底部又跟上，视口变高变矮也不用谁来重新钉 Y。这里只负责在脱离时累计
-	// 「N 条新弹幕」。
-	n := a.panelNewDanmu()
-	if a.PanelList.AtEnd() {
-		a.panelPending = 0
-	} else if n > 0 {
-		a.panelPending += n
-	}
-
 	// 数据层只产出 chat 和 SC，这里不用再过滤——礼物、进场、公告
 	// 根本不会进 DanmuLog。只按上限截断。
 	list := a.DanmuLog
 	if len(list) > danmuPanelMaxLines {
 		list = list[len(list)-danmuPanelMaxLines:]
+	}
+
+	// 贴底由 ListState.FollowEnd 自己管：贴底时新弹幕把底推上来，用户上滑就脱离、
+	// 滑回底部又跟上，视口变高变矮也不用谁来重新钉 Y。这里只负责在脱离时累计
+	// 「N 条新弹幕」。
+	n := a.panelNewDanmu()
+	if listAtEnd(&a.PanelList, len(list)) {
+		a.panelPending = 0
+	} else if n > 0 {
+		a.panelPending += n
 	}
 	// Key 不捕获这一帧的局部 list。它被存进长期 ListState：面板收起后
 	// danmuPanelList 不再执行，闭包一直是旧快照；任何在别的路径上对这个
@@ -200,7 +201,7 @@ func (a *App) danmuPanelList(c *ui.Context) {
 
 	// 空列表不画占位文案：连接状态在后台，界面根本拿不到「正在连接」
 	// 这个事实——连上了只是没人在说话，也会一直挂着那行字。
-	ui.List(c, &a.PanelList, len(list), func(i int) {
+	components.List(c, &a.PanelList, len(list), func(i int) {
 		a.danmuPanelItem(c, list[i])
 	}).Grow(1).Padding(12, 10, 16, 10).Gap(danmuPanelListGap)
 
@@ -215,8 +216,8 @@ func (a *App) danmuPanelList(c *ui.Context) {
 		}
 		pill.Children(func() {
 			// 胶囊前面有一枚 ArrowDown（12px / 2.6）
-			ui.Icon(c, iconArrowDown).FontSize(12).TextColor(theme.AccentText)
-			ui.Text(c, fmt.Sprintf("%d 条新弹幕", a.panelPending)).
+			components.Icon(c, iconArrowDown).FontSize(12).TextColor(theme.AccentText)
+			components.Text(c, fmt.Sprintf("%d 条新弹幕", a.panelPending)).
 				FontSize(theme.TextXS).FontWeight(600).TextColor(theme.AccentText)
 		})
 	}
@@ -309,7 +310,7 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 			// .user { nowrap; overflow: hidden; text-overflow: ellipsis }
 			// 靠一层 Grow 的盒子给昵称一个上界，长昵称才不会顶出面板。
 			ui.Box(c).Grow(1).Children(func() {
-				ui.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).
+				components.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).
 					SingleLine().LineHeight(1.5).TextColor(theme.TextPrimary)
 			})
 		})
@@ -318,7 +319,7 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 		if d.imageOnly() {
 			w, h := emoteSize(d.Emotes[0], theme.TextSM*danmuStickerScale)
 			if bmp, wait, anim := media.Default.EmoteFrame(d.Emotes[0].URL, w, c.Now()); bmp != nil {
-				ui.Image(c, bmp).Size(w, h)
+				components.Image(c, bmp).Size(w, h)
 				if anim && wait > 0 {
 					c.After(wait)
 				}
@@ -339,7 +340,7 @@ func (a *App) danmuPanelItem(c *ui.Context, d danmuLine) {
 			rs.richText(c, theme.TextSM, fg).LineHeight(1.5)
 			return
 		}
-		ui.Text(c, d.Text).FontSize(theme.TextSM).LineHeight(1.5).
+		components.Text(c, d.Text).FontSize(theme.TextSM).LineHeight(1.5).
 			TextColor(fg)
 	})
 }
@@ -369,7 +370,7 @@ func (a *App) danmuChip(c *ui.Context, text string, bg, bgEnd ui.Color) {
 		chip.Background(theme.FillTertiary)
 	}
 	chip.Children(func() {
-		ui.Text(c, text).FontSize(theme.Text2XS).FontWeight(600).
+		components.Text(c, text).FontSize(theme.Text2XS).FontWeight(600).
 			SingleLine().LineHeight(1.5).TextColor(fg).
 			FontFeatures("tnum")
 	})
@@ -433,17 +434,17 @@ func (a *App) danmuPanelSuperChat(c *ui.Context, d danmuLine) {
 				// 金额徽章固定白字：四个平台的 SC 协议都不下发字色（B 站只给
 				// 背景色系、斗鱼只给 danmucr 头色、虎牙只给背景色），网页端也是一
 				// 律白字。按亮度分深浅会让同一条列表里 ¥10 白字、¥100 黑字。
-				ui.Text(c, fmt.Sprintf("¥%d", d.Price)).
+				components.Text(c, fmt.Sprintf("¥%d", d.Price)).
 					FontSize(theme.Text2XS).FontWeight(700).
 					TextColor(theme.White).FontFeatures("tnum")
 			})
 			ui.Box(c).Grow(1).Children(func() {
-				ui.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).
+				components.Text(c, d.Nick).FontSize(theme.Text2XS).FontWeight(600).
 					SingleLine().LineHeight(1.5).TextColor(theme.TextPrimary)
 			})
 		})
 
-		ui.Text(c, d.Text).FontSize(theme.TextSM).LineHeight(1.5).
+		components.Text(c, d.Text).FontSize(theme.TextSM).LineHeight(1.5).
 			TextColor(theme.TextPrimary)
 	})
 }

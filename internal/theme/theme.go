@@ -165,7 +165,6 @@ var (
 	// 状态层白色主按钮悬停时的浅灰底：#f1f1f1。
 	MediaOverlayBtnHover = ui.RGB(0xf1, 0xf1, 0xf1)
 	// 弹幕设置开关打开时、强调色底上的深色拇指：#1a1a1a。
-	MediaSwitchThumbOn = ui.RGB(0x1a, 0x1a, 0x1a)
 	// 全屏窗口按钮里的关闭键悬停红，取 Win11 自己的 #c42b1c。
 	MediaCaptionClose = ui.RGB(0xc4, 0x2b, 0x1c)
 	// 平台品牌色只用于观测墙的平台胶囊，不随主题变。胶囊上的字统一用

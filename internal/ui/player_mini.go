@@ -5,6 +5,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/media"
 	"alive/internal/theme"
@@ -141,7 +142,7 @@ func (a *App) MiniPlayer(c *ui.Context) {
 		if p == nil || !p.Ready() {
 			w, _ := c.Size()
 			if bmp := media.Default.Bitmap(a.currentCover(), w); bmp != nil {
-				ui.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
+				components.Image(c, bmp).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Cover)
 			} else {
 				// 封面还在路上：给小窗自己排一次重绘，否则它不会跟着缓存刷新
 				c.After(200 * time.Millisecond)
@@ -206,7 +207,7 @@ func (a *App) miniBtn(c *ui.Context, ico *ui.SVG, label string, size float32, on
 	}
 	col := hoverInk(btn, "mini-btn-ink", btn.Hovered(), theme.MediaTextBody, theme.White)
 	btn.Children(func() {
-		ui.Icon(c, ico).FontSize(size).TextColor(col)
+		components.Icon(c, ico).FontSize(size).TextColor(col)
 	})
 }
 
@@ -297,6 +298,6 @@ func (a *App) captionBtn(c *ui.Context, ico *ui.SVG, label string, close bool, o
 	}
 	col := hoverInk(btn, "caption-btn-ink", hovered, theme.MediaText, theme.White)
 	btn.Children(func() {
-		ui.Icon(c, ico).FontSize(10).TextColor(col)
+		components.Icon(c, ico).FontSize(10).TextColor(col)
 	})
 }

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/live"
 	"alive/internal/media"
@@ -110,7 +111,7 @@ func (a *App) authButton(c *ui.Context) {
 	btn.Children(func() {
 		if st.LoggedIn && st.Avatar != "" {
 			if bmp := media.Default.Avatar(st.Avatar, dia); bmp != nil {
-				ui.Image(c, bmp).Size(dia, dia).Radius(dia / 2).Fit(ui.Cover)
+				components.Image(c, bmp).Size(dia, dia).Radius(dia / 2).Fit(ui.Cover)
 				return
 			}
 		}
@@ -121,15 +122,16 @@ func (a *App) authButton(c *ui.Context) {
 			if a.AuthOpen || hovered {
 				col = theme.TextPrimary
 			}
-			ui.Icon(c, iconUser).FontSize(dia * 0.6).TextColor(col)
+			components.Icon(c, iconUser).FontSize(dia * 0.6).TextColor(col)
 		})
 	})
 
-	ui.PopoverBase(c, btn, &a.AuthOpen, func(panel ui.Element) {
+	components.Popover(c, btn, &a.AuthOpen, func(panel ui.Element) {
+		panel = orPanel(panel, theme.BgElevated)
 		// 用 MinWidth 而不是 Width：内容（二维码 / 长一点的错误文案）
 		// 比这个宽时要能自己撑开，写死宽度会把二维码右侧裁掉。
 		panel.MinWidth(authPanelW).Padding(14).Radius(theme.RadiusXL).
-			Background(theme.BgElevated).Border(1, theme.Border).
+			Border(1, theme.Border).
 			Label("登录浮层").
 			// --shadow-lg: 0 38px 72px -30px rgba(0,0,0,.85)
 			Shadow(0, 38, 72, -30, theme.ShadowModal).Shadow(0, 6, 16, 0, theme.ShadowContact).
@@ -162,30 +164,30 @@ func (a *App) authScanPanel(c *ui.Context, auth live.Authenticator, st live.Auth
 	// 列要显式居中：默认是左对齐，二维码 168 摆进 212 宽的面板里会全挤到
 	// 左边，右边空一大块，标题和文案也跟着贴左。
 	ui.Column(c).Gap(10).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "登录 "+platformLabel(key)).FontSize(theme.TextSM).FontWeight(600).
+		components.Text(c, "登录 "+platformLabel(key)).FontSize(theme.TextSM).FontWeight(600).
 			TextColor(theme.TextPrimary).TextAlign(ui.Center).MaxLines(1)
 
 		ui.Box(c).Size(authQRSize, authQRSize).Radius(theme.RadiusMD).
 			Background(theme.White).Center().Children(func() {
 			if qr != nil {
-				ui.Image(c, qr).Size(authQRSize-20, authQRSize-20).Fit(ui.Contain)
+				components.Image(c, qr).Size(authQRSize-20, authQRSize-20).Fit(ui.Contain)
 				return
 			}
-			ui.Icon(c, iconQRCode).FontSize(30).TextColor(theme.AuthQrIconInk)
+			components.Icon(c, iconQRCode).FontSize(30).TextColor(theme.AuthQrIconInk)
 		})
 
 		// 状态文案最多两行：错误信息带接口原文，一行放不下，
 		// 但也不能任它把面板撑得老高。
 		switch {
 		case st.Err != "":
-			ui.Text(c, st.Err).FontSize(theme.TextXS).TextColor(theme.DangerInk).
+			components.Text(c, st.Err).FontSize(theme.TextXS).TextColor(theme.DangerInk).
 				TextAlign(ui.Center).MaxLines(2)
 			a.authRetry(c, auth)
 		case st.Status != "":
-			ui.Text(c, st.Status).FontSize(theme.TextXS).
+			components.Text(c, st.Status).FontSize(theme.TextXS).
 				TextColor(theme.TextTertiary).TextAlign(ui.Center).MaxLines(2)
 		default:
-			ui.Text(c, "正在获取二维码…").FontSize(theme.TextXS).
+			components.Text(c, "正在获取二维码…").FontSize(theme.TextXS).
 				TextColor(theme.TextTertiary).TextAlign(ui.Center)
 		}
 	})
@@ -196,17 +198,17 @@ func (a *App) authAccountPanel(c *ui.Context, auth live.Authenticator, st live.A
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			if bmp := media.Default.Avatar(st.Avatar, 36); bmp != nil {
-				ui.Image(c, bmp).Size(36, 36).Radius(18).Fit(ui.Cover)
+				components.Image(c, bmp).Size(36, 36).Radius(18).Fit(ui.Cover)
 			} else {
 				ui.Box(c).Size(36, 36).Radius(18).Background(theme.FillTertiary).
 					Center().Children(func() {
-					ui.Icon(c, iconUser).FontSize(20).TextColor(theme.TextSecondary)
+					components.Icon(c, iconUser).FontSize(20).TextColor(theme.TextSecondary)
 				})
 			}
 			ui.Column(c).Gap(2).Children(func() {
-				ui.Text(c, st.Name).FontSize(theme.TextSM).FontWeight(600).
+				components.Text(c, st.Name).FontSize(theme.TextSM).FontWeight(600).
 					TextColor(theme.TextPrimary).SingleLine()
-				ui.Text(c, platformLabel(string(st.Platform))+" 账号").
+				components.Text(c, platformLabel(string(st.Platform))+" 账号").
 					FontSize(theme.Text2XS).TextColor(theme.TextTertiary).NoWrap()
 			})
 		})
@@ -222,8 +224,8 @@ func (a *App) authAccountPanel(c *ui.Context, auth live.Authenticator, st live.A
 			a.markDirty()
 		}
 		logout.Children(func() {
-			ui.Icon(c, iconLogOut).FontSize(14).TextColor(theme.TextSecondary)
-			ui.Text(c, "退出登录").FontSize(theme.TextXS).
+			components.Icon(c, iconLogOut).FontSize(14).TextColor(theme.TextSecondary)
+			components.Text(c, "退出登录").FontSize(theme.TextXS).
 				TextColor(theme.TextSecondary)
 		})
 	})
@@ -238,6 +240,6 @@ func (a *App) authRetry(c *ui.Context, auth live.Authenticator) {
 		auth.RefreshQRCode()
 	}
 	btn.Children(func() {
-		ui.Text(c, "重新获取").FontSize(theme.TextXS).TextColor(theme.TextPrimary)
+		components.Text(c, "重新获取").FontSize(theme.TextXS).TextColor(theme.TextPrimary)
 	})
 }

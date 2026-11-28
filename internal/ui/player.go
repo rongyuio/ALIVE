@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/media"
 	"alive/internal/theme"
@@ -420,7 +421,7 @@ func (a *App) stageFrame(c *ui.Context, stage ui.Element) {
 		// 拿封面盖住，看起来是「正在起播」而不是「播坏了」。
 	}
 	if cover != nil {
-		ui.Image(c, cover).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
+		components.Image(c, cover).Absolute().Top(0).Left(0).Right(0).Bottom(0).Fit(ui.Contain)
 	}
 	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
 		Background(theme.MediaScrimSoft)
@@ -462,7 +463,7 @@ func backdropLayers(c *ui.Context, bmp *ui.Bitmap) {
 	// 这是 H5 的 scale(1.2)：元素本身仍占舞台那么大，只是内容被放大了。
 	pad := theme.MediaBackdropOverscan
 	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().Children(func() {
-		ui.Image(c, bmp).Absolute().Top(-pad).Left(-pad).Right(-pad).Bottom(-pad).
+		components.Image(c, bmp).Absolute().Top(-pad).Left(-pad).Right(-pad).Bottom(-pad).
 			Fit(ui.Cover)
 	}).Blur(theme.MediaBackdropBlur)
 	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().
@@ -604,7 +605,7 @@ func (a *App) stageOverlay(c *ui.Context, state stageState) {
 	switch state {
 	case stageFetching:
 		a.overlayLayer(c, func() {
-			spinner(c, 30)
+			components.Spinner(c, components.SpinnerRing).Size(30, 30)
 			a.overlayText(c, "正在拉取直播流…")
 		})
 
@@ -613,7 +614,7 @@ func (a *App) stageOverlay(c *ui.Context, state stageState) {
 			a.overlayText(c, m.errText())
 			// 多线路平台失败过才提示，单线路说了也没用
 			if len(m.streamNow().Lines) > 1 {
-				ui.Text(c, "可以在控制条切换线路后重试").
+				components.Text(c, "可以在控制条切换线路后重试").
 					FontSize(theme.TextXS).TextColor(theme.White.Alpha(0.6)).
 					TextAlign(ui.Center).LineHeight(1.7)
 			}
@@ -633,10 +634,10 @@ func (a *App) stageOverlay(c *ui.Context, state stageState) {
 				Background(theme.MediaRowLine).
 				Border(1, theme.MediaHair).Center()
 			icon.Children(func() {
-				ui.Icon(c, iconMonitorOff).FontSize(26).
+				components.Icon(c, iconMonitorOff).FontSize(26).
 					TextColor(theme.MediaTextDim)
 			})
-			ui.Text(c, "主播暂时没有开播").FontSize(theme.TextLG).FontWeight(600).
+			components.Text(c, "主播暂时没有开播").FontSize(theme.TextLG).FontWeight(600).
 				TextColor(theme.White94)
 			a.overlayText(c, "主播开播后请点「立即刷新」；回到列表重新进入也会重连")
 			a.overlayButton(c, "立即刷新", a.retryStream)
@@ -660,7 +661,7 @@ func (a *App) overlayLayer(c *ui.Context, fn func()) {
 // 最大宽度取窗口的 70%。
 func (a *App) overlayText(c *ui.Context, text string) {
 	w, _ := c.Size()
-	ui.Text(c, text).FontSize(theme.TextSM).
+	components.Text(c, text).FontSize(theme.TextSM).
 		TextColor(theme.MediaTextBody).
 		LineHeight(1.7).TextAlign(ui.Center).MaxWidth(w * 0.7)
 }
@@ -682,8 +683,8 @@ func (a *App) overlayButton(c *ui.Context, label string, on func()) {
 	}
 	down := btn.Pressed()
 	btn.Children(func() {
-		ui.Icon(c, iconSync).FontSize(13).TextColor(theme.MediaOverlayBtnInk)
-		ui.Text(c, label).FontSize(theme.TextSM).FontWeight(600).
+		components.Icon(c, iconSync).FontSize(13).TextColor(theme.MediaOverlayBtnInk)
+		components.Text(c, label).FontSize(theme.TextSM).FontWeight(600).
 			TextColor(theme.MediaOverlayBtnInk)
 		pressDim(c, down, theme.RadiusFull)
 	})
@@ -704,8 +705,8 @@ func (a *App) bufferingPill(c *ui.Context) {
 		Padding(0, 12, 0, 12).Gap(7).Radius(theme.RadiusFull).
 		AlignItems(ui.Center).
 		Background(playerBarBg).Border(1, playerBarBorder).Children(func() {
-		spinner(c, 14)
-		ui.Text(c, "缓冲中…").FontSize(theme.TextXS).TextColor(playerIcon)
+		components.Spinner(c, components.SpinnerRing).Size(14, 14)
+		components.Text(c, "缓冲中…").FontSize(theme.TextXS).TextColor(playerIcon)
 	})
 }
 
@@ -724,7 +725,7 @@ func (a *App) noticePill(c *ui.Context) {
 		ui.Row(c).Height(30).Padding(0, 14, 0, 14).Radius(theme.RadiusFull).
 			AlignItems(ui.Center).
 			Background(playerBarBg).Border(1, playerBarBorder).Children(func() {
-			ui.Text(c, a.media.notice).FontSize(theme.TextXS).TextColor(playerIcon)
+			components.Text(c, a.media.notice).FontSize(theme.TextXS).TextColor(playerIcon)
 		})
 	})
 }
@@ -779,7 +780,7 @@ func (a *App) playerTopbar(c *ui.Context) {
 		}
 		back.Children(func() {
 			// 关闭用 X，不是返回箭头
-			ui.Icon(c, iconPlayerBack).FontSize(19).TextColor(theme.MediaText)
+			components.Icon(c, iconPlayerBack).FontSize(19).TextColor(theme.MediaText)
 		})
 
 		a.playerIdentity(c)
@@ -807,20 +808,20 @@ func (a *App) playerIdentity(c *ui.Context) {
 		box := ui.Box(c).Size(avatarD, avatarD).Shrink(0)
 		box.Children(func() {
 			if bmp := media.Default.Avatar(s.AvatarURL, avatarD); bmp != nil {
-				ui.Image(c, bmp).Size(avatarD, avatarD).Radius(avatarD / 2).Fit(ui.Cover)
+				components.Image(c, bmp).Size(avatarD, avatarD).Radius(avatarD / 2).Fit(ui.Cover)
 			} else {
 				ui.Box(c).Size(avatarD, avatarD).Radius(avatarD / 2).
 					Background(ui.Oklch(0.42, 0.10, s.Hue+180)).Center().Children(func() {
-					ui.Text(c, initial(s.Name)).FontSize(avatarD * 0.4).FontWeight(600).
+					components.Text(c, initial(s.Name)).FontSize(avatarD * 0.4).FontWeight(600).
 						TextColor(theme.MediaTextBody)
 				})
 			}
 		})
 
 		ui.Column(c).Gap(1).Justify(ui.Center).Children(func() {
-			ui.Text(c, s.Title).FontSize(theme.TextXS).FontWeight(600).
+			components.Text(c, s.Title).FontSize(theme.TextXS).FontWeight(600).
 				SingleLine().TextColor(theme.MediaText)
-			ui.Text(c, islandPlayerMeta(s)).FontSize(theme.Text2XS).
+			components.Text(c, islandPlayerMeta(s)).FontSize(theme.Text2XS).
 				SingleLine().TextColor(theme.MediaTextDim)
 		})
 
@@ -850,7 +851,7 @@ func (a *App) playerIdentity(c *ui.Context) {
 			if followed {
 				ico = iconStarFilled
 			}
-			ui.Icon(c, ico).FontSize(14).TextColor(col)
+			components.Icon(c, ico).FontSize(14).TextColor(col)
 			pressDim(c, star.Pressed(), theme.RadiusFull)
 		})
 	})
@@ -1123,7 +1124,7 @@ func (a *App) volumeControlFor(c *ui.Context, m controlMetrics, name string) {
 		})
 
 		if m.showPercent {
-			ui.Text(c, fmt.Sprintf("%d%%", int(a.focusVolume()*100+0.5))).
+			components.Text(c, fmt.Sprintf("%d%%", int(a.focusVolume()*100+0.5))).
 				FontSize(theme.TextXS).TextColor(theme.MediaTextDim).
 				FontFeatures("tnum").Width(36).TextAlign(ui.End)
 		}
@@ -1216,9 +1217,9 @@ func (a *App) playerDropdown(c *ui.Context, label string, options []string, valu
 		if lit {
 			col = playerIconOn
 		}
-		ui.Text(c, value).FontSize(theme.TextXS).TextColor(col)
+		components.Text(c, value).FontSize(theme.TextXS).TextColor(col)
 		caret := btn.AnimateTo("dd-"+label, caretAngle(*open), theme.Chrome())
-		ui.Icon(c, iconChevron).FontSize(12).TextColor(col).Rotate(caret)
+		components.Icon(c, iconChevron).FontSize(12).TextColor(col).Rotate(caret)
 	})
 
 	ui.PopoverBase(c, btn, open, func(panel ui.Element) {
@@ -1271,13 +1272,13 @@ func (a *App) playerDropdownItem(c *ui.Context, opt string, value string, open *
 		if active {
 			col = theme.Accent
 		}
-		ui.Text(c, opt).FontSize(theme.TextSM).TextColor(col).NoWrap()
+		components.Text(c, opt).FontSize(theme.TextSM).TextColor(col).NoWrap()
 		// 弹性空间交给空 Box，不能让文本自己 Grow：MyGo 的 Grow 从 0
 		// 尺寸起步、允许缩到内容宽度以下，最宽的那项（「自动（720P 超清）」）
 		// 会被压成两行。
 		ui.Box(c).Grow(1)
 		if active {
-			ui.Icon(c, iconCheck).FontSize(12).TextColor(theme.Accent)
+			components.Icon(c, iconCheck).FontSize(12).TextColor(theme.Accent)
 		}
 	})
 }
@@ -1303,7 +1304,7 @@ func (a *App) iconBtnSized(c *ui.Context, ico *ui.SVG, size, hit float32, active
 	col := playerIconColor(btn, active)
 	down := btn.Pressed()
 	btn.Children(func() {
-		ui.Icon(c, ico).FontSize(size).TextColor(col)
+		components.Icon(c, ico).FontSize(size).TextColor(col)
 		pressDim(c, down, hit/2)
 	})
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/oneo-me/onevra/source/components"
 
 	"alive/internal/live"
 	"alive/internal/media"
@@ -192,21 +193,18 @@ type App struct {
 	DanmuSettingsOpen bool
 	// 颜色 / 描边的取色浮层各自一个开关。取色器比设置面板大，指针得挪到
 	// 面板外面去用，所以设置面板的 hover 关门逻辑要把这两个算进去。
-	DanmuColorOpen  bool
-	DanmuStrokeOpen bool
-	DanmuFont       float32
-	DanmuDur        time.Duration
-	DanmuArea       float32
-	DanmuOpacity    float32
-	DanmuColorful   bool
-	DanmuColor      ui.Color
-	DanmuStroke     ui.Color
+	DanmuFont     float32
+	DanmuDur      time.Duration
+	DanmuArea     float32
+	DanmuOpacity  float32
+	DanmuColorful bool
+	DanmuColor    ui.Color
+	DanmuStroke   ui.Color
 
 	// 弹幕屏蔽词（控制条漏斗面板）：命中的弹幕不上屏、也不进右侧历史。
 	// 面板只有点击才开，所以不需要 hoverClose。
 	DanmuFilters      []string
 	DanmuFilterOpen   bool
-	DanmuFilterQuery  string
 	danmuFilterScroll ui.ScrollState
 
 	// 右侧弹幕列表
@@ -215,7 +213,7 @@ type App struct {
 	// PanelList 是弹幕列表。FollowEnd 让它贴底：新弹幕把底推上来，用户上滑就
 	// 脱离、滑回底部又跟上，视口变高变矮也不用谁来重新钉 Y。行的身份是每条
 	// 弹幕的序号（danmuLine.Seq）。
-	PanelList ui.ListState
+	PanelList components.ListState
 	panelSeen int
 	// panelMark 是上次结算时日志里最后一条的身份。日志满 danmuLogMax 后
 	// 长度恒定，只有回看「上次看到哪一条」才能数出新弹幕（见 panelNewDanmu）。
@@ -318,7 +316,7 @@ type App struct {
 	SubList  ui.ListState
 	// FollowsGrid 是关注页主播行的网格：虚拟化，只建可见的行；滚动位置和
 	// 行的身份都由它自己保持。
-	FollowsGrid ui.GridState
+	FollowsGrid components.GridState
 	scrollKey   string
 
 	// 最近一次网格布局：列数与卡片宽度。启动层判断「首屏封面是否到齐」要用
@@ -493,7 +491,7 @@ func newApp() *App {
 		clock:         time.Now,
 		DanmuOn:       true,
 		// 弹幕面板贴底：新弹幕推着底走，用户上滑就脱离。
-		PanelList:     ui.ListState{FollowEnd: true},
+		PanelList:     components.ListState{FollowEnd: true},
 		DanmuFont:     20,
 		DanmuDur:      10 * time.Second,
 		DanmuArea:     0.5,
@@ -751,9 +749,14 @@ func (a *App) Shell(c *ui.Context) {
 		// 通知：先认领本帧排队的条目，再画视口。视口挂在 MyGo 的 overlay
 		// 层上，排在整棵视图之后——不管当前是哪个表面、模态开没开，它都
 		// 在最上面。视口常驻，最后一条也要把退场过渡播完。
+		//
+		// 长相与入场交给 Onevra 的 Toasts：它建自己的 ToastViewportBase，
+		// 所以这里不能再包一层（toast.go:69-70：先建的视口保留自己的样子）。
+		// 队列、计时、悬停暂停、Esc 与读屏播报仍然由 MyGo 管。
 		a.flushToasts(c)
-		ui.ToastViewportBase(c, func(viewport ui.Element, toasts []ui.Toast) {
-			a.toastViewport(c, viewport, toasts)
+		components.Toasts(c, components.ToastOptions{
+			Placement: components.ToastBottomEnd,
+			Inset:     18,
 		})
 		// 播放页的快捷键说明
 		if a.ShortcutsOpen {
@@ -818,7 +821,7 @@ func (a *App) categoryBarSkeleton(c *ui.Context) {
 	ui.Row(c).Height(52).Padding(0, 16, 0, 16).Radius(theme.RadiusXL).
 		Background(theme.BgSecondary).Gap(10).
 		AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "正在加载分区…").FontSize(theme.TextSM).
+		components.Text(c, "正在加载分区…").FontSize(theme.TextSM).
 			TextColor(theme.TextTertiary)
 	})
 }
@@ -865,18 +868,18 @@ func (a *App) errorBar(c *ui.Context, text string, onRetry func()) {
 	ui.Row(c).Padding(10, 14, 10, 14).Gap(12).Radius(theme.RadiusMD).
 		AlignItems(ui.Center).Background(theme.BgSecondary.Mix(theme.Danger, 0.08)).
 		Children(func() {
-			ui.Text(c, text).FontSize(theme.TextSM).TextColor(theme.TextPrimary).Grow(1)
-			retry := ui.Row(c).Height(30).Padding(0, 14, 0, 14).Gap(6).
-				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).Label("重试").
-				Background(theme.FillTertiary)
-			retry.Background(hoverSurface(retry, "retry-bg", retry.Hovered(), theme.FillSecondary))
+			components.Text(c, text).FontSize(theme.TextSM).TextColor(theme.TextPrimary).Grow(1)
+			retry := components.Button(c, "", components.ButtonOutline)
+			retry.Height(30).Padding(0, 14).Radius(theme.RadiusFull).
+				FontSize(theme.TextXS).Label("重试")
 			if retry.Clicked() && onRetry != nil {
 				onRetry()
 			}
 			retry.Children(func() {
-				ui.Icon(c, iconSync).FontSize(12).TextColor(theme.DangerInk)
-				ui.Text(c, "重试").FontSize(theme.TextXS).FontWeight(600).
-					TextColor(theme.DangerInk)
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					components.Icon(c, iconSync).FontSize(12).TextColor(theme.DangerInk)
+					components.Text(c, "重试").FontWeight(600).TextColor(theme.DangerInk)
+				})
 			})
 		})
 }
@@ -978,7 +981,7 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 			ui.Box(c).Grow(1)
 			return
 		}
-		ui.Scroll(c).Grow(1).Children(func() {
+		components.ScrollView(c, components.ScrollViewOptions{}).Grow(1).Children(func() {
 			a.emptyGrid(c, view)
 		})
 		return
@@ -1054,42 +1057,29 @@ func (a *App) emptyGrid(c *ui.Context, view gridView) {
 		}
 	}
 	ui.Column(c).Padding(88, 16, 88, 16).Gap(8).Center().Children(func() {
-		ui.Text(c, "这里还没有直播间").FontSize(theme.TextMD).FontWeight(600).
+		components.Text(c, "这里还没有直播间").FontSize(theme.TextMD).FontWeight(600).
 			TextColor(theme.TextSecondary)
-		ui.Text(c, hint).FontSize(theme.TextSM).
+		components.Text(c, hint).FontSize(theme.TextSM).
 			TextColor(theme.TextTertiary)
 		ui.Row(c).Gap(10).Padding(10, 0, 0, 0).Children(func() {
 			if view.allCategories {
-				// 品牌色底走 hoverSurfaceRest：先 Background(Accent) 再
-				// Background(hoverSurface(...)) 会把常态抹成透明，
-				// 这颗主按钮就只剩一行深色字浮在背景上。
-				clear := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
-					Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-					Label("查看全部分区")
-				clear.Background(hoverSurfaceRest(clear, "empty-clear-bg", clear.Hovered(),
-					theme.Accent, theme.AccentHover))
+				// 按钮交给 Onevra：尺寸、圆角、字号都在返回的元素上覆盖，
+				// 字色与底色来自主题（Primary 就是 Accent + AccentText）。
+				// 换掉的是悬停反馈：原来走 hoverSurfaceRest 的弹簧渐亮，
+				// Onevra 在构造期把 hover 面定稿，这里是瞬时切换。
+				clear := components.Button(c, "查看全部分区", components.ButtonPrimary)
+				clear.Height(34).Padding(0, 16).Radius(theme.RadiusFull).FontSize(theme.TextSM)
 				if clear.Clicked() {
 					// 换到「全部」是换了一份列表：必须重新取。
 					a.reloadRooms()
 				}
-				clear.Children(func() {
-					ui.Text(c, "查看全部分区").FontSize(theme.TextSM).FontWeight(600).
-						TextColor(theme.AccentText)
-				})
 			}
 
-			retry := ui.Row(c).Height(34).Padding(0, 16, 0, 16).Gap(6).
-				Radius(theme.RadiusFull).Center().Cursor(ui.CursorPointer).
-				Label("重试")
-			retry.Background(hoverSurfaceRest(retry, "retry-bg", retry.Hovered(),
-				theme.FillTertiary, theme.FillSecondary))
+			retry := components.Button(c, "重新加载", components.ButtonSecondary)
+			retry.Height(34).Padding(0, 16).Radius(theme.RadiusFull).FontSize(theme.TextSM)
 			if retry.Clicked() && view.retry != nil {
 				view.retry()
 			}
-			retry.Children(func() {
-				ui.Text(c, "重新加载").FontSize(theme.TextSM).FontWeight(600).
-					TextColor(theme.TextSecondary)
-			})
 		})
 	})
 }
@@ -1102,15 +1092,15 @@ func (a *App) gridFooter(c *ui.Context, avail float32, n int, view gridView) {
 			switch {
 			case view.loadingMore:
 				ui.Row(c).Gap(8).Center().Children(func() {
-					spinner(c, 14)
-					ui.Text(c, "正在加载更多…").FontSize(theme.TextSM).
+					components.Spinner(c, components.SpinnerRing).Size(14, 14)
+					components.Text(c, "正在加载更多…").FontSize(theme.TextSM).
 						TextColor(theme.TextSecondary)
 				})
 			case view.hasMore:
-				ui.Text(c, "继续下滑加载更多").FontSize(theme.TextXS).
+				components.Text(c, "继续下滑加载更多").FontSize(theme.TextXS).
 					LetterSpacing(0.02).TextColor(theme.TextTertiary)
 			default:
-				ui.Text(c, fmt.Sprintf("已显示最近 %d 条", n)).FontSize(theme.TextXS).
+				components.Text(c, fmt.Sprintf("已显示最近 %d 条", n)).FontSize(theme.TextXS).
 					LetterSpacing(0.02).TextColor(theme.TextTertiary)
 			}
 		})
@@ -1238,9 +1228,6 @@ func (a *App) toastTone(msg, tone string) {
 	a.invalidateWindows()
 }
 
-// toastMotionDur 是通知入场/退场过渡的时长，和原来的入场动画一致。
-const toastMotionDur = theme.MotionToggle
-
 // toastLife 是通知停留的时长。错误要给足读完的时间，其余保持原来的 3.2 秒。
 func toastLife(tone string) time.Duration {
 	if tone == toastError {
@@ -1269,78 +1256,6 @@ const (
 	toastInfo    = "info"
 	toastError   = "error"
 )
-
-// toastIcon 是每种色调左侧的那枚图标。
-func toastIcon(tone string) *ui.SVG {
-	switch tone {
-	case toastSuccess:
-		return iconCheck
-	case toastError:
-		return iconTriangleAlert
-	}
-	return iconAlert
-}
-
-// toastIconColor 是图标颜色。通知压在任意表面上，必须用墨底上的固定色：
-// SuccessInk / DangerInk 是对卡片底推导的，浅色主题里放到深墨底上就没
-// 对比了。
-func toastIconColor(tone string) ui.Color {
-	switch tone {
-	case toastSuccess:
-		return theme.MediaSuccessInk
-	case toastError:
-		return theme.MediaDangerInk
-	}
-	return theme.MediaTextDim
-}
-
-// toastViewport 画右下角的通知栈。
-//
-// 外观走「压在画面上的墨」那一组令牌，不跟配色走：通知会出现在首页、
-// 播放页、全屏画面上，跟着配色变浅的底色会直接融进背景——这正是旧的
-// 自绘 toast「经常注意不到」的原因。深墨底 + 亮字 + 大阴影，任何表面
-// 上都读得出来。
-//
-// 尺寸沿用原来的胶囊：右/下 18、min-height 38、padding 7 8 7 12、圆角
-// 12、15px 图标、间距 9。MyGo 管队列（最多 3 条）、计时、悬停暂停、
-// 读屏播报与 Esc 关闭；这里只负责长相和入场/退场。
-func (a *App) toastViewport(c *ui.Context, viewport ui.Element, toasts []ui.Toast) {
-	w, _ := c.Size()
-	maxW := w - 36
-	if maxW > 420 {
-		maxW = 420
-	}
-	viewport.Padding(18).AlignItems(ui.End).Gap(8)
-	for _, t := range toasts {
-		box := ui.ToastBase(c, t)
-		// Center()：主轴和交叉轴都居中。MinHeight 撑出来的余量由它分配，
-		// 文字才不会贴着上边。
-		root := box.Root.Row().Gap(9).Center().MaxWidth(maxW).
-			MinHeight(38).Padding(7, 8, 7, 12).Radius(theme.RadiusMD).
-			Background(theme.MediaPanel).Border(1, theme.MediaHair).
-			Shadow(0, 22, 56, -22, theme.ShadowPanel).
-			Shadow(0, 4, 12, 0, theme.ShadowContact)
-		motion := ui.ElementTransition{
-			Duration: toastMotionDur,
-			Ease:     ui.EaseOut,
-			Position: true,
-			Size:     true,
-			Enter:    &ui.Motion{Y: 8},
-			Exit:     &ui.Motion{},
-		}
-		if c.Preferences().ReduceMotion {
-			motion.Duration = -1
-			motion.ExitDuration = -1
-		}
-		root.Transition(motion)
-		root.Children(func() {
-			ui.Icon(c, toastIcon(t.Type)).FontSize(15).
-				TextColor(toastIconColor(t.Type))
-			ui.Text(c, t.Title).FontSize(theme.TextSM).
-				TextColor(theme.MediaText).SingleLine()
-		})
-	}
-}
 
 // activeTab 返回顶栏该高亮的 tab。
 //
@@ -1572,10 +1487,10 @@ func (a *App) platformTabs(c *ui.Context) {
 							if idx == selected {
 								ico = iconStarFilled
 							}
-							ui.Icon(c, ico).FontSize(14).TextColor(col)
+							components.Icon(c, ico).FontSize(14).TextColor(col)
 							return
 						}
-						txt := ui.Text(c, t.label).FontSize(theme.TextSM).TextColor(col)
+						txt := components.Text(c, t.label).FontSize(theme.TextSM).TextColor(col)
 						if idx == selected {
 							txt.FontWeight(600)
 						} else {
@@ -1607,7 +1522,7 @@ func (a *App) iconButton(c *ui.Context, ico *ui.SVG, label string, on func()) {
 		if hovered {
 			col = theme.TextPrimary
 		}
-		ui.Icon(c, ico).FontSize(18).TextColor(col)
+		components.Icon(c, ico).FontSize(18).TextColor(col)
 	})
 }
 
@@ -1664,7 +1579,7 @@ func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on 
 				col = theme.TextPrimary
 			}
 		}
-		ui.Icon(c, ico).FontSize(16).TextColor(col)
+		components.Icon(c, ico).FontSize(16).TextColor(col)
 		pressDim(c, down, theme.RadiusFull)
 	})
 }
