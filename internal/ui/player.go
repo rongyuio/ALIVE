@@ -83,10 +83,14 @@ func (a *App) PlayerPage(c *ui.Context) {
 				stage := ui.Box(c).Grow(1).Background(theme.Black).
 					Label("播放画面（双击全屏）")
 
-				// 悬浮 chrome 的自动隐藏：先按指针位置和空闲时长算出这一帧
-				// 的显隐，拖窗条和 chrome 都跟着它走。
-				a.syncChromeIdle(c, stage)
-				chromeOff := a.ChromeHidden
+				// 画面这一层是什么状态，一帧只求一次：状态层按它画，
+				// 浮层的显隐也按它判——状态层带着「重试」，画面没在走
+				// 的时候浮层不能自己让位。
+				state := a.stageStateNow()
+				// 悬浮浮层的显隐：顶栏、控制条、窗口按钮和它们打开的下拉
+				// 全部读这一份，先在这一帧定下来，后面照它画。
+				a.syncChrome(c, state)
+				chromeOff := a.chrome.Hidden
 				if chromeOff {
 					// 空闲态：控件让位之后连光标一起藏掉
 					stage.Cursor(ui.CursorNone)
@@ -96,7 +100,7 @@ func (a *App) PlayerPage(c *ui.Context) {
 					a.danmuLayer(c)
 					// 状态层压在画面和弹幕之上、chrome 之下：它是 z-index 15，
 					// 控制条和顶栏是 20。
-					a.stageOverlay(c)
+					a.stageOverlay(c, state)
 					a.bufferingPill(c)
 					a.noticePill(c)
 					// 窗口全屏时顶栏没了，画面上得有一块能拖动窗口的区域
@@ -142,6 +146,10 @@ func (a *App) PlayerPage(c *ui.Context) {
 				// （应用内沉浸、任务栏还在）照常保留——那边弹幕列表本身就是
 				// 功能，没有理由跟着画面一起消失。收起 / 展开仍然走面板左沿
 				// 那颗小舌。
+				//
+				// 它不跟着浮层的自动隐藏走：弹幕列表是内容，不是控件，而且
+				// 它自己有收起入口。跟着计时一起淡掉只会在画面右边留一条
+				// 宽度没变、里面什么都没有的空洞。
 				if !a.sysFullscreen() {
 					a.danmuPanel(c)
 				}
@@ -150,92 +158,152 @@ func (a *App) PlayerPage(c *ui.Context) {
 	})
 }
 
-// 悬浮 chrome 的自动隐藏参数：2800ms 后淡出，280ms 淡完。
+// 浮层的自动隐藏参数：2800ms 后淡出，280ms 淡完。
 const (
 	chromeIdleAfter = 2800 * time.Millisecond
 	chromeFadeDur   = theme.MotionSurface
 )
 
-// 指针落在这两条带里就算「手在 chrome 上」：顶栏（top 14 + 44 高）和
-// 控制条（bottom 12 + 44 高），各自留一点余量，贴着边走也别让它跑掉。
-const (
-	chromeTopBand    = 70
-	chromeBottomBand = 76
-)
+// playerChrome 是播放页所有浮层的显隐：一份状态，一个判据。
+//
+// 顶栏（返回 + 身份胶囊）、控制条和它上面的清晰度 / 线路下拉、弹幕设置和
+// 过滤面板、两种全屏下的窗口按钮，全部读这一份。以前它们各读各的：窗口
+// 模式下顶栏常驻、控制条自己计时、四个面板写死在「开着就不许隐藏」里，
+// 于是同一屏画面里跑着三套逻辑，指针一动，有的回来了有的没有。
+//
+// 不在这份状态里的是「内容」和「状态」：弹幕列表（自己有收起入口）、
+// 缓冲中 / 降档提示这两个小胶囊、画面上的状态层（拉流中 / 未开播 / 失败）。
+// 它们说的是画面怎么了，不是可以点的按钮，跟着计时一起消失只会让人错过
+// 一条正在说的信息。
+type playerChrome struct {
+	Hidden  bool
+	idleAt  time.Time // 指针最后一次动的时刻：空闲从这里算起
+	ptrX    float32
+	ptrY    float32
+	ptrSeen bool // 指针在这个窗口里出现过：见过之后「不在窗口里」才叫离开
+	full    bool // 上一帧是否全屏：进出全屏要先把浮层亮出来
+}
 
-// syncChromeIdle 决定这一帧悬浮 chrome（顶栏 / 控制条 / 窗口按钮）要不要淡出。
+// syncChrome 是播放页浮层显隐的唯一判据。
 //
-// 时序：指针静止 2800ms 之后淡出，一动立刻回来；暂停、信息岛
-// 展开、任一下拉或面板开着时一律常显——那几种状态人正在操作，按钮不能自己
-// 跑掉。进出全屏也先把 chrome 亮出来，别让人切回来的那一刻对着空画面找按钮。
+// 规则只有两条，和系统播放器一样：
 //
-// 指针活动靠 stage 的 PointerPosition 读：它会顺手把 stage 标成
-// flagTrackPointer，于是指针在画面上移动时 MyGo 一定来一帧，哪怕停的是
-// 没有控件的空白处（hover 链没变也一样）。
-func (a *App) syncChromeIdle(c *ui.Context, stage ui.Element) {
+//	指针离开窗口 → 立刻让位，不等计时；
+//	指针在窗口里停住 chromeIdleAfter → 一起让位（连光标一起藏掉）。
+//
+// 一动就全回来。判「在窗口里」用的是窗口根元素，不是舞台：舞台只是画面
+// 那一块，指针移到右侧弹幕栏、顶栏或窗口按钮上时它报「不在画面上」，于是
+// 浮层在手底下自己跑掉——那种「按坐标猜手在不在」就是以前那套。
+//
+// 「离开窗口」排在最前：人不在这一屏了，也就是最该让位的时候，画面在
+// 不在走都一样。剩下的判断只在指针还在窗口里时才有意义——
+//
+//	没在播（暂停等人）、状态层开着（它带着「重试」）、快捷键说明开着
+//	（模态）：一律常显，那几种时候屏幕上的字才是要点，不能自己消失；
+//	刚进出全屏：先亮出来，别让人切回来时对着空画面找按钮。
+//
+// 指针位置读 Root().PointerPosition()：它会顺手把根元素标成
+// flagTrackPointer，于是指针在窗口里动一下 MyGo 一定来一帧——哪怕动的是
+// 没有控件的空白处（hover 链没变也一样），浮层照样叫得回来。
+func (a *App) syncChrome(c *ui.Context, state stageState) {
 	now := c.Now()
-	stay := func() {
-		a.ChromeHidden = false
-		a.chromeIdleAt = now
+	show := func() {
+		a.chrome.Hidden = false
+		a.chrome.idleAt = now
 	}
 
-	// 岛自动展开的那几秒不算「人在操作」；指针停在岛上时本来就落在
-	// 顶部那条带里，下面的坐标判断已经把它兜住了。
-	if !a.focusPlaying() || a.QualityOpen || a.LineOpen ||
-		a.DanmuSettingsOpen || a.DanmuFilterOpen || a.ShortcutsOpen {
-		stay()
+	x, y, over := c.Root().PointerPosition()
+	// 「离开窗口」排在最前，而且只认「指针确实进来过」（ptrSeen）：窗口刚
+	// 建起来、指针一直没动过时也报不在，那不是人走了，只是还没有事件。
+	if !over && (a.chrome.ptrSeen || a.chrome.Hidden) {
+		// 指针不在窗口里了：立刻让位。ptrSeen 同时清掉——再回来就是
+		// 「刚进窗口」，哪怕落点还是原来那一像素，也要把浮层叫回来。
+		a.chrome.ptrSeen = false
+		a.hideChrome()
 		return
 	}
-	if full := a.playerFullscreen(); full != a.chromeFull {
-		a.chromeFull = full
-		stay()
+	moved := false
+	if over {
+		moved = !a.chrome.ptrSeen || x != a.chrome.ptrX || y != a.chrome.ptrY
+		a.chrome.ptrSeen = true
+		a.chrome.ptrX, a.chrome.ptrY = x, y
+	}
+	if moved {
+		// 刚进窗口，或者在窗口里动了：全亮出来。
+		show()
+		return
+	}
+	if !a.focusPlaying() || state != stageLive || a.ShortcutsOpen {
+		show()
+		return
+	}
+	// 进出全屏先把浮层亮出来：切回来的那一刻不该对着空画面找按钮。
+	if full := a.playerFullscreen(); full != a.chrome.full {
+		a.chrome.full = full
+		show()
 		return
 	}
 
-	_, winH := c.Size()
-	stageH := winH
-	if !a.playerFullscreen() {
-		stageH -= theme.NavbarHeight
+	if a.chrome.idleAt.IsZero() {
+		a.chrome.idleAt = now
 	}
-	x, y, over := stage.PointerPosition()
-	if over != a.chromePtrOver || x != a.chromePtrX || y != a.chromePtrY {
-		a.chromePtrOver, a.chromePtrX, a.chromePtrY = over, x, y
-		stay()
-		return
-	}
-	if over && (y <= chromeTopBand || y >= stageH-chromeBottomBand) {
-		stay()
-		return
-	}
-
-	if a.chromeIdleAt.IsZero() {
-		a.chromeIdleAt = now
-	}
-	idle := now.Sub(a.chromeIdleAt)
+	idle := now.Sub(a.chrome.idleAt)
 	if idle >= chromeIdleAfter {
-		a.ChromeHidden = true
+		a.hideChrome()
 		return
 	}
 	// 画面完全静止（没视频帧、没弹幕）时不会有别的帧，靠这一帧收尾。
-	// 基准固定在 chromeIdleAt 上，每帧重排也不会把到点时刻往后推。
+	// 基准固定在 idleAt 上，每帧重排也不会把到点时刻往后推。
 	c.After(chromeIdleAfter - idle)
 }
 
-// chromeFade 让一块 chrome 跟着自动隐藏淡出，返回当前透明度。
+// hideChrome 让全部浮层一起让位，顺手把开着的浮层收掉。
 //
-// 隐藏靠 opacity 过渡；这边 opacity 走 AnimateTo，隐藏态再补一个
-// IgnoreInput(true)——只淡出不够：淡到 0 的顶栏和控制条仍然占着命中矩形，
-// 画面上的双击和点击播放会被它们吃掉；而且它们还在 Tab 序列里，读屏会念到
-// 一组"看不见的按钮"。IgnoreInput 同时解决这两件（指针穿透 + 不进焦点），
-// 和 MyGo 文档里「hover 才显示的按钮要常驻 + IgnoreInput」是同一条。
+// 下拉开着的时候指针停住，触发条和菜单一起淡出；菜单必须真的关掉：只是
+// 「看不见但还开着」的话，指针一动它就原样弹回来，而人早就忘了自己点过它。
+// suppress 是给 hover 开菜单的那两个下拉用的——关掉那一帧指针还停在触发条
+// 上，不压住的话 hover 当场又把它拉开。
+func (a *App) hideChrome() {
+	if a.chrome.Hidden {
+		return
+	}
+	a.chrome.Hidden = true
+	a.chrome.idleAt = time.Time{}
+	a.QualityOpen = false
+	a.LineOpen = false
+	a.QualityHover.suppress = true
+	a.LineHover.suppress = true
+	a.DanmuSettingsOpen = false
+	a.DanmuFilterOpen = false
+}
+
+// chromeFade 让一块浮层跟着隐藏淡出，返回当前透明度。
+//
+// 隐藏靠 opacity 过渡；隐藏态再补三样，缺一样都留个坑：
+//
+//	IgnoreInput  淡到 0 的顶栏和控制条仍然占着命中矩形，画面上的双击和
+//	             点击播放会被它们吃掉；它们也还在 Tab 序列里。
+//	AccessHidden 读屏仍然会念到一组「看不见的按钮」（IgnoreInput 明确
+//	             把元素留给辅助技术，见 element.go 的文档）。
+//	Translate    调用方自己补：控制条往下让 10px、顶栏往上让 10px。
+//
+// 挂在谁身上，谁就得有自己的身份：容器建之前给 c.Key(...)。MyGo 的元素
+// 身份按位置派生（third_party/mygo/ui/context.go:247 的
+// `e.id = mix(p.id, nchild+kind<<56)`），而播放页里排在浮层之前的兄弟是
+// 条件建的——窗口全屏的拖窗区、画面状态层、缓冲和降档两个小胶囊。兄弟走掉
+// 或者回来的那一帧，后面所有元素的身份都挪一位，AnimateTo 的通道跟着新建，
+// 而新通道是从目标值开始的：淡出变成一帧到位。实测的就是这个——窗口全屏下
+// 顶栏一帧消失（拖窗区让位那一帧正好被撤掉），回来时又轮到控制条一帧出现。
+// 挂了 Key，身份不再取决于前面站着谁。
 func (a *App) chromeFade(e ui.Element) float32 {
 	target := float32(1)
-	if a.ChromeHidden {
+	if a.chrome.Hidden {
 		target = 0
 	}
 	op := e.AnimateTo("chrome-fade", target, theme.EaseOut(chromeFadeDur))
 	e.Opacity(op)
-	e.IgnoreInput(a.ChromeHidden)
+	e.IgnoreInput(a.chrome.Hidden)
+	e.AccessHidden(a.chrome.Hidden)
 	return op
 }
 
@@ -289,7 +357,7 @@ var windowSetFullScreen = func(w *mygo.Window, on bool) {
 // 控制条又已经不在了，人没有任何办法把窗口变回普通窗口。WinFull 留着
 // 不走，下次进直播间会直接是全屏态，看着像「退出没生效」。
 //
-// 其余是播放页的跨帧状态：控制条自动隐藏、几个浮层的开关、拖面板和拖
+// 其余是播放页的跨帧状态：浮层显隐、几个浮层的开关、拖面板和拖
 // 音量的标记。不清的话下次进直播间会以上一次的隐藏 / 展开态开局。
 //
 // 幂等，每帧调用都没问题；判据由调用方给（Router 不是播放页）。
@@ -298,8 +366,7 @@ func (a *App) leavePlayer() {
 	if windowFullScreen(a.Win) {
 		windowSetFullScreen(a.Win, false)
 	}
-	a.ChromeHidden = false
-	a.chromeIdleAt = time.Time{}
+	a.chrome = playerChrome{}
 	a.QualityOpen = false
 	a.LineOpen = false
 	a.DanmuSettingsOpen = false
@@ -484,27 +551,64 @@ func backdropNeeded(stageW, stageH, videoW, videoH float32) bool {
 	return max(max(top, bottom), max(left, right)) >= theme.MediaBackdropMinBar
 }
 
-// stageOverlay 是画面上的状态层。状态一共五种：拉流中、断流重连、
-// 缓冲中、未开播、取流失败。这里先做三种——断流自动重连还没做（需要
-// ffmpeg 退出的信号），其余三种的状态都已经在 media 上。
-func (a *App) stageOverlay(c *ui.Context) {
+// stageState 是画面这一层此刻的状态。它同时决定两件事：状态层画什么，
+// 以及浮层有没有资格自己让位（syncChrome 只让 stageLive 让位）。
+//
+// 两个用户、一个判据：状态层带着「重试」和「立即刷新」，画面没在走的时候
+// 它不能跟着计时一起消失——分开各判一次，迟早会有一处漏掉某个状态。
+type stageState int
+
+const (
+	// stageLive 是画面真在走：没有状态层。
+	stageLive stageState = iota
+	// stageFetching 是正在取流，或者解码器还没出首帧。
+	stageFetching
+	// stageFetchFailed 是取流失败，平台或者网络没给出地址。
+	stageFetchFailed
+	// stagePlaybackFailed 是播放器开出来了但解码失败（首片坏、编码不支持）。
+	stagePlaybackFailed
+	// stageOffline 是平台说这一间没开播。
+	stageOffline
+)
+
+// stageStateNow 求这一帧画面是什么状态。
+//
+// 转封装就绪不等于画面就绪：播放器开出来之后，Media Foundation 还要下首片、
+// 建解码器，实测 2~4 秒才出第一帧。所以加载态延到播放器真的 Ready 为止，
+// 否则观感是「loading → 黑屏几秒 → 突然有画面」。
+//
+// 播放器开出来了但解码失败时它永远 Ready 不了，必须单独一档，不然会一直
+// 卡在加载层上。
+func (a *App) stageStateNow() stageState {
 	m := &a.media
 	if m.roomKey() == "" {
-		return
+		return stageLive
 	}
-
 	switch {
-	// 转封装就绪不等于画面就绪。播放器开出来之后，Media Foundation 还要
-	// 下首片、建解码器，实测 2~4 秒才出第一帧。原来 loading 一撤覆盖层就
-	// 没了，而 Video 还是黑的——观感就是「loading → 黑屏几秒 → 突然有画面」。
-	// 所以这里把加载态延到播放器真的 Ready 为止。
 	case m.isLoading() || (m.eng() != nil && !m.eng().Ready() && m.eng().Err() == nil):
+		return stageFetching
+	case m.errText() != "":
+		return stageFetchFailed
+	case m.eng() != nil && m.eng().Err() != nil:
+		return stagePlaybackFailed
+	case m.streamNow().RoomID != "" && !m.streamNow().Live:
+		return stageOffline
+	}
+	return stageLive
+}
+
+// stageOverlay 画画面上的状态层。画哪一档由 stageStateNow 求，这里只负责画。
+func (a *App) stageOverlay(c *ui.Context, state stageState) {
+	m := &a.media
+
+	switch state {
+	case stageFetching:
 		a.overlayLayer(c, func() {
 			spinner(c, 30)
 			a.overlayText(c, "正在拉取直播流…")
 		})
 
-	case m.errText() != "":
+	case stageFetchFailed:
 		a.overlayLayer(c, func() {
 			a.overlayText(c, m.errText())
 			// 多线路平台失败过才提示，单线路说了也没用
@@ -516,15 +620,13 @@ func (a *App) stageOverlay(c *ui.Context) {
 			a.overlayButton(c, "重试", a.retryStream)
 		})
 
-	// 播放器开出来了但解码失败（首片坏、编码不支持）。这种时候它永远
-	// Ready 不了，不单独列一个分支就会一直卡在加载层上。
-	case m.eng() != nil && m.eng().Err() != nil:
+	case stagePlaybackFailed:
 		a.overlayLayer(c, func() {
 			a.overlayText(c, "播放失败，请重试或切换线路")
 			a.overlayButton(c, "重试", a.retryStream)
 		})
 
-	case m.streamNow().RoomID != "" && !m.streamNow().Live:
+	case stageOffline:
 		a.overlayLayer(c, func() {
 			// 58 圆底 + 26 图标
 			icon := ui.Box(c).Size(58, 58).Radius(29).Margin(0, 0, 4, 0).
@@ -645,22 +747,19 @@ func (a *App) current() Streamer {
 // Live Activity 不该占着岛），所以它们必须有一个自己的位置——照 iPhone，
 // 那个位置就是 App 自己的顶栏。
 //
-// 两种全屏下的差别只在**常驻与否**：
+// 它和其余浮层一样随 chrome 淡出，窗口模式也不例外：以前这边常驻、控制条
+// 自己计时，同一屏画面里两套规矩。退出直播间的入口还在——动一下指针它就
+// 回来，Esc 也一直有效（shell_keys.go），不必为它留一块常驻的浮层。
 //
-//	窗口模式  常驻可见。它是唯一的退出入口（岛这时是时钟，没有 X），
-//	          跟着 chrome 淡出就等于退出入口会自己消失。
-//	两种全屏  随 chrome 淡出。画面是主角，指针不动一会儿就让位；
-//	          唤回靠动一下指针（chromeFade 自己处理）。
-//
-// 这条 Row 只是布局容器，自己不该吃指针：两种模式下它都整条压在画面顶部，
-// 不让穿透的话，返回钮与胶囊之间那段空白会吃掉「双击画面切全屏」的点击
-// （全屏时还会连拖窗条一起挡死）。按钮与胶囊是子元素，照常命中。
+// 这条 Row 只是布局容器，自己不该吃指针：它整条压在画面顶部，不让穿透的话，
+// 返回钮与胶囊之间那段空白会吃掉「双击画面切全屏」的点击（全屏时还会连
+// 拖窗条一起挡死）。按钮与胶囊是子元素，照常命中。
 func (a *App) playerTopbar(c *ui.Context) {
-	full := a.playerFullscreen()
-	row := ui.Row(c).Absolute().Top(14).Left(14).Right(14).Gap(10).PassThrough()
-	if full {
-		a.chromeFade(row)
-	}
+	// Key 不是装饰，见 chromeFade 的说明：窗口全屏时排在它前面的拖窗区是
+	// 条件建的，让位那一帧正好消失，身份一挪这条顶栏就一帧到位。
+	row := ui.Row(c.Key("player-topbar")).Absolute().Top(14).Left(14).Right(14).Gap(10).PassThrough()
+	// 淡出的同时整条往上让 10px，和控制条往下让 10px 对称。
+	row.Translate(0, -(1-a.chromeFade(row))*10)
 	row.Children(func() {
 		// ------------------------------ 返回：44 圆钮
 		//
@@ -765,7 +864,9 @@ func (a *App) playerIdentity(c *ui.Context) {
 // 只在 hover 时变白、激活时变强调色——之前给每个按钮加方块底是错的。
 func (a *App) playerControls(c *ui.Context) {
 	m := metricsFor(c)
-	dock := ui.Box(c).Absolute().Left(14).Right(14).Bottom(12)
+	// 身份用 Key 给，不用位置（见 chromeFade）：排在它前面的拖窗区会在
+	// 让位那一帧消失，按位置算的身份跟着挪，淡出就变成一帧到位。
+	dock := ui.Box(c.Key("player-dock")).Absolute().Left(14).Right(14).Bottom(12)
 	// 淡出的同时整个控制条往下让 10px
 	dock.Translate(0, (1-a.chromeFade(dock))*10)
 	dock.Children(func() {

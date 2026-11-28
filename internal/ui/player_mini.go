@@ -259,7 +259,9 @@ func (a *App) playerCaption(c *ui.Context) {
 	}
 	maximized := windowMaximized(a.Win)
 
-	row := ui.Row(c).Absolute().Top(0).Right(0).Height(32)
+	// Key 见 chromeFade：这一排排在控制条之后，前面有兄弟来去时按位置算的
+	// 身份照样会挪，窗口按钮会跟着一帧到位。
+	row := ui.Row(c.Key("player-caption")).Absolute().Top(0).Right(0).Height(32)
 	a.chromeFade(row)
 	row.Children(func() {
 		a.captionBtn(c, captionMin, "最小化", false, func() { a.Win.Minimize() })

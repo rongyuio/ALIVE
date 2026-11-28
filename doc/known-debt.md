@@ -14,7 +14,11 @@
 
 ## 真错
 
-**没有开着的。** 上一轮那五条已经全部修掉，判据留在「清掉的」里。
+| # | 位置 | 事实 | 欠的 |
+|---|---|---|---|
+| 1 | [player.go:760](../internal/ui/player.go) | 自绘按钮一律是 `ui.Box` + `Label` + `Clicked()`，没有 `Focusable()`。MyGo 只把 clickable **且** focusable 的元素报成按钮（`third_party/mygo/ui/access.go:612`），其余落到 `:616` 的「有名字就是分组」——所以读屏念的是「分组 退出直播间」，Tab 也一个都停不上去。全应用只有三处 `Focusable()`：[danmu_settings.go:115](../internal/ui/danmu_settings.go)、[player.go:1050](../internal/ui/player.go)、[watch.go:101](../internal/ui/watch.go) | 修。统一成一个带 Focusable 的按钮基元，或者干脆换成 MyGo 的 `ui.Button`。代价是整站键盘路径要重排（Tab 会一下子多出几十个站），得单独一轮做；本轮只把「同一条规则管全部浮层」修掉，没动它 |
+
+之前记的那五条已经全部修掉，判据留在「清掉的」里。
 
 ## 妥协
 
@@ -40,7 +44,7 @@
 | 24 | [state.go:288](../internal/ui/state.go) | `restore` 对 `PlatformOrder`/`FollowsSectionOrder` 做了 normalize，对 `Subs` 只挡了一组历史示例数据，对 `FollowRecords`/`WatchRooms` 的 `Platform` 字段完全不校验（只有 WatchRooms 过 `normalizeWatchRooms` 挡空串）。 | 手改/旧版写坏的文件里出现 `"douyu "`（带空格）之类的值时，会安静留下一条永远刷不到、永远匹配不上的关注记录，而且一直被写回文件。要改得先定「坏记录是丢弃还是修字段」。 |
 | 25 | [sync_panel.go:55](../internal/ui/sync_panel.go) | `bg.Clicked()` 在 children 之前求值（55），`panel.Clicked()` 在 children 里再把 `a.SyncOpen` 设回 true（67-69）。 | 这是靠「求值顺序恰好如此」来抵消遮罩点击。一旦 MyGo 改成 backdrop 先吃掉点击再建 children，或调换顺序，点面板内部就会直接关掉弹窗。要改得看框架有没有「点击是否落在某元素内」的正式接口。 |
 | 26 | [data.go:620](../internal/ui/data.go) | `Hue: float32(i*37 % 360)`，i 是这一段 chunk 里的下标。 | 位置决定色相：同一间房在首页第一页和在补页里拿到的色相不同，翻页/刷新后封面渐变色会变。改成按房间号哈希就稳定了，但那会一次性改变所有已有卡片的配色（视觉变更），得先确认可以接受。 |
-| 27 | [player.go:63](../internal/ui/player.go) | 同一帧里「是不是全屏」有两个来源：`a.playerFullscreen()` 读 `a.winFullscreen` 字段（Shell 每帧写），`:786` 那处直接问窗口。 | 两个来源在同一帧内可能不同（字段是这一帧开头写的，直接问窗口是当下）。要改得统一成一处，但那要把 `winFullscreen` 的写入时机前移到所有读者之前。 |
+| 27 | [player.go:63](../internal/ui/player.go) | 同一帧里「是不是全屏」有两个来源：`a.playerFullscreen()` 读 `a.winFullscreen` 字段（Shell 每帧写），`:948` 那处直接问窗口。 | 两个来源在同一帧内可能不同（字段是这一帧开头写的，直接问窗口是当下）。要改得统一成一处，但那要把 `winFullscreen` 的写入时机前移到所有读者之前。 |
 
 ## 取舍
 

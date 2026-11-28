@@ -363,14 +363,10 @@ type App struct {
 	// 而不是画一个点了会 panic 的按钮。
 	CheckUpdates func()
 
-	// 播放页悬浮 chrome（顶栏 / 控制条 / 窗口按钮）的自动隐藏，
-	// 指针静止 2.8 秒后淡出，一动就回来。
-	ChromeHidden  bool
-	chromeIdleAt  time.Time // 空闲计时的起点：指针最后一次活动的时刻
-	chromePtrX    float32
-	chromePtrY    float32
-	chromePtrOver bool // 指针是否还停在画面上
-	chromeFull    bool // 上一帧是否处于全屏：进出全屏要先把 chrome 亮出来
+	// 播放页所有浮层（顶栏 / 控制条 / 下拉 / 窗口按钮）的显隐：一份状态，
+	// 一个判据（syncChrome）。指针在窗口里停住 2.8 秒一起让位，指针离开
+	// 窗口立刻让位，一动就全回来。
+	chrome playerChrome
 
 	// 上一帧的窗口内容尺寸。窗口刚变过的那一帧，stage 的 LayoutBounds 还是
 	// 旧布局，拿它判黑边会晚一帧——拖窗时黑边区就会闪一下纯黑。
