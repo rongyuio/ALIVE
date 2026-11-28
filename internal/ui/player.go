@@ -980,7 +980,10 @@ func (a *App) playerControls(c *ui.Context) {
 // 都归一到同一个墨迹高度和同一个描边粗细，所以这里给同一个字号就够。
 // 以前这里是 24 / 26 两档，靠给矮字形放大字号来补齐墨迹——代价是描边
 // 跟着粗 10%，一排里粗细不齐，而且换图标就得重量一次。
-const playerIconSize float32 = 24
+//
+// 24 → 21：描边在 icons.go 已经压到光栅器的下限（1.7，再往下画出来一样），
+// 想让这一排轻一点只能动绝对尺寸。
+const playerIconSize float32 = 21
 
 // playerIconHit 是控制条图标按钮的点击热区；观测墙用同一套按钮但缩到 24。
 const playerIconHit float32 = 30

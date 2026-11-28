@@ -128,10 +128,10 @@ func (a *App) subIndex(s Subscription) int {
 // 取消订阅放在这一行最右侧，和首页分区栏的「＋订阅分区」同一个位置、
 // 同一套按钮语言。
 func (a *App) subscribeRow(c *ui.Context) {
+	// 空订阅不画任何东西：这一行是二级分级，没有分级就没有行。说明由
+	// 内容区的空态承担（subscribeEmpty）——两处各说一遍同一句话，用户读到
+	// 的第一条还是个只占一行、下面立刻重复的横条。
 	if len(a.Subs) == 0 {
-		components.Text(c, "还没有订阅分区。进入任意主播列表，在分区栏点「订阅分区」即可加到这里。").
-			FontSize(theme.TextXS).TextColor(theme.TextTertiary).
-			Padding(0, 4, 0, 4)
 		return
 	}
 	chips := a.subChips()

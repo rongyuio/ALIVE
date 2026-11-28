@@ -38,7 +38,15 @@ func iconSVGThin(inner string) *ui.SVG {
 // 必须保比例，所以上限由最宽的那个决定，不是随便取的一个整数。
 const (
 	iconInkTarget float32 = 19.5
-	iconStroke    float32 = 2
+	// iconStroke 是归一化之后的描边粗细。
+	//
+	// 字形被缩到 19.5 高，笔画却没有跟着缩——下面 fitSVG 把缩放反除了
+	// （stroke/k 配 scale(k)），所以笔画恒等于这个数。于是 19.5 高的图形上
+	// 画 2px，相对比例 10.3%；lucide 在 24 网格上画 2px 是 8.3%——同样标 2，
+	// 这里看上去粗两成多。24px 那排播放控制条最明显。
+	//
+	// 1.7 / 19.5 = 8.7%，落在 lucide 那档上。
+	iconStroke float32 = 1.7
 )
 
 // fitIcon 把一个 lucide 字形归一到 iconInkTarget 高、iconStroke 粗。

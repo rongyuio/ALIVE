@@ -15,7 +15,7 @@ import (
 const (
 	syncDialogW float32 = 520
 	syncBtnH    float32 = 32
-	syncTabH    float32 = 28
+	syncTabH    float32 = 34
 	// 页签行的几何：图标宽、图标与文字间距、左右 padding、页签间距。
 	syncTabIcoW float32 = 14
 	syncTabGap  float32 = 2
@@ -178,12 +178,15 @@ func (a *App) syncTab(c *ui.Context, t syncTabItem, w float32, active bool) {
 		if active {
 			rest, on = theme.AccentText, theme.AccentText
 		}
-		col := hoverInk(tab, "sync-tab-ink-all", tab.Hovered(), rest, on)
+		// 着色只在这一处动一次：hoverInk 里那条弹簧已经把颜色算出来了，
+		// 图标和文字直接吃结果。以前它们各自又对 col 跑了一遍 AnimateColor，
+		// 于是换页签时颜色要过两层弹簧——第一层还没走完，第二层的目标已经在
+		// 动，看着比平台 tab 慢半拍还发飘。平台 tab 那边一直是单层的
+		// （home.go:1480「col := hoverInk(...)」→ TextColor(col)）。
+		col := hoverInk(tab, "sync-tab-ink-"+t.id, tab.Hovered(), rest, on)
 		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
-			ico := components.Icon(c, t.ico).FontSize(syncTabIcoW)
-			ico.TextColor(ico.AnimateColor("sync-tab-ico-"+t.id, col, theme.Slide()))
-			txt := components.Text(c, t.label).FontSize(theme.TextXS)
-			txt.TextColor(txt.AnimateColor("sync-tab-ink-"+t.id, col, theme.Slide()))
+			components.Icon(c, t.ico).FontSize(syncTabIcoW).TextColor(col)
+			txt := components.Text(c, t.label).FontSize(theme.TextXS).TextColor(col)
 			if active {
 				txt.FontWeight(600)
 			} else {
@@ -200,7 +203,7 @@ func (a *App) syncExportBody(c *ui.Context) {
 		a.syncSnapshot(c)
 		a.syncFeedback(c)
 		ui.Row(c).Justify(ui.End).Children(func() {
-			a.syncButton(c, syncActExport, iconUpload, "保存到文件…", true, a.exportConfig, nil)
+			a.syncButton(c, syncActExport, iconUpload, "保存到文件", true, a.exportConfig, nil)
 		})
 	})
 }
@@ -213,25 +216,19 @@ func (a *App) syncImportBody(c *ui.Context) {
 		plan := a.SyncPlan
 		if plan == nil {
 			a.syncFeedback(c)
-			// 没有待导入的文件时，页面只有一个入口。刚做完一次导入时不再
-			// 顶一句「尚未选择文件」——结果提示已经说明了状态。
-			ui.Column(c).Center().Gap(theme.Space3).Padding(theme.Space2, 0, theme.Space1, 0).
+			// 没有待导入的文件时，页面只有一个入口。不摆空状态的图标框和
+			// 「尚未选择文件」：这张面孔里唯一的动作就是下面那颗按钮，
+			// 再来一块灰底框加一句它自己的说明，全是废话。
+			ui.Column(c).Center().Padding(theme.Space2, 0, theme.Space1, 0).
 				Children(func() {
-					if a.SyncNotice == "" && a.SyncError == "" {
-						ui.Box(c).Size(40, 40).Radius(theme.RadiusFull).Center().
-							Background(theme.FillQuaternary).Children(func() {
-							components.Icon(c, iconDownload).FontSize(19).TextColor(theme.TextTertiary)
-						})
-						components.Text(c, "尚未选择文件").FontSize(theme.TextXS).TextColor(theme.TextTertiary)
-					}
-					a.syncButton(c, syncActImport, iconDownload, "选择文件…", true, a.pickImportFile, nil)
+					a.syncButton(c, syncActImport, iconDownload, "选择文件", true, a.pickImportFile, nil)
 				})
 			return
 		}
 
 		a.syncPlanCard(c, plan)
 		ui.Row(c).Gap(theme.Space2).Justify(ui.End).Children(func() {
-			a.syncButton(c, syncActImport, iconDownload, "重新选择…", false, a.pickImportFile, nil)
+			a.syncButton(c, syncActImport, iconDownload, "重新选择", false, a.pickImportFile, nil)
 			a.syncButton(c, syncActImport, iconX, "取消", false, a.cancelImport, nil)
 			if !plan.empty() {
 				a.syncButton(c, syncActImport, iconCheck, "确认导入", true, a.confirmImport, nil)

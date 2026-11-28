@@ -73,11 +73,12 @@ func (a *App) setFocus(s *roomSession, intent focusIntent) {
 			s.playing = true
 			if s.volume <= 0 {
 				// 这一间上次被静音过。点开它就是要听，恢复到静音前的值；
-				// 没有记忆时给一个能听见的默认音量。
+				// 没有记忆时回落到默认音量——以前这里硬写 0.6，和
+				// DefaultVolume 是两份语义，导入过配置就会跳。
 				if a.volumeBeforeMute > 0 {
 					s.volume = a.volumeBeforeMute
 				} else {
-					s.volume = 0.6
+					s.volume = a.DefaultVolume
 				}
 			}
 		}

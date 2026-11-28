@@ -264,8 +264,21 @@ func (a *App) followsSectionTab(c *ui.Context, id string) {
 	if dragged, dropped := ui.Drop[string](tab); dropped && dragged != id {
 		a.moveFollowsSection(dragged, id)
 	}
+	// 拖动中的那一格必须带着自己的底色走。
+	//
+	// 选中态平时由下面那枚滑块画（AccentSoft），滑块是兄弟节点、不跟着指针
+	// 走。文字一旦离开它，AccentInk——为软强调底配的深色——就落在面板底上，
+	// 黑叠黑，一个字都看不见。顶栏平台 tab 是同一条（home.go 那段）。
+	//
+	// 原来这里是把整格降到 0.35，那只会让它更看不见。
 	if tab.Dragging() {
-		tab.Opacity(0.35)
+		if selected {
+			tab.Background(theme.AccentSoft)
+		} else {
+			tab.Background(theme.FillQuaternary)
+		}
+		tab.Shadow(0, 6, 16, 0, theme.ShadowPanel).
+			Shadow(0, 2, 6, 0, theme.ShadowContact)
 	}
 	tab.Children(func() {
 		txt := components.Text(c, name).FontSize(groupFont)
@@ -351,9 +364,17 @@ func (a *App) followsActions(c *ui.Context) {
 		}
 		// 展开由聚焦边沿触发一次，Esc 之后不再按 FocusWithin 每帧翻回来。
 		// CancelFocus 只清待处理请求，放不掉已生效焦点，所以不能靠它收起。
+		//
+		// 收起同样走边沿：焦点离开的那一帧把开关关掉。分区搜索那边是点外部时
+		// 由浮层的 Dismissed 顺手收的（category_bar.go:353），这里没有浮层，
+		// 不自己按失焦边沿做，开关就再也不会变回 false——焦点走了、词也空了，
+		// 框还杵在 220。
 		sfocused := search.FocusWithin()
-		if sfocused && !a.followsSearchFocused {
+		switch {
+		case sfocused && !a.followsSearchFocused:
 			a.followsSearchOpen = true
+		case !sfocused && a.followsSearchFocused:
+			a.followsSearchOpen = false
 		}
 		a.followsSearchFocused = sfocused
 		width := catSearchW

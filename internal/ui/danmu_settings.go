@@ -112,9 +112,13 @@ func (a *App) danmuColorRow(c *ui.Context, label string, color *ui.Color) {
 //
 // 描边还是用 danmuWellRing 按色块亮度算一次传进去：组件只在构造时收一个
 // Border，不给每帧重算的出口。
+//
+// Padding(0) 是必须的：ColorPicker 自带 Padding(t.Space(1)) = 4（color.go:331），
+// 那是给 48×32 的默认尺寸留的气口。缩到 38×24 之后它还留着，四周各吃掉 4，
+// 色块只剩 30×16，看着就是个没填满的方块。
 func (a *App) danmuColorWell(c *ui.Context, label string, color *ui.Color) {
 	well := components.ColorPicker(c, color)
-	well.Size(danmuWellW, danmuWellH).Radius(theme.RadiusXS).
+	well.Size(danmuWellW, danmuWellH).Padding(0).Radius(theme.RadiusXS).
 		Border(1, danmuWellRing(*color)).Label(label)
 	if well.Changed() {
 		a.markDirty()

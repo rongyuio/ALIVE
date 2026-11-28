@@ -153,5 +153,8 @@ func (a *App) toggleMute() {
 		a.setVolume(a.volumeBeforeMute)
 		return
 	}
-	a.setVolume(0.6)
+	// 没有「静音前是多少」可恢复（本来就在 0，或者这一路刚起），回落到默认音量。
+	// 这里以前硬写 0.6，和 DefaultVolume 是两份语义：导入过配置、或者落盘的
+	// volume 不是 0.6 时，按 M 会跳到一个用户没设过的值。
+	a.setVolume(a.DefaultVolume)
 }

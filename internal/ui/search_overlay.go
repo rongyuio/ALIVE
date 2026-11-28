@@ -25,9 +25,9 @@ const (
 // 四个平台里只有抖音不收关键词，文案也不同。
 func searchPlaceholder(platform string) string {
 	if platform == "douyin" {
-		return "输入抖音直播间号…"
+		return "输入抖音直播间号"
 	}
-	return "搜索关键词或直播间号…"
+	return "搜索关键词或直播间号"
 }
 
 func searchHint(platform string) string {

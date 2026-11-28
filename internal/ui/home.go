@@ -281,7 +281,7 @@ type App struct {
 	// 这些字段是它自己的筛选状态，切走再回来还留着。
 	FollowsQuery  string
 	FollowsSearch ui.Handle
-	// followsSearchOpen 是关注页搜索框的展开状态；由聚焦边沿置真、Esc 置假。
+	// followsSearchOpen 是关注页搜索框的展开状态；聚焦边沿置真，失焦边沿或 Esc 置假。
 	followsSearchOpen    bool
 	followsSearchFocused bool
 	// 关注页里的平台筛选：空串 = 全部，否则是平台 id
@@ -487,7 +487,7 @@ func newApp() *App {
 		Router:        ui.NewRouter(routeHome),
 		PaletteID:     theme.Palettes[0].ID,
 		ThemeMode:     themeModeSystem,
-		DefaultVolume: 0.6,
+		DefaultVolume: 1,
 		clock:         time.Now,
 		DanmuOn:       true,
 		// 弹幕面板贴底：新弹幕推着底走，用户上滑就脱离。
@@ -1452,7 +1452,8 @@ func (a *App) platformTabs(c *ui.Context) {
 						a.switchTab(c, t.id)
 					}
 					// 平台 tab 可拖拽重排（关注与订阅不参与）。
-					// 拖起来的那枚 dim 到 0.35，经过的目标描一圈 accent 65% 的内阴影。
+					// 经过的目标描一圈 accent 35% 的内阴影；拖起来的那枚自己带底，
+					// 见下面 Background 之后那一段。
 					if t.id != "follows" {
 						tab.Drag(t.id)
 						if _, over := ui.DragOver[string](tab); over {
@@ -1460,9 +1461,6 @@ func (a *App) platformTabs(c *ui.Context) {
 						}
 						if dragged, dropped := ui.Drop[string](tab); dropped && dragged != t.id {
 							a.movePlatform(dragged, t.id)
-						}
-						if tab.Dragging() {
-							tab.Opacity(0.35)
 						}
 					}
 					// 未选中的 tab 悬停时铺一块 FillTertiary：右侧工具组和
@@ -1473,6 +1471,25 @@ func (a *App) platformTabs(c *ui.Context) {
 					// 选中项不叠底：它的底由 Accent 滑块画，tab 压在上面
 					// （ZIndex 1），再铺一层就把滑块盖掉了。
 					tab.Background(hoverSurfaceOn(tab, "nav-tab-bg", tab.Hovered(), idx != selected, theme.FillTertiary))
+					// 拖动中的那一格必须带着自己的底色走。
+					//
+					// 选中态平时由下面那枚 Accent 滑块画，滑块是兄弟节点、不跟着
+					// 指针走。文字一旦离开它，AccentText——为亮粉底配的深色——就
+					// 落在深色托盘上，黑叠黑，一个字都看不见。
+					//
+					// 所以拖起来的那一刻自己铺底：选中的那格还是 Accent，其余的
+					// 用 FillTertiary，两种底各自的字色本来就定义好了。再压一层
+					// 投影说明它离开了原位，不用 Scale（会让文字重新栅格化，见
+					// press.go 那段）。
+					if tab.Dragging() {
+						if idx == selected {
+							tab.Background(theme.Accent)
+						} else {
+							tab.Background(theme.FillTertiary)
+						}
+						tab.Shadow(0, 6, 16, 0, theme.ShadowPanel).
+							Shadow(0, 2, 6, 0, theme.ShadowContact)
+					}
 					rest, on := theme.TextTertiary, theme.TextPrimary
 					if idx == selected {
 						rest, on = theme.AccentText, theme.AccentText
