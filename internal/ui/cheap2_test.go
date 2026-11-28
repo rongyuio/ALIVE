@@ -36,17 +36,37 @@ func TestPanelListKeySurvivesLogGrowth(t *testing.T) {
 //
 // 很多路径根本不填 stream，`stream.RoomID != ""` 恒假——「没有引擎、没在取流、
 // 也没在加载」的焦点会留在岛上，岛显示一条不存在的路。
-func TestBackgroundEnterDropsDeadFocusWithoutStream(t *testing.T) {
+//
+// 收尾从 backgroundEnter（全尺寸边沿）挪到了 tickActivity（每帧观察，构建
+// 之前跑）：离开播放页只是它的一种情形，不是唯一入口。
+func TestTickActivityDropsDeadFocusWithoutStream(t *testing.T) {
 	a := newApp()
 	room := Streamer{Platform: "p", RoomID: "1", Name: "房"}
 	s := &roomSession{key: "p|1", room: room, offline: true} // 没有 stream，也没引擎
 	a.watch.init()
 	a.focus = s
+	a.Router = ui.NewRouter(routeHome)
 
-	a.backgroundEnter()
+	a.tickActivity()
 
 	if a.focus != nil {
 		t.Fatal("没有引擎、没在取流、已落终态的焦点还留在岛上")
+	}
+}
+
+// 在播放页上不收：那一页自己画错误层、有「重试」。
+func TestTickActivityKeepsDeadFocusOnPlayerPage(t *testing.T) {
+	a := newApp()
+	room := Streamer{Platform: "p", RoomID: "1", Name: "房"}
+	s := &roomSession{key: "p|1", room: room, offline: true}
+	a.watch.init()
+	a.focus = s
+	a.Router = ui.NewRouter(routePlayer)
+
+	a.tickActivity()
+
+	if a.focus == nil {
+		t.Fatal("播放页上的死焦点被收掉了：错误层和重试一起消失")
 	}
 }
 
@@ -54,17 +74,27 @@ func TestBackgroundEnterDropsDeadFocusWithoutStream(t *testing.T) {
 //
 // 原来写成「只要不在播放页就每帧调」：leavePlayer 里无条件
 // windowFullScreen(a.Win)（一次平台往返），首页静置每秒白花 ~60 次。
+// 现在它在 Shell 开头（构建之前）由 tickLeavePlayer 做边沿判断。
 func TestLeavePlayerRunsOnlyOnTheLeavingFrame(t *testing.T) {
-	src, err := os.ReadFile("home.go")
+	assertNoEveryFrameLeavePlayer(t, "home.go")
+	assertNoEveryFrameLeavePlayer(t, "surface_motion.go")
+	src, err := os.ReadFile("surface_motion.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(src)
-	if strings.Contains(text, "if a.Router.Path() != routePlayer {\n\t\ta.leavePlayer()") {
-		t.Error("还在每帧调 leavePlayer")
-	}
-	if !strings.Contains(text, "if !onPlayer && a.wasOnPlayer {") {
+	if !strings.Contains(string(src), "if !onPlayer && a.wasOnPlayer {") {
 		t.Error("没有按「离开那一帧」判据调用 leavePlayer")
+	}
+}
+
+func assertNoEveryFrameLeavePlayer(t *testing.T, file string) {
+	t.Helper()
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "if a.Router.Path() != routePlayer {\n\t\ta.leavePlayer()") {
+		t.Errorf("%s 还在每帧调 leavePlayer", file)
 	}
 }
 

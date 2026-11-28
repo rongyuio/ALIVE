@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -14,120 +13,73 @@ import (
 // 播放页画的是焦点，岛上显示的是焦点，出声的也是焦点；墙上的 active、
 // 后台收听、呈现尺寸、岛形态全部从「焦点是谁 + 焦点此刻被画在哪」推导。
 
-// picture 是一间房的**画面归属**：这一刻，它的画面住在哪个表面上。
+// activityKey 是**唯一**的「这一间还有 Live Activity」判据：焦点在、而且
+// 不是一条死路。
 //
-// 它不是呈现尺寸（presentSize）：那个回答"这一间被画成多大"，picture 回答
-// "换表面时画面从哪来、到哪去"。过渡只由它决定，不由"从哪一页进来"决定——
-// 后者是代理，换个台就过期了。
+// dead 的定义只看状态本身，不看可选字段：没有引擎、没在取流、且已经落了
+// 终态（未开播 / 取流失败）。刚点开、还没开始取流的一间不算死——那一瞬间
+// 它既没有引擎也没有 loading，按「有没有引擎」判会让岛闪一下。
+func (a *App) activityKey() string {
+	if a.focus == nil {
+		return ""
+	}
+	if a.focus.dead() {
+		return ""
+	}
+	return a.focus.key
+}
+
+// videoOwner 是「这一间的画面此刻由谁画」的唯一裁决点。
 //
-// 优先级就是过渡的优先级：播放页 > 墙格 > 列表卡片 > 岛 > 没有。
-// 前三个画的是这一间自己的画面；岛不是画面，是声音的家，只有画面不在
-// 屏幕上时才落到它。
-type picture int
+// 一个 ui.VideoPlayer 在一帧里只能被一个 ui.Video 画出来。两个元素同时画
+// 同一个播放器，实测只有一个出画，另一个是黑的——而那正是「一个直播间
+// 同时出现放大后的终态和过渡态」这个报障的来源。
+//
+// 以前这条约束只写了一半：墙格在过渡窗口里把 player 置 nil 交给舞台，但
+// 反过来舞台从不退让，飞行块也不参与裁决。于是「谁画」取决于哪个元素先建，
+// 而不是取决于状态。
+//
+// 优先级就是画面的真实位置：
+//
+//	stage   播放页的舞台
+//	tile    观测墙的格子（离开播放页的那段过渡里让给舞台）
+//	none    没有表面在画它
+type videoOwner int
 
 const (
-	pictureNone picture = iota
-	picturePlayer
-	pictureTile
-	pictureCard
-	pictureIsland
+	videoNone videoOwner = iota
+	videoStage
+	videoTile
 )
 
-func (p picture) String() string {
-	switch p {
-	case picturePlayer:
-		return "player"
-	case pictureTile:
+func (v videoOwner) String() string {
+	switch v {
+
+	case videoStage:
+		return "stage"
+	case videoTile:
 		return "tile"
-	case pictureCard:
-		return "card"
-	case pictureIsland:
-		return "island"
 	}
 	return "none"
 }
 
-// pageKey 是一页的身份：路由 + 关注页分区。卡片的矩形只对记下它的那一页
-// 有效，换页 / 换分区之后不能再拿来当落点。
-func pageKey(platform, route string, section int) string {
-	if route == routeFollows {
-		return fmt.Sprintf("%s|follows|%d", platform, section)
-	}
-	return platform + "|" + route
-}
-
-// pictureOn 求 key 这一间在「route + 分区」这一页上的画面归属。
+// videoOwnerOf 求 key 这一间的画面此刻归谁画。
 //
-// keepsFocus 表示这一下之后焦点还活着（收起 / 后台收听），只有这时岛才是
-// 一个落点：结束这一路时岛会变回时钟，画面飞进去就成了谎话。
-//
-// 卡片只在记下过它矩形的那一页上算数：列表是虚拟化的，滚出屏幕的卡片
-// 不在树上，拿旧矩形当落点会飞到一片空白里。
-func (a *App) pictureOn(key, route string, section int, keepsFocus bool) picture {
-	return a.pictureAt(key, route, section, keepsFocus, true)
-}
-
-// pictureAt 是画面归属**唯一**的求值点。上面几个 picture* 都只是它的包装：
-// 同一件事多一份判断，两份就会不同步（曾经 pictureFromIsland 自己算了
-// 一遍，注释说「只差一条」，实际差了两条）。
-//
-// allowCard 决定要不要把列表卡片当落点：点岛进播放页时不认卡片——用户点的
-// 是屏幕正中的岛，画面却从同一页上某张卡片长出来，读起来就是「不知道从哪
-// 冒出来一块封面」。
-func (a *App) pictureAt(key, route string, section int, keepsFocus, allowCard bool) picture {
+// 舞台那一档问的是 fullSize()，不是「路由是不是播放页」：离开播放页的那段
+// 过渡里路由已经换走了，Router 仍然在建退场那一页（TransitionMatch 会同时
+// 建两页），舞台还在画——这时候格子必须让位。
+func (a *App) videoOwnerOf(key string) videoOwner {
 	if key == "" {
-		return pictureNone
+		return videoNone
 	}
-	if route == routePlayer {
-		if a.focusKey() == key {
-			return picturePlayer
-		}
-		return pictureNone
-	}
-	if route == routeFollows && section == followsSectionWatch && a.watchHas(key) {
-		return pictureTile
-	}
-	if allowCard {
-		if r := a.cardRectFor(key, route, section); r.W > 0 && r.H > 0 {
-			return pictureCard
-		}
-	}
-	// 岛是声音的家：只有这一间离开播放页之后还会出声（引擎在、或者正在来），
-	// 才是一个落点。没有引擎又没有取流的焦点，离开就会被收掉，岛变回时钟——
-	// 画面飞进去就成了谎话。
-	if keepsFocus && a.focusKey() == key && a.focus != nil &&
-		(a.focus.player != nil || a.focus.loading) {
-		return pictureIsland
-	}
-	return pictureNone
-}
 
-// pictureNow 求 key 这一间在**当前**这一页上的画面归属。进播放页时用它
-// 找画面的起点；焦点必须是换之前的那一个，所以调用方要在 setFocus 之前问。
-func (a *App) pictureNow(key string) picture {
-	if a.Router == nil {
-		return pictureNone
+	if a.focusKey() == key && a.fullSize() {
+		return videoStage
 	}
-	return a.pictureOn(key, a.Router.Path(), a.FollowsSection, a.focusKey() == key)
-}
-
-// pictureFromIsland 求「点岛进播放页」的画面起点。
-//
-// 和 pictureNow 只差 allowCard：点的是岛，落点不该是卡片。墙格仍然优先——
-// 在观测墙上，这一间的画面确实在那一格里。
-func (a *App) pictureFromIsland(key string) picture {
-	if a.Router == nil {
-		return pictureNone
+	if a.onWatchWall() && a.watchHas(key) {
+		return videoTile
 	}
-	return a.pictureAt(key, a.Router.Path(), a.FollowsSection, a.focusKey() == key, false)
-}
-
-// readyPicture 报告这一间此刻是不是已经在出画面。
-//
-// 有画面的房间不该再飞一张封面过去：飞行块会把活画面盖住，落地再从封面切回
-// 直播，是一次假的闪。只有墙格走 Match（两边画同一个播放器）。
-func (a *App) readyPicture(s *roomSession) bool {
-	return s != nil && s.player != nil && s.player.Ready()
+	return videoNone
 }
 
 // now 是这一帧的视图时钟。生产里就是系统时钟，Tester 里是它自己的时钟。
@@ -150,15 +102,14 @@ func (a *App) focusKey() string {
 	return a.focus.key
 }
 
-// wallActiveKey 是墙上那一格「正在出声」的标记者：焦点这一间在墙上时，
-// 它的格子就是 active。
+// wallActiveKey 是墙上那一格「正在出声」的标记者。
 //
-// 以前这是一个字段（a.WatchActive），要由墙上激活、watchShow、媒体层
-// 三条路各自维护，漏一条就是「声音在响但没有一格有绿点」。现在它只是
-// 「焦点在不在墙里」的推论。
+// 它就是 activityKey 在墙上的那一段：这一间是 Live Activity，而且这一间
+// 就在墙上。和岛的形态同一个来源，所以「墙格亮着绿点、岛却是时钟」不会再
+// 出现。
 func (a *App) wallActiveKey() string {
-	if a.focus != nil && a.watchHas(a.focus.key) {
-		return a.focus.key
+	if key := a.activityKey(); key != "" && a.watchHas(key) {
+		return key
 	}
 	return ""
 }
@@ -171,10 +122,7 @@ func (a *App) fullSize() bool {
 	if a.focus == nil {
 		return false
 	}
-	if a.Router != nil && a.Router.Path() == routePlayer {
-		return true
-	}
-	return !a.playerExitUntil.IsZero() && a.now().Before(a.playerExitUntil)
+	return a.Router != nil && a.Router.Path() == routePlayer
 }
 
 // inBackground 报告焦点在出声或留着，但眼下没有任何全尺寸视图。
@@ -204,16 +152,19 @@ func (a *App) focusPlaying() bool {
 
 // islandForm 是灵动岛的两种形态：时钟，或者「这一路」。
 //
-// 以前分得更多（full / tile / listening / idle）。full 和 tile 在渲染上
-// 完全一样，合并成展开态；listening 曾经缩成一颗头像圆，后来整条去掉——
-// 后台听也是在听，凭什么要换个形状。现在只剩「有没有焦点」一条判据：
-// 有焦点就是那一条主播信息，没有就是时钟。
+// 这两种形态照 iPhone 的 Live Activity：没有活动时岛是一条静态的胶囊
+// （这里放时钟，因为桌面得有个东西占着中间那块），有活动时它就是这一路
+// 的 compact 呈现。
+//
+// 判据只有 activityKey 一条。以前这里另有一套 focusAlive（引擎 / 取流 /
+// 在播放页），和墙上的 wallActiveKey 各说各话，于是能出现「声音在响、
+// 墙上有绿点、岛却是时钟」。
 type islandForm int
 
 const (
-	// islandIdle 是首页的时钟岛：没有焦点。
+	// islandIdle 是桌面态的时钟岛：没有活动。
 	islandIdle islandForm = iota
-	// islandOpen 是有焦点的那一条：主播信息、关注键和结束键。
+	// islandOpen 是这一路的 compact 呈现：主播信息、关注键和结束键。
 	islandOpen
 )
 
@@ -224,21 +175,23 @@ func (f islandForm) String() string {
 	return "idle"
 }
 
-// focusAlive 报告焦点这一间还有没有"在播"的东西：引擎、正在来的引擎，
-// 或者一个正在看的播放页。没有声音也没有画面的焦点不该占着岛——岛是
-// 「正在直播/收起的直播间」，不是一块还没关掉的记录。
-func (a *App) focusAlive() bool {
-	if a.focus == nil {
-		return false
-	}
-	if a.focus.player != nil || a.focus.loading {
-		return true
-	}
-	return a.Router != nil && a.Router.Path() == routePlayer
-}
-
+// islandFormOf 是岛形态的唯一求值点。
+//
+// 播放页上回时钟，这是照 HIG 来的：*"Don't add elements to your app that
+// draw attention to the Dynamic Island. Your Live Activity appears in the
+// Dynamic Island while your app isn't in use, and other items can appear in
+// the Dynamic Island when your app is open."*
+//
+// 所以 App 打开的时候，它自己的 Live Activity 不该占着岛。退出钮与房间名
+// 跟着搬进播放页自己的顶栏（见 playerTopbar），岛不再承担这两个职责。
+//
+// 连带消失的是「点岛收起」这条手势——iPhone 上根本没有它：收起是 App 自己
+// 的返回（Esc / 左上返回钮）。
 func (a *App) islandFormOf() islandForm {
-	if !a.focusAlive() {
+	if a.Router != nil && a.Router.Path() == routePlayer {
+		return islandIdle
+	}
+	if a.activityKey() == "" {
 		return islandIdle
 	}
 	return islandOpen

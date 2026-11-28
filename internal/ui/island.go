@@ -90,32 +90,23 @@ func (a *App) onWatchWall() bool {
 
 // Island 是顶部居中的「灵动岛」，两种形态：
 //
-//	空闲（没有播放器）  24 小时制数字时钟
-//	有焦点              主播信息：在播放页、在观测墙上、在后台听都是这一条
+//	空闲（没有活动）  24 小时制数字时钟
+//	有活动            Live Activity：主播信息、关注键、结束键
 //
-// 形态只由「有没有焦点」决定，不按表面再分叉。后台收听不再缩成一颗圆：
-// 同一条岛告诉你正在听谁、声音从哪来，点它回去，右边那颗 X 结束这一路。
-// 宽度仍然用弹簧跑，Left 每帧按当前宽度重算，长度是从中心向两侧长出来的。
+// 它就是 iPhone 的 Live Activity，判据只有 activityKey 一条（见 surface.go）：
+// App（播放页）打开着的时候它也在，收起之后它还在——那是同一个活动换了个
+// 呈现位置，不是两件事。
+//
+// 它不参与任何共享元素过渡。岛每一帧都在构建，不是「正在出现的元素」，
+// ElementTransition 的 Match 表达不了「App 收进岛」；而且两端都挂 Fly 时
+// 源元素自己也会飞（third_party/mygo/ui/match.go:794）——那正是「点岛进
+// 直播间，岛自己也朝舞台飞」的机器层原因。画面在舞台与岛之间的搬运交给
+// 飞行层（surface_flight.go），岛只负责在原地收窄 / 展开自己的形状。
 func (a *App) Island(c *ui.Context) {
 	winW, _ := c.Size()
-	// 岛的形态只由焦点推导（见 surface.go 的 islandFormOf）：
-	// 以前这里各自算一遍 player / listening / wallActive，于是"声音在响
-	// 但岛是时钟"这种组合能存在。
 	form := a.islandFormOf()
 	open := form == islandOpen
-	// 两种场合：在播放页（全尺寸），或在别处（墙上、后台收听）。
-	// 渲染完全一样，只有"点它去哪"和右侧那颗 X 的动作不同——那两处各自看
-	// 表面决定，不在这里分叉。
-	player := open && a.Router != nil && a.Router.Path() == routePlayer
 
-	if player {
-		a.enterPlayerIsland()
-	}
-	// 「离开播放页就清掉房间记号」挪到 leavePlayer 去了：那里已经保证一次离开
-	// 只跑一次。构建路径不再写 a.infoRoom——一帧可能构建多次，构建里写状态是
-	// 「构建值是临时的」这条规矩的破口（这里靠幂等兜着，但不该靠）。
-
-	// 右侧第二颗按钮：有焦点就有「结束这一路」。
 	showX := open
 	// 首页不量：那时岛上没有主播信息，量出来也没人用。
 	openW := float32(theme.IslandW)
@@ -140,37 +131,19 @@ func (a *App) Island(c *ui.Context) {
 	island := ui.Box(c.Key("island")).Label("灵动岛").Absolute().Top(islandTop).
 		Height(theme.IslandH).Radius(theme.RadiusFull).DragWindow()
 
-	// 岛就是这一间的画面在「没有全屏视图」时的落点，和播放页的舞台共用
-	// 一个 surfaceMatch：进 / 出播放页时由 MyGo 的 Fly 把它长成 / 缩回整块
-	// 舞台（transitions.md 的 Shared elements）。
-	//
-	// 只在没有别人替它持有身份时挂：播放页上身份在舞台身上，墙上在格子里。
-	// 同一帧里两个元素带同一个 Match 会把后建的那个冻在源尺寸——探针实测过。
-	// 只挂身份，**不接管宽高**：岛的宽度由下面那条 AnimateTo 弹簧驱动，
-	// 而 ElementTransition 默认会连 Position/Size 一起动画——两个弹簧追同一个
-	// 属性，岛的实际宽度会远远落后于 AnimateTo 的值（实测 w=183 时岛只有
-	// 112 宽），展开期间内容整个跑到岛外面被裁掉。
-	// 显式给 Colors 一项，等于告诉它「除颜色外都不动」。
-	if key := a.islandMatchKey(open); key != "" {
-		island.Transition(ui.ElementTransition{
-			Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
-			Colors: true,
-		})
-	}
-
 	// 弹簧跑宽度：过冲是超出目标（岛比目标宽一点再回来），内容居中，
 	// 裁不到任何东西，回弹正是「灵动」的来源。
 	w := island.AnimateTo("island-w", targetW, ui.Snappy)
 	// 岛自己的左边缘也取整。宽度是亚像素的，Left 按 (winW-w)/2 每帧只挪
 	// 零点几像素；岛在窗口里不在整像素上，挂在上面的内容也跟着抖。取整
 	// 之后岛每次只挪一整像素。
-	island.Width(w).Left(roundDIP((winW - w) / 2))
+	x := roundDIP((winW - w) / 2)
+	island.Width(w).Left(x)
 
 	// ---------- 投影：走主题的两级阶梯。
 	//
 	// 岛是唯一一直悬在内容上方的元素，影子必须像"离地几毫米"：一层散的
-	// 环境光加一层贴着边的接触影。以前这里按深浅主题各写死一对手调值，
-	// 和浮层用的 ShadowPopover/ShadowLg 是两套语言。
+	// 环境光加一层贴着边的接触影。
 	island.Shadow(0, 24, 56, -28, theme.ShadowModal).
 		Shadow(0, 4, 14, 0, theme.ShadowContact).
 		InsetShadow(0, 1, 0, 0, theme.IslandTopLight)
@@ -197,44 +170,39 @@ func (a *App) Island(c *ui.Context) {
 	})
 }
 
-// islandMatchKey 是岛这一刻该带的 surfaceMatch 身份；空表示不挂。
+// islandTap 是点岛这一下：照 iPhone，点 Live Activity 就是打开对应的 App。
 //
-// 判据只有一条，就是画面归属本身：**这一间的画面此刻归岛，岛才持有身份**
-// （pictureNow 返回 pictureIsland）。别在这里另写一份优先级判断——写一份就
-// 会和 pictureAt 走散。上一版手工判了"不在播放页、不在墙上"，漏掉了卡片那
-// 一档：首页上有这一间的卡片时画面归卡片，岛却仍然挂着身份，于是点卡片进
-// 播放页时舞台从**岛**的矩形起飞（而不是从卡片），飞行块和岛同时动。
-//
-// 刚改过窗口尺寸的几百毫秒里也不挂：带 Match 的元素在 resize 时会做尺寸
-// 动画，岛每帧弹一下就是用户说的「最大化会闪」（同 watch.go 的 matchable）。
-func (a *App) islandMatchKey(open bool) string {
-	if !open || !a.matchable() {
-		return ""
-	}
-	key := a.focusKey()
-	if key == "" {
-		return ""
-	}
-	if a.pictureNow(key) != pictureIsland {
-		return ""
-	}
-	return key
-}
-
-// enterPlayerIsland 记下「现在在哪个直播间」。
-//
-// 判据是平台 + 房间号 + 主播名：同一个房间从订阅页返回、切换线路、重连，
-// 都不该再当成新房间；换房间（哪怕是同一个主播换场，标题没变）就得重来。
-//
-// 展开态现在常驻，所以这里只维护记号，不再有「弹一次」的动作。
-func (a *App) enterPlayerIsland() {
-	s := a.current()
-	room := s.Platform + "|" + s.RoomID + "|" + s.Name
-	if room == a.infoRoom {
+// 播放页上不会走到这里：那时岛是时钟（见 islandFormOf），没有热区。
+// 「点岛收起」这条手势本来就不该有——收起是 App 自己的返回，走 Esc 或
+// 播放页顶栏的返回钮。
+func (a *App) islandTap() {
+	if a.focus == nil {
 		return
 	}
-	a.infoRoom = room
-	a.InfoOpen = true
+	a.openRoom(a.focus.room)
+}
+
+// islandClose 是岛上那颗 X：结束这一路。
+//
+// 动作只有一个——closeFocus；文案按这一路此刻的真实效果走：
+//
+//	在观测墙上    停止观测    收声，格子留在墙上做静音预览
+//	别处          关闭直播间  结束这一路，岛回时钟
+//
+// 播放页上没有这颗 X（那时岛是时钟）：退出走播放页顶栏的返回钮。
+func (a *App) islandClose() {
+	a.closeFocus()
+}
+
+// islandCloseLabel 是岛上那颗 X 的可读名字。
+//
+// 只按「这一下会得到什么」写，不按「你在哪一页」写：已经离开墙时预览是
+// 停掉的，说「停止观测」会承诺一个不存在的东西。
+func (a *App) islandCloseLabel() string {
+	if a.wallActiveKey() != "" {
+		return "停止观测"
+	}
+	return "关闭直播间"
 }
 
 // roundDIP 把长度取整到整数 DIP。
@@ -314,22 +282,16 @@ const islandMinWindowW float32 = 900
 
 // islandNavReserve 是顶栏两端固定控件各自占掉的宽度（含外侧 padding 与 gap）。
 //
-// 数值与 home.go 的 Navbar 布局同一套：窄断点（≤1240）pad 10 / gap 8 /
-// tab 56 / 窗口按钮 34；宽断点 pad 14 / gap 14 / tab 64 / 窗口按钮 40。
-// 左组 = 轨道 padding 3×2 + 五个 tab（关注 + 四平台）；右组 = 工具胶囊
-// （3×2 内边距、四颗 chromeH 按钮、三个 4px 间距）+ 10px 间距 + 三枚窗口
-// 按钮（3×2 内边距 + 两个 2px 间距）。两组末尾各留一个顶栏 gap。
+// 几何从 navbarMetrics 来，不在这里抄一份字面量：顶栏和岛的宽度上限必须
+// 用同一组数，否则改一次断点就会让岛压住 tab 或搜索键。
+//
 // 岛居中，左右对称地让，所以取更宽的一侧。按钮数按最宽形态算：播放页的
 // activeTab 必然是某个平台，搜索与登录头像都在。
 func islandNavReserve(winW float32) float32 {
-	pad, gap := float32(14), float32(14)
-	tabW, captionW := float32(64), float32(40)
-	if winW <= 1240 {
-		pad, gap, tabW, captionW = 10, 8, 56, 34
-	}
-	left := pad + 6 + tabW*5 + gap
-	right := pad + (6 + chromeH*4 + 4*3) + 10 + (6 + 3*captionW + 2*2) + gap
-	return max(left, right)
+	m := navbarMetricsFor(winW)
+	// 左：关注 + 四个平台 = 5 格；右：工具胶囊四颗（搜索、同步、配色、登录）
+	// + 三枚窗口按钮。
+	return max(m.leftReserve(5), m.rightReserve(4))
 }
 
 // islandPlayerMeta 是岛上的第二行：平台 · 主播 · 房间号。
@@ -340,25 +302,14 @@ func islandPlayerMeta(s Streamer) string {
 	return fmt.Sprintf("%s · %s · ID:%s", platformLabel(s.Platform), s.Name, s.RoomID)
 }
 
-// playerIsland 是岛里那一条主播信息。有焦点就只有这一条，不按表面分叉：
-// 播放页、墙上、后台听都是同一棵内容树、同一个宽度。
+// playerIsland 是岛里那一条主播信息。有活动就只有这一条，不按表面分叉：
+// 播放页、墙上、桌面都是同一棵内容树、同一个宽度。
 //
-// 点它只做两件事，和标签「回到直播间」一致：
+// 点它做一件事：打开这一间的播放页（在播放页上则是把它收起来）。文案
+// 「打开直播间」/「收起到后台」跟着走，见 islandTap。
 //
-//   - 在播放页 → 收起这一路（和 Esc 第一档同一件事），退回打开它之前
-//     那一页；
-//   - 别的页面 → 回到这一间的播放页。
-//
-// 不再按「在不在观测墙里」分叉：在墙上就改道去墙，会让点岛的人落在一面
-// 没有这间的墙上——那读起来就是"收起的直播间没了"。
-//
-// 换路由之后 tickSurface / watchShow 各自把呈现尺寸求对。
-//
-// 那颗 X 的文案跟着墙到底在不在用来：播放页上是「退出直播间」；在观测墙上，
-// 焦点那一格正在出声时是「取消观测发声」（只收声、留静音预览），否则是
-// 「关闭直播间」；已经离开墙（首页 / 别的分区）也一律「关闭直播间」——
-// 墙上的预览在那里是停掉的，说「取消发声」会承诺一个不存在的预览。
-// 动作只有一个——closeFocus。
+// 那颗 X 的动作只有一个——closeFocus；文案按这一下会得到什么走，见
+// islandCloseLabel。
 func (a *App) playerIsland(c *ui.Context, w float32) {
 	s := a.current()
 
@@ -387,14 +338,20 @@ func (a *App) playerIsland(c *ui.Context, w float32) {
 	followX, cancelX := edgeX-islandPlayerGap-islandPlayerFollowW, edgeX
 
 	// 文字列：垂直居中，两行固定，SingleLine 保证它不会自己换行。
+	//
+	// ContentTransition：换台 / 换这一路时旧的两行淡出、新的淡入，而不是
+	// 硬换字。iPhone 上 Live Activity 更新内容就是这么走的（HIG：Animate
+	// layout changes，尽量保住已有布局、只让变化的元素动）。
 	text := ui.Column(c).Absolute().Top(0).Bottom(0).Left(textX).Width(textW).
 		Justify(ui.Center).Gap(2)
 	text.Children(func() {
 		ui.Text(c, s.Title).FontSize(theme.TextSM).FontWeight(600).
-			SingleLine().TextColor(theme.MediaText).LineHeight(1.3)
+			SingleLine().TextColor(theme.MediaText).LineHeight(1.3).
+			ContentTransition(ui.ContentTransition{})
 		ui.Text(c, islandPlayerMeta(s)).
 			FontSize(theme.Text2XS).SingleLine().LineHeight(1.3).
-			TextColor(theme.MediaTextDim)
+			TextColor(theme.MediaTextDim).
+			ContentTransition(ui.ContentTransition{})
 	})
 
 	// 头像自己带名字：它是一颗独立的元素，测试和无障碍树都要能量到它
@@ -405,40 +362,31 @@ func (a *App) playerIsland(c *ui.Context, w float32) {
 		a.islandAvatar(c, s, avatarD)
 	})
 
-	// 整块内容区是回这一路的热区，压在文字和头像之上。
+	// 整块内容区是打开 / 收起这一路的热区，压在文字和头像之上。
 	//
 	// 它必须画在按钮之前、头像之后。MyGo 的命中链只取指针下最上层的元素
 	// 和它的祖先，不会穿过兄弟往下找：热区排在按钮之后会把收藏键整个吃掉
 	// （点收藏等于点整块岛），头像虽然不可点，压在热区上面同样会挡住它。
 	// 顺序因此是 文字 → 头像 → 热区 → 按钮。
 	{
+		hitLabel := "打开直播间"
+		if a.Router != nil && a.Router.Path() == routePlayer {
+			hitLabel = "收起到后台"
+		}
 		hit := ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).
-			Cursor(ui.CursorPointer).Label("回到直播间")
+			Cursor(ui.CursorPointer).Label(hitLabel)
 		hit.Background(hoverSurface(hit, "island-hit-bg", hit.Hovered(), theme.IslandHover))
 		if hit.Clicked() {
-			// 在播放页点岛 = 收起（用户确认保留的手感）；在别的页面点岛
-			// = 回到焦点那一间。两者都只在 returnToFocus 一处判断。
-			a.returnToFocus()
+			a.islandTap()
 		}
 	}
 
 	// X：同一个位置同一颗按钮，动作永远是「结束焦点」——closeFocus。
 	//	播放页      结束整路并退回上一页
-	//	墙上        只收声，格子留在墙上做静音预览
+	//	墙上        收声，格子留在墙上做静音预览
 	//	后台收听    结束这一路，岛回到时钟
-	// 文案按表面走；动作不再按表面分叉（以前非播放页走 watchDeactivate，
-	// 它对 WatchActive 为空的焦点直接 return，收起的直播间点 X 没反应）。
-	// 播放页上这一下是退出这一路；别的地方都是「关闭直播间」——已经离开
-	// 墙时预览是停掉的，说「取消发声」会承诺一个不存在的东西。
-	cancelLabel := "关闭直播间"
-	if a.Router != nil && a.Router.Path() == routePlayer {
-		cancelLabel = "退出直播间"
-	}
-	// 只有「墙上那一格正在出声」才是取消 active（收声、留静音预览）；
-	// 焦点不在墙上时这一下就是关闭整路，文案不能骗人。
-	if a.onWatchWall() && a.wallActiveKey() != "" {
-		cancelLabel = "取消观测发声"
-	}
+	// 文案按这一下会得到什么走，见 islandCloseLabel。
+	cancelLabel := a.islandCloseLabel()
 	cancel := ui.Box(c).Absolute().Left(cancelX).Top((islandContentH-islandPlayerFollowW)/2).
 		Size(islandPlayerFollowW, islandPlayerFollowW).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label(cancelLabel)
@@ -447,7 +395,7 @@ func (a *App) playerIsland(c *ui.Context, w float32) {
 		Border(1, theme.MediaRowLine)
 	cancel.BorderColor(hoverInk(cancel, "island-cancel-border", cancel.Hovered(), theme.MediaRowLine, theme.MediaHairStrong))
 	if cancel.Clicked() {
-		a.closeFocus()
+		a.islandClose()
 	}
 	cancelDown := cancel.Pressed()
 	cancel.Children(func() {

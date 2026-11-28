@@ -295,8 +295,6 @@ func (a *App) selectFollowsSection(i int) {
 		// 门槛和路由那条一样（30s），连着切来切去不会变成连环请求。
 		a.FollowsEntered()
 	}
-	// 正在飞的画面属于上一区的卡片，换区即作废。
-	a.surfaceFlight = nil
 	// 下次打开还停在这一区。只记身份，不记 tab 顺序。
 	a.markDirty()
 }

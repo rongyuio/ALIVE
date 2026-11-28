@@ -99,29 +99,6 @@ func TestWatchLayoutUsesUniformAspect(t *testing.T) {
 	}
 }
 
-// 窗口 resize 的观测点和判据必须同一个时钟。
-//
-// `matchable()` 以前按挂钟算 `time.Since(resizedAt)`，Tester 里
-// `tt.Advance` 推不动它——island_card_bug_test.go 曾经被迫写
-// `time.Now().Add(-time.Hour)` 手工把观测点拨回去，那本身就是这条债的证据。
-func TestMatchableFollowsFrameClock(t *testing.T) {
-	a := newApp()
-	tt := ui.NewTester(a.Shell, 1280, 800)
-
-	// 第一帧会把 resizedAt 拨到这一帧的时钟上，于是 400ms 内不可挂 Match。
-	tt.Frame()
-	if a.matchable() {
-		t.Fatal("刚观测到窗口尺寸就说可以挂 Match：整墙会做尺寸动画")
-	}
-
-	// 用 Tester 自己的钟往前推，越过 400ms 的收敛窗口。
-	tt.Advance(matchSettleAfter + 100*time.Millisecond)
-	tt.Frame()
-	if !a.matchable() {
-		t.Fatalf("tt.Advance 推过 %v 之后仍然不可挂 Match：判据读的不是帧钟", matchSettleAfter)
-	}
-}
-
 // 播放页的临时提示按帧钟计时，能被 tt.Advance 推到消失。
 func TestNoticePillUsesFrameClock(t *testing.T) {
 	a := newApp()

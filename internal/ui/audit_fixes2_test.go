@@ -81,13 +81,15 @@ func TestCategorySearchReopensAfterEsc(t *testing.T) {
 	}
 }
 
-// 离开播放页的两次请求不能互相吞掉。
+// 离开播放页的两次请求都要生效，谁也不能吞掉谁。
 //
-// transitionMatch 那条路要把 action 推迟两趟构建（tickExitArm 的
-// buildSeq 比较），这期间第二次「离开播放页」原来被整条丢弃：Esc（收起）
-// 之后紧接着点岛上的 X（真关），X 消失、焦点还留着、这一路继续出声。
-// 一帧超过 16ms 的机器上这个窗口有 100ms+，用手指打得到。
-func TestLeaveRequestsReplaceInsteadOfSwallow(t *testing.T) {
+// 以前 transitionMatch 那条路要把 action 推迟两趟构建（exitArm + buildSeq
+// 比较），这期间第二次「离开播放页」被整条丢弃：Esc（收起）之后紧接着点
+// 岛上的 X（真关），X 消失、焦点还留着、这一路继续出声。
+//
+// 现在没有推迟：每一次请求都在当场执行。这条测的是那个结果本身——先收起，
+// 再关掉，两次都发生了。
+func TestLeaveRequestsBothApply(t *testing.T) {
 	a := newApp()
 	room := Streamer{Platform: "bilibili", RoomID: "42", Name: "甲"}
 	s := &roomSession{key: watchKey(room), room: room}
@@ -95,25 +97,25 @@ func TestLeaveRequestsReplaceInsteadOfSwallow(t *testing.T) {
 	a.watch.sessions[s.key] = s
 	a.focus = s
 
-	// 走到 transitionMatch 需要：目标页上有这一间的墙格（两边画同一个播放器）。
-	a.Router = ui.NewRouter(routePlayer)
+	a.Router = ui.NewRouter(routeFollows)
 	a.FollowsSection = followsSectionWatch
 	a.WatchRooms = []Streamer{room}
-	ran := []string{}
-	a.exitArm = true
-	a.exitMatchKey = s.key
-	a.exitAction = func() { ran = append(ran, "第一次") }
+	a.playerReturnRoute, a.playerReturnSection = routeFollows, followsSectionWatch
+	a.Router.Push(routePlayer)
 
-	// 第二次请求（等价于用户在 arm 窗口里点了 X）
-	a.leavePlayerTo(leaveClose, routeFollows, followsSectionWatch, func() { ran = append(ran, "第二次") })
-
-	if a.exitAction == nil {
-		t.Fatal("第二次离开请求被整条吞掉了：待执行动作是 nil，X 会变成点了没反应")
+	// 第一次：收起（Esc）。焦点留着，退回观测墙。
+	a.collapsePlayer()
+	if a.focus != s {
+		t.Fatal("收起把焦点清掉了：这一路应该继续出声")
 	}
-	// 执行时应当只跑最新的那次
-	a.exitAction()
-	if len(ran) != 1 || ran[0] != "第二次" {
-		t.Errorf("执行了 %v，应当只执行最新的「第二次」", ran)
+	if a.Router.Path() == routePlayer {
+		t.Fatal("收起没有离开播放页")
+	}
+
+	// 第二次：真关（岛上的 X）。焦点必须清掉。
+	a.closeFocus()
+	if a.focus != nil {
+		t.Fatal("第二次请求被吞掉了：关掉之后焦点还在，这一路继续出声")
 	}
 }
 

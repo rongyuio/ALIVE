@@ -105,22 +105,9 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 		Role(ui.RoleListItem).AccessSelected(active).
 		Label(watchTileLabel(room))
 	tile.InsetShadow(0, 1, 0, 0, theme.TopLight)
-	// 这一格是"同一间房"在墙上的那一份：播放页的舞台凭同一个身份飞过来，
+	// 这一格是"同一间房"在墙上的那一份：播放页的外壳凭同一个身份飞过来，
 	// 画面从这块矩形长到整屏，而不是硬切（见 surface_motion.go）。
 	//
-	// Match 必须常挂。只在该过渡窗口里挂的话，点击进播放页那一次墙页早已
-	// 构建完，格子身上没有身份，飞行没有起点（实测直接跳大，没有动画）。
-	//
-	// 唯一的例外是「刚改过窗口尺寸」：带 Match 的元素在 resize 时会做尺寸
-	// 动画，整墙格子一帧帧弹过去、视频每帧重新适配——就是「最大化会闪」。
-	// 所以那几百毫秒里不挂（见 matchable）。正在走表面过渡时例外：
-	// exitArm 补的那一拍就是要让 resize 窗口里的格子也接住舞台。
-	if a.matchable() || !a.routeTransitionUntil.IsZero() {
-		tile.Transition(ui.ElementTransition{
-			Animation: &ui.Snappy, Match: surfaceMatch{key}, Fly: true,
-		})
-	}
-
 	// 墙上的手势分两档：单击激活（换声音焦点，留在墙上），双击进播放页。
 	//
 	// 激活就是 watchActivate：绿点亮起、岛换成这一间、声音切过来，画面不动。
@@ -143,12 +130,15 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 	if dragging {
 		tile.Opacity(0.35)
 	}
-	// 过渡中同一个播放器只让**去的那一侧**画：进入播放页时是舞台，
-	// 回墙上时是格子。一个 VideoPlayer 只能被一个 ui.Video 画出来
-	// （实测两个元素只有一个出画），两边都画等于飞行元素是空的。
-	player := a.watchPlayer(key)
-	if player != nil && a.Router != nil && a.Router.Path() == routePlayer && !a.routeTransitionUntil.IsZero() {
-		player = nil
+	// 同一个播放器一帧只有一处画它（videoOwnerOf）。过渡中「去的那一侧」
+	// 才是 owner：进播放页时是舞台，回墙上时是格子。
+	// 两边都画等于飞行元素是空的，舞台那边同时出现两份画面。
+	owner := a.videoOwnerOf(key)
+	ownsVideo := owner == videoTile
+	engine := a.watchPlayer(key)
+	var player *ui.VideoPlayer
+	if ownsVideo {
+		player = engine
 	}
 	sess := a.watch.sessions[key]
 	tile.Children(func() {
@@ -163,7 +153,9 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 				Fit(ui.Contain)
 		}
 		if player == nil || !player.Ready() {
-			a.watchCover(c, room, r, player != nil)
+			// connecting 看的是"这一格有没有引擎"，不是"这一格画不画它"：
+			// 过渡中被舞台接管的格子仍然在接通中，只是那一帧的画面归舞台。
+			a.watchCover(c, room, r, engine != nil)
 		}
 		// 激活标记必须画在视频井之后：格子自己的 InsetShadow 在填充层里，
 		// 被铺满整格的井盖住，屏幕上看不见。
@@ -186,7 +178,7 @@ func (a *App) watchTile(c *ui.Context, room Streamer, r watch.Rect) (dragging, d
 			op = 0
 		}
 		bar.Opacity(bar.AnimateTo("watch-bar-op", op, theme.Micro()))
-		a.watchState(c, room, sess, player)
+		a.watchState(c, room, sess, player, ownsVideo)
 	})
 	return dragging, dropOver
 }
@@ -524,7 +516,11 @@ func platformBrand(id string) ui.Color {
 //
 // 加载态直接复用播放页的整块遮罩、30px spinner 和同一句文案，不再自己画
 // 小胶囊；未开播/失败才是顶部的小提示。
-func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player *ui.VideoPlayer) {
+//
+// ownsVideo 是「这一帧这一格自己画着画面」。过渡中画面归舞台时，
+// player 是 nil 而 sess 还带着一个活的播放器——那时既不该报「正在拉取
+// 直播流」，也不该报「缓冲中…」：那一格此刻没有在画，报任何一条都是假的。
+func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player *ui.VideoPlayer, ownsVideo bool) {
 	msg, loading := "", false
 	switch {
 	case sess != nil && sess.offline:
@@ -537,13 +533,18 @@ func (a *App) watchState(c *ui.Context, room Streamer, sess *roomSession, player
 		// 重连中：给的是"正在重连"，不是内部原因（首帧超时 / 地址到期）。
 		// 那是排障用的字眼，用户看到"地址到期"会以为这一路坏了。
 		msg = "正在重连…"
+	case !ownsVideo && player == nil && sess != nil && !sess.loading:
+		// 画面交给别的表面了（播放页的舞台）：这一格此刻不报状态。
 	case sess != nil && player == nil && sess.loading:
 		loading = true
 	case player != nil && !player.Ready():
 		loading = true
-	case sess != nil && sess.stalled:
+	case ownsVideo && sess != nil && sess.stalled:
 		// 有画面、但时间轴停住了：这一格在缓冲。不报出来的话，用户看到的
 		// 是一张冻住的图，会以为那是实时画面——比缓冲本身更糟。
+		//
+		// 只在格子真的自己画的时候报：过渡帧里 sess.stalled 仍然是它的
+		// 历史值，照着报就会在缩小的格子上闪一次「缓冲中…」。
 		msg = "缓冲中…"
 	}
 	if loading {

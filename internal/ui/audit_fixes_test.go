@@ -119,7 +119,7 @@ func TestReconnectingTileShowsUserFacingText(t *testing.T) {
 
 	// 画出来的文案里不能出现内部原因
 	tt := ui.NewTester(func(c *ui.Context) {
-		a.watchState(c, room, s, nil)
+		a.watchState(c, room, s, nil, true)
 	}, 320, 180)
 	tt.Frame()
 	if tt.HasText("地址到期") {

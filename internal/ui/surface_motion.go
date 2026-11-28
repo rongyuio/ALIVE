@@ -6,33 +6,31 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"alive/internal/diag"
-	"alive/internal/theme"
 )
 
-// 表面之间的过渡与焦点的生命周期。
+// 导航与焦点的生命周期。
 //
-// 三处"没有动画"是三件事，不能互相牵连：
+// 播放页和它周围的表面（墙格 / 卡片 / 岛）之间**不做过渡**，一律硬切。
+// 以前这里有一套按「源点是哪一块」分派的过渡（元素 Match / 整页摆位 /
+// 飞行块），每一种都要在两帧之间对齐几何，需要一个跨帧状态机；三套并存时
+// 它们互相踩，「从墙上放大」「画面 → 模糊 → 画面」「岛和墙一起飞」都是
+// 这么来的。2026-11-28 全部拆掉，换成切。
 //
-//   - 顶栏 tab / 分区之间：不动。方向模型与平级路由不匹配（d488013）。
-//   - 内容层（卡片网格）：永不位移、永不淡入（0010）。在用户正在读的内容上
-//     施加位移，一定会被读成"画面在抖"。
-//   - 表面之间（墙格 ↔ 播放页）：做连续过渡。这不是"在内容上动"，是
-//     "同一间房换位置"。
-//
-// 所以 Router.Transition 不能是一个全局开关——它得按次决定。这个文件把它
-// 收在一处：调用点只说"这次是从墙格进的/出的"，什么时候开、什么时候关、
-// 什么时候恢复都不散到外面。
+// 顶栏 tab 之间、内容层（卡片网格）也从来不动：位移落在用户正在读的内容上
+// 会被读成"画面在抖"（0010）。
 
-// surfaceMatch 是共享元素的身份：同一间房在墙格与播放页上是同一个值。
+// focusIntent 是「为什么把这一间设成焦点」——它决定听不听、要不要出声。
 //
-// 用自定义类型而不是字符串，避免和别的 Match 撞身份（MyGo 文档的建议）。
-type surfaceMatch struct{ key string }
+// iPhone 上这两件事本来就分开：点 App 图标打开它是"要听"，从灵动岛的
+// Live Activity 回到一个你自己按过暂停的 App 是"接着刚才那样"。以前
+// setFocus 只有一个入口，于是从岛点回去会自己开播、把静音的房间抬到
+// 可听音量——用户特意按下的暂停被系统推翻了。
+type focusIntent int
 
-// routeTransitionDur 是表面之间过渡的时长。
-//
-// 280ms 和 theme 的 EaseOut 一档对齐。比顶栏滑块的 220ms 长一点：
-// 那是"换个选项"，这是"同一间房换个位置"，位移量级大得多。
-const routeTransitionDur = theme.MotionSurface
+const (
+	// intentListen 是"点开它就是要听"：卡片、关注行、墙格「在墙上听」。
+	intentListen focusIntent = iota
+)
 
 // setFocus 是焦点的唯一写者。
 //
@@ -40,7 +38,7 @@ const routeTransitionDur = theme.MotionSurface
 // 做预览；不在墙上 → 连引擎一起关。这条规则同时覆盖墙上换间、进播放页、
 // 关闭收起的直播间——不再有 watchAdoptActive / watchReleaseActive /
 // watchDropActive / watchStopActive / watchDeactivate 五个搬运函数。
-func (a *App) setFocus(s *roomSession) {
+func (a *App) setFocus(s *roomSession, intent focusIntent) {
 	old := a.focus
 	if old == s {
 		return
@@ -69,17 +67,23 @@ func (a *App) setFocus(s *roomSession) {
 		a.endSessionFocus(old)
 	}
 	if s != nil {
-		s.playing = true
-		if s.volume <= 0 {
-			// 这一间上次被静音过。点开它就是要听，恢复到静音前的值；
-			// 没有记忆时给一个能听见的默认音量。
-			if a.volumeBeforeMute > 0 {
-				s.volume = a.volumeBeforeMute
-			} else {
-				s.volume = 0.6
+		// 播放意图只在"要听"这一向来的时候改。intentRestore 保留会话自己
+		// 记着的 playing——那是用户上一次亲手设的值。
+		if intent == intentListen {
+			s.playing = true
+			if s.volume <= 0 {
+				// 这一间上次被静音过。点开它就是要听，恢复到静音前的值；
+				// 没有记忆时给一个能听见的默认音量。
+				if a.volumeBeforeMute > 0 {
+					s.volume = a.volumeBeforeMute
+				} else {
+					s.volume = 0.6
+				}
 			}
 		}
-		a.DefaultVolume = s.volume
+		if s.volume > 0 {
+			a.DefaultVolume = s.volume
+		}
 		a.applyFocusAudio()
 	}
 	a.markDirty()
@@ -154,138 +158,60 @@ func (a *App) noteRoute(from, to string) {
 // openRoom 是「看这一间」的唯一入口：首页卡片、关注行、搜索结果、墙格、
 // 灵动岛都走这里。
 //
-// 进播放页的过渡由**画面归属**决定，不由「从哪一页点进来」决定：这一间在
-// 当前页上有没有画面（墙格 / 卡片）、岛是不是正显示它，各自对应一种接法。
-// 归属要在 setFocus 之前求——焦点一换，岛显示的就变成新的一间了。
+// 播放页与其它表面之间**不做过渡**：一律硬切。以前这里是三种接法（Match /
+// 整页摆位 / 飞行块），每一种都要在两帧之间对齐几何，代价是一堆状态机，而
+// 它们互相踩——2026-11-28 全部拆掉，换成切。
 func (a *App) openRoom(room Streamer) {
-	a.openRoomFrom(room, pictureNone)
-}
-
-// openRoomFrom 是 openRoom 的带起点版本：from 非 pictureNone 时用它代替
-// 「当前页的画面归属」。
-//
-// 只有点岛那条路需要它。岛在屏幕正中被点，画面却可能从同一页上某张卡片
-// 长出来——用户点的是岛，看到的是「一块封面从别处冒出来」。墙格仍然优先：
-// 在观测墙上，这一间的画面确实在那一格里。
-func (a *App) openRoomFrom(room Streamer, from picture) {
 	if room.Platform == "" {
 		return
 	}
 	key := watchKey(room)
-	src := a.pictureNow(key)
-	if from != pictureNone {
-		src = from
-	}
 	s := a.sessionFor(key, room)
 	if a.focus != s {
-		a.setFocus(s)
+		a.setFocus(s, intentListen)
 	}
-	a.playerExitUntil = time.Time{}
 	if a.Router == nil {
 		return
 	}
 	if a.Router.Path() == routePlayer {
 		// 已经在播放页：换台不叠历史，否则退回去还是播放页，取流路径
-		// 会把刚关掉的这一间又自动开起来。同一页里换内容，没有表面过渡。
-		// 同一页换台也作废还没走完的退场第二拍：那一拍属于上一间。
-		a.surfaceFlight = nil
-		a.exitArm = false
-		a.exitAction = nil
-		a.exitMatchKey = ""
-		a.Router.Transition = ui.TransitionNone
+		// 会把刚关掉的这一间又自动开起来。
 		a.Router.Replace(routePlayer)
 		a.invalidateWindows()
 		return
 	}
-	// 记下退回哪一页：退出时按目标页求画面归属（见 leavePlayerTo）。
+	// 记下退回哪一页。
 	a.playerReturnRoute, a.playerReturnSection = a.Router.Path(), a.FollowsSection
-	a.enterPlayer(s, src)
-}
-
-// enterPlayer 换到播放页：组装两端的事实，交给 planTransition 决定。
-//
-//   - 墙格 ↔ 播放页：同一枚画面，Match 连续放大；
-//   - 卡片 / 岛有几何：飞（像素按这一间有没有出图选活画面 / 封面）；
-//   - 没有几何可接：硬切。
-func (a *App) enterPlayer(s *roomSession, src picture) {
-	a.surfaceFlight = nil
-	route := a.Router.Path()
-	fromOK := a.surfaceHasGeometry(src, s.key, route, a.FollowsSection)
-	plan := planTransition(src, picturePlayer, fromOK, true, a.readyPicture(s))
-	switch plan.kind {
-	case transitionMatch:
-		a.Router.Transition = ui.TransitionMatch
-		a.routeTransitionUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
-	case transitionElement:
-		// 岛 ↔ 播放页：共享身份飞，页面硬切（来源页是浅色列表，交叉淡化会糊）。
-		// routeTransitionUntil 让两端在这段窗口里都保住身份，即使刚改过窗口尺寸。
-		a.Router.Transition = ui.TransitionNone
-		a.routeTransitionUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
-	case transitionFly:
-		a.startEnterFlight(s, src, plan.pixels)
-		a.Router.Transition = ui.TransitionNone
-		a.routeTransitionUntil = time.Time{}
-	default:
-		a.Router.Transition = ui.TransitionNone
-		a.routeTransitionUntil = time.Time{}
-	}
-	a.noteRoute(route, routePlayer)
+	from := a.Router.Path()
+	a.Router.Transition = ui.TransitionNone
 	a.Router.Push(routePlayer)
+	a.noteRoute(from, routePlayer)
 	// 路由一换，全尺寸就已经成立；在这里立刻推一次，别等下一帧的 tickSurface。
 	//
-	// 后台听着的引擎还在 160×90 上渲染。硬切把这次「后台 → 全尺寸」的重渲染
-	// 直接暴露在第一帧上：晚推，第一帧就是一张放大的小图。早推一个帧间隔，
-	// 渲染线程才有时间交出全尺寸那一帧（实测 4ms，见 playback.md）。
+	// 后台听着的引擎还在 160×90 上渲染。晚推一帧，第一帧就是一张放大的小图。
+	// 早推一个帧间隔，渲染线程才有时间交出全尺寸那一帧（实测 4ms，见
+	// playback.md）。
 	a.applyPresent()
 }
-
-// returnToFocus 是点岛的「回到直播间」：不管这一间在不在墙里，目标都是它。
-func (a *App) returnToFocus() {
-	if a.focus == nil || a.Router == nil {
-		return
-	}
-	if a.Router.Path() == routePlayer {
-		// 在播放页点岛 = 收起（用户确认保留的手感），见 island.go。
-		a.collapsePlayer()
-		return
-	}
-	// 起点按「用户点的东西」求：点的是岛，就不该从卡片起飞。
-	a.openRoomFrom(a.focus.room, a.pictureFromIsland(a.focusKey()))
-}
-
-// leaveOp 决定焦点在离开播放页之后还活不活。
-type leaveOp int
-
-const (
-	// leaveCollapse 是收起 / 离开播放页：焦点留着（后台收听），岛继续显示这一路。
-	leaveCollapse leaveOp = iota
-	// leaveClose 是结束这一路：焦点清空，岛回时钟。
-	leaveClose
-)
 
 // closeFocus 结束焦点：岛的 X、全屏返回钮、不在播放页的 Esc 都走这里。
 //
 // 声音立刻停；会话存亡由 endSessionFocus 的墙规则决定。在播放页上还要
-// 退回上一页——目标页上如果还有这一间的画面（墙格），画面连续缩回去。
+// 退回上一页。
 func (a *App) closeFocus() {
 	s := a.focus
 	if s == nil {
 		return
 	}
 	if a.Router == nil || a.Router.Path() != routePlayer {
-		// 结束这一路：没有「进岛」可言，正在飞的那块画面直接收掉。
-		a.surfaceFlight = nil
-		a.setFocus(nil)
+		a.setFocus(nil, intentListen)
 		return
 	}
-	// 结束焦点和换路由是同一拍：焦点要先活着让画面找好落点，
-	// 清早了目标页上就没有这一间可接。
-	a.leavePlayerTo(leaveClose, a.playerReturnRoute, a.playerReturnSection, func() {
-		a.setFocus(nil)
-		from := a.Router.Path()
-		a.Router.Back()
-		a.noteRoute(from, a.Router.Path())
-	})
+	from := a.Router.Path()
+	a.setFocus(nil, intentListen)
+	a.Router.Transition = ui.TransitionNone
+	a.Router.Back()
+	a.noteRoute(from, a.Router.Path())
 }
 
 // collapsePlayer 是 Esc / 点岛的第一档：离开播放页，这一路留着。
@@ -297,185 +223,56 @@ func (a *App) collapsePlayer() {
 		return
 	}
 	if a.focus == nil {
-		a.surfaceFlight = nil
 		a.Router.Transition = ui.TransitionNone
 		from := a.Router.Path()
 		a.Router.Back()
 		a.noteRoute(from, a.Router.Path())
 		return
 	}
-	a.leavePlayerTo(leaveCollapse, a.playerReturnRoute, a.playerReturnSection, func() {
+	a.leaveSurface(func() {
 		from := a.Router.Path()
 		a.Router.Back()
 		a.noteRoute(from, a.Router.Path())
 	})
 }
 
-// leavePlayerTo 在换路由之前把这一间的画面安排好，然后执行 action 换路由。
+// leaveSurface 在离开播放页时执行 action 换路由。
 //
-// 目标表面按**目标页上的画面归属**求，不再看「从哪一页进来的」：
-//
-//	墙格   在墙上、目标页是观测墙 → Match（两边画同一个播放器）
-//	卡片   目标页的网格里还看得见这一间的卡片 → 画面缩回卡片
-//	岛     收起且窗口模式 → 画面缩进岛
-//	没有   结束、全屏、或目标页上没有它的画面 → 硬切
-//
-// 全屏下岛不画，也不做飞行；墙格仍然可以 Match——格子回到窗口里就是它的落点。
-func (a *App) leavePlayerTo(op leaveOp, destRoute string, destSection int, action func()) {
-	s := a.focus
-	if s == nil || a.Router == nil || a.Router.Path() != routePlayer {
-		action()
-		return
-	}
-	key := s.key
-	focusAlive := op == leaveCollapse
-	target := a.pictureOn(key, destRoute, destSection, focusAlive)
-	// 结束这一路（X / 退出直播间）没有"要去的地方"：除了墙格本来就在继续
-	// 画同一枚画面（Match），其余硬切。用户明确关掉一个直播间，不需要收尾动画。
-	if op == leaveClose && target != pictureTile {
-		target = pictureNone
-	}
+// 只做一件事：把路由器恢复成不播页面过渡，然后换页。播放页与其它表面之间
+// 不做过渡，所以这里不再算落点、不再排动画。
+func (a *App) leaveSurface(action func()) {
+	a.Router.Transition = ui.TransitionNone
+	action()
+}
 
-	a.surfaceFlight = nil
-	a.routeTransitionUntil = time.Time{}
-	toOK := a.surfaceHasGeometry(target, key, destRoute, destSection)
-	live := s.player != nil && s.player.Ready()
-	plan := planTransition(picturePlayer, target, true, toOK, live)
-	switch plan.kind {
-	case transitionMatch:
-		// 舞台和格子画的是同一个播放器：Match 让它连续缩回去。舞台这一帧
-		// 身上可能没有身份（刚改过窗口尺寸），先补一拍，两帧后再换路由。
-		//
-		// 已经在等第二拍时又来一次「离开播放页」，**不能整条吞掉**：
-		// Esc（收起）之后紧接着点岛上的 X（真关）是最常见的连击，而 arm 到
-		// 执行要跨两趟构建（见 tickExitArm），一帧超过 16ms 的机器上这个
-		// 窗口就有 100ms+，用手指打得到。吞掉的结果是 X 消失、焦点还留着、
-		// 这一路继续出声——用户以为关掉了。
-		//
-		// 换成「替换待办」：最新一次意图覆盖前一次。key 是同一个会话，
-		// exitMatchKey 不用动；只换要执行的那个动作。
-		if a.exitArm {
-			a.exitAction = action
-			return
-		}
-		a.exitArm = true
-		a.exitArmAt = a.buildSeq
-		a.exitMatchKey = key
-		a.exitAction = action
-		a.invalidateWindows()
-	case transitionElement:
-		// 缩回岛：舞台和岛共用一个身份，页面硬切。playerExitUntil 让引擎
-		// 留到演完再换尺寸，否则缩到一半就变糊。
+// resetSurfaceTransition 把「正在演的表面过渡」一次清干净。
+//
+// 换台、普通换页、全屏边沿都调它。播放页与其它表面之间不做过渡，所以现在
+// 它只剩一件事：确保路由器不带着上一次的页面过渡。
+func (a *App) resetSurfaceTransition() {
+	if a.Router != nil {
 		a.Router.Transition = ui.TransitionNone
-		a.routeTransitionUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
-		a.playerExitUntil = a.routeTransitionUntil
-		action()
-	case transitionFly:
-		a.startLeaveFlight(s, target, a.cardRectFor(key, destRoute, destSection),
-			pageKey(a.Platform, destRoute, destSection), plan.pixels)
-		a.playerExitUntil = a.now().Add(surfaceFlightDur + theme.MotionSlack)
-		a.Router.Transition = ui.TransitionNone
-		action()
-	default:
-		// 没有画面可接：引擎立刻回后台，别为一块不存在的画面留全尺寸窗口。
-		a.playerExitUntil = time.Time{}
-		a.Router.Transition = ui.TransitionNone
-		action()
 	}
 }
 
-// tickExitArm 是「飞回墙格」的第二拍：上一帧的舞台已经带上身份，这一帧
-// 换路由，退回去那一页里的同一格从舞台的矩形收回去。
-//
-// 每帧在 Shell 开头、构建之前调用。
-func (a *App) tickExitArm() {
-	// 等两趟：第一趟只是把身份挂上（Transition 新建的那一帧不参与匹配），
-	// 第二趟才把它记进「上一帧在哪」，第三趟换路由才有起点。
-	if !a.exitArm {
-		return
-	}
-	if a.buildSeq < a.exitArmAt+2 {
-		// 还没到第二拍：**自己请求下一帧**。
-		//
-		// arm 那一拍只调了一次 invalidateWindows，等于一帧。没有动画在跑时
-		// （暂停 + 弹幕关 + 指针不动）就没人再请求帧，第二拍永远不来——Esc
-		// 悬在那里，直到用户动一下鼠标。
-		a.invalidateWindows()
-		return
-	}
-	a.exitArm = false
-	// 迟到的第二拍：arm 之后又发生了别的导航（切平台、换页、关焦点）。
-	// 这一拍已经不属于播放页，丢弃——旧 finishLeave 就是靠这条守卫避免
-	// 在别的页面上再 Back 一次。
-	if a.Router == nil || a.Router.Path() != routePlayer {
-		a.exitMatchKey = ""
-		a.exitAction = nil
-		return
-	}
-	// exitMatchKey 要留到退场演完：closeFocus 的 action 会清掉焦点，
-	// 这一帧的舞台只能靠它拿到 Match 身份，否则整页会退化成透明度淡出。
-	// 清空在 tickRouteTransition 的 playerExitUntil 到点处。
-	a.Router.Transition = ui.TransitionMatch
-	a.playerExitUntil = a.now().Add(routeTransitionDur + theme.MotionSlack)
-	a.routeTransitionUntil = a.playerExitUntil
-	if act := a.exitAction; act != nil {
-		a.exitAction = nil
-		act()
-	}
-}
-
-// stageMatchKey 是播放舞台这一刻该带的 Match 身份：焦点会话的 key；
-// 焦点已经清掉、但还在等退场的那两拍里，用 exitMatchKey 顶上。
-func (a *App) stageMatchKey() string {
-	if key := a.focusKey(); key != "" {
-		return key
-	}
-	return a.exitMatchKey
-}
-
-// pushPage 换到另一页（顶栏 tab、切平台）。如果正从播放页离开，先把这一间
-// 的画面安排好；不在播放页时就是普通换页，不带页面过渡。
+// pushPage 换到另一页（顶栏 tab、切平台）。
 func (a *App) pushPage(target string) {
 	if a.Router == nil {
 		return
 	}
-	// 不在播放页：这是一次普通换页。Match 只属于「墙格 ↔ 播放页」那一次
-	// 转场；上一个退场窗口还没过时（tickExitArm 留了 400ms），不能把
-	// Match 带进顶栏 tab 的换页，否则整页内容做交叉淡化（0010 禁止）。
-	// 还在飞的那块画面也属于上一页的落点，换页即作废。
+	// 不在播放页：这是一次普通换页，不带页面过渡。
 	if a.Router.Path() != routePlayer {
-		a.Router.Transition = ui.TransitionNone
-		a.routeTransitionUntil = time.Time{}
-		a.surfaceFlight = nil
+		a.resetSurfaceTransition()
 		from := a.Router.Path()
 		a.Router.Push(target)
 		a.noteRoute(from, a.Router.Path())
 		return
 	}
-	a.leavePlayerTo(leaveCollapse, target, a.FollowsSection, func() {
+	a.leaveSurface(func() {
 		from := a.Router.Path()
 		a.Router.Push(target)
 		a.noteRoute(from, a.Router.Path())
 	})
-}
-
-// tickRouteTransition 在转场结束后把路由器恢复成「不播页面过渡」，并收掉
-// 离开播放页时那段「仍按全尺寸画」的窗口。
-//
-// 每帧调用，幂等。恢复得晚一点（+120ms）而不是卡着 280ms：Router 自己的
-// 淡出还在收尾，提前切回 None 会把旧页面直接抽走，看起来是闪一下。
-func (a *App) tickRouteTransition(now time.Time) {
-	if !a.routeTransitionUntil.IsZero() && !now.Before(a.routeTransitionUntil) {
-		a.routeTransitionUntil = time.Time{}
-		if a.Router != nil {
-			a.Router.Transition = ui.TransitionNone
-		}
-	}
-	if !a.playerExitUntil.IsZero() && !now.Before(a.playerExitUntil) {
-		a.playerExitUntil = time.Time{}
-		// 退场演完，舞台不再需要刚才那一间的 Match 身份。
-		a.exitMatchKey = ""
-	}
 }
 
 // tickSurface 是每帧一次的表面观察者：全尺寸视图出现或消失时，做进入 /
@@ -523,16 +320,6 @@ func (a *App) foregroundEnter() {
 // 断流重连全部保留。解码不停——回来时画面只差一帧，声音一秒不断。
 func (a *App) backgroundEnter() {
 	m := &a.media
-	// 离开播放页时，一个没有引擎、也没在取流的焦点就是死的：没有声音，
-	// 也没有任何表面在画它。收掉它，岛才不会挂在一条已经不存在的路上。
-	// 判据只看状态本身（没引擎、没在取流、已落终态），不看 stream 这个
-	// 可选字段：很多路径根本不填 stream，`stream.RoomID != ""` 恒假，于是
-	// 「没有引擎、没在取流、也没在加载」的焦点会留在岛上——岛显示一条不存在
-	// 的路。offline 已经在 watchOffline 里置位，err 覆盖失败终态。
-	if f := a.focus; f != nil && f.player == nil && !f.loading && (f.offline || f.err != "") {
-		a.setFocus(nil)
-		return
-	}
 	m.detachedAt = time.Now()
 	// 弹幕只属于全尺寸视图：离开就断，记录也清空。再进来（无论从墙还是从
 	// 列表）都是一条全新连接。
@@ -545,30 +332,46 @@ func (a *App) backgroundEnter() {
 	a.applyPresent()
 }
 
-// matchable 报告此刻能不能给元素挂 Match。
+// tickActivity 收掉「已经是一条死路」的焦点，并且只在它离开播放页之后收。
 //
-// 刚改过窗口尺寸的一小段时间里不能：带 Match 的元素在 resize 时会做尺寸
-// 动画，整墙的格子会一帧帧弹过去、视频每帧重新适配（用户报的「最大化会闪」）。
-func (a *App) matchable() bool {
-	return a.now().Sub(a.resizedAt) > matchSettleAfter
-}
-
-// matchSettleAfter 是窗口改尺寸之后多久才重新挂 Match。
+// 没有引擎、没在取流、已经落了终态（未开播 / 取流失败）的焦点，如果已经
+// 不在播放页上，就没有任何表面在画它——留着只会让岛挂着一条不存在的路。
+// 在播放页上不收：那一页自己画错误层，有「重试」。
 //
-// 比一次布局重排宽裕得多，又比用户点下一格快：实测 resize 的尺寸动画持续
-// 十几帧（约 200ms）。
-const matchSettleAfter = 400 * time.Millisecond
-
-// noteWindowSize 记下窗口尺寸变化，供 matchable 判断。每帧调用。
-func (a *App) noteWindowSize(w, h int) {
-	if w <= 0 || h <= 0 {
+// 以前这条判断写在 backgroundEnter 里（全尺寸边沿），判据还依赖
+// stream.RoomID 这个可选字段的有无。现在它是每帧的观察，判据只看
+// engine / loading / offline / err 四个状态本身。
+func (a *App) tickActivity() {
+	if a.focus == nil || a.Router == nil {
 		return
 	}
-	if a.lastWindowW != w || a.lastWindowH != h {
-		a.lastWindowW, a.lastWindowH = w, h
-		// 帧钟，不是墙钟：resizedAt 和 matchable() 必须同一个时基。用墙钟写、
-		// 帧钟读的话，Tester 里 tt.Advance 推不动它——island_card_bug_test.go
-		// 就是被这件事逼着用 time.Now().Add(-time.Hour) 手工拨的。
-		a.resizedAt = a.now()
+	if a.Router.Path() == routePlayer {
+		return
 	}
+	if !a.focus.dead() {
+		return
+	}
+	a.setFocus(nil, intentListen)
+}
+
+// tickLeavePlayer 是「刚离开播放页」那一帧的一次性收尾。
+//
+// 以前它写在 Shell 里紧挨着构建，离开播放页的收尾和这一帧建出来的界面
+// 没有先后保证。挪到构建之前：收尾总是先发生，界面永远看到收好的状态。
+func (a *App) tickLeavePlayer() {
+	// 先把「上一帧在不在播放页」挪进 playerShownLastFrame，再更新 wasOnPlayer。
+	//
+	// 外壳挂不挂 Match 要用**上一帧**的值（见 shellMatchKey）：它决定外壳是不是
+	// 一个可以被认领的「源」。读 wasOnPlayer 不行——它在这个函数末尾就变成
+	// 本帧的值，外壳读到的永远是「本帧在播放页」，判据恒真。
+	a.playerShownLastFrame = a.wasOnPlayer
+	if a.Router == nil {
+		a.wasOnPlayer = false
+		return
+	}
+	onPlayer := a.Router.Path() == routePlayer
+	if !onPlayer && a.wasOnPlayer {
+		a.leavePlayer()
+	}
+	a.wasOnPlayer = onPlayer
 }

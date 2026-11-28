@@ -372,7 +372,7 @@ func (a *App) needMediaTick() bool {
 // 运行时的关闭语义在 surface_motion.go 的 closeFocus：焦点结束，会话存亡
 // 由墙决定。这里是进程退出前的清场，墙里的会话也一起关。
 func (a *App) CloseMedia() {
-	a.setFocus(nil)
+	a.setFocus(nil, intentListen)
 	for _, s := range a.watch.sessions {
 		a.closeSession(s, "media-close")
 	}
@@ -422,7 +422,16 @@ func (a *App) presentSizeForSession(s *roomSession) presentSize {
 		}
 		return s.present
 	}
-	return presentSize{W: 160, H: 90}
+	// 后台收听时**不缩尺寸**：这一间是 Live Activity，岛随时可能被点开成
+	// 整屏。缩到 160×90 省下的那点渲染，代价是点开那一瞬间引擎在 mini 尺寸上
+	// 补渲染一帧——那一帧被放大三倍多，用户看到的是「画面 → 模糊 → 画面」。
+	//
+	// 实测（真窗口，探针读 player.Size()）：缩尺寸后进播放页的飞行块在
+	// block=523×241 那一帧拿到 bmp=160×90，前后两帧都是 1280×720。
+	//
+	// 不缩也不费：后台时没有任何表面画这一路（岛只画头像和文字），引擎只在
+	// 界面请求帧时才渲染一帧，岛上的时钟一秒一次。
+	return s.present
 }
 
 // applyPresent 把呈现尺寸推给**当前该看的那一间**。值没变就不推：

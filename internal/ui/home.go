@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -101,24 +102,23 @@ type App struct {
 
 	// focus 是唯一的焦点：用户此刻「在」的那一间，至多一个或为空。
 	//
-	// 播放页画它、岛上显示它、出声的也是它；墙上的 active、后台收听、
-	// 呈现尺寸、岛形态全部从它推导（见 surface.go）。以前的
+	// 播放页画它、岛上显示它（Live Activity）、出声的也是它；墙上的 active、
+	// 后台收听、呈现尺寸、岛形态全部从它推导（见 surface.go）。以前的
 	// a.Player / a.WatchActive / a.media.roomKey 三份平行状态已经删掉。
 	//
 	// 只通过 setFocus / closeFocus 改，不直接赋值。
 	focus *roomSession
-	// playerExitUntil 是离开播放页那段过渡的截止时刻。过渡期间呈现尺寸
-	// 还得是全尺寸，否则飞出去的舞台会在半路变糊。
-	playerExitUntil time.Time
+
 	// DefaultVolume 是新房间的初始音量（0–1），也就是落盘的 volume。
 	// 某间房自己的音量住在 roomSession.volume 里。
 	DefaultVolume float32
 	WinFull       bool // 窗口全屏：播放页铺满窗口，应用顶栏让位
-	// InfoOpen 是播放页灵动岛是否展开。展开态现在常驻（岛同时承担「正在看谁」
-	// 和「声音从哪来」），所以这个字段只表示「进过这个房间」，不再有收起。
-	// infoRoom 记着当前房间，用来判断是不是换了直播间。
-	InfoOpen bool
-	infoRoom string
+
+	// drawnMenus 让窗口自己画弹出菜单（ui.PopoverMenus），而不是交给系统。
+	//
+	// 只由 ALIVE_DRAWN_MENUS=1 打开，给 e2e 用：系统的弹出菜单不在这套
+	// 自绘元素树里，automation 够不着；画在窗口里的菜单条目是元素。
+	drawnMenus bool
 	// roomChoices 是每个直播间自己的清晰度 / 线路（键 platform|roomID）。
 	// 这两项属于房间，不属于应用；全局存一份会在切台、接管时串到别的平台。
 	// 读写走 room_choice.go。
@@ -390,7 +390,13 @@ type App struct {
 	// 之后它还在跑，到点又异步写一次盘——进程随时先退出，那次写盘悬空。
 	// wasOnPlayer 是上一帧在不在播放页：leavePlayer 只在离开那一帧调一次。
 	wasOnPlayer bool
-	stateTimer  *time.Timer
+	// playerShownLastFrame 是**再上一帧**的在不在播放页。
+	//
+	// 外壳挂不挂 Match 要用它，不能用 wasOnPlayer：那个在 Shell 开头就被
+	// 更新成本帧的值，外壳读到的永远是「本帧在播放页」，判据恒真。见
+	// shellMatchKey。
+	playerShownLastFrame bool
+	stateTimer           *time.Timer
 	// stateSaveSeq 是快照序号（只在主线程自增）。写盘只往新写，旧的那份丢掉。
 	stateSaveSeq uint64
 	// stateSaveFailed 是后台写盘失败留下的旗标：writeState 只置这一位，
@@ -438,24 +444,6 @@ type App struct {
 	// routeTransitionUntil 是 Match 过渡的结束时刻；零值表示当前不播页面
 	// 过渡。由 enterPlayer / leavePlayerTo 置、tickRouteTransition 收尾。
 	routeTransitionUntil time.Time
-	// resizedAt / lastWindowW/H 是窗口尺寸的观测点：刚改过尺寸的一小段
-	// 时间里不挂 Match（见 matchable）。
-	resizedAt                time.Time
-	lastWindowW, lastWindowH int
-	// surfaceFlight 是一次表面过渡的进行态：路由已经切走，窗口里还有一块
-	// 画面在两个表面之间飞（见 surface_flight.go）。nil 表示没有在飞。
-	surfaceFlight *surfaceFlight
-	// exitArm 是「飞回墙格」的第一拍：让舞台这一帧带上 Match 身份，两拍之后
-	// 再换路由。Match 的起点取自上一帧，同一帧里刚加上的身份没有起点。
-	//
-	// 舞台的 Match 平时常挂（matchable 挡住 resize 那几百毫秒），但离开可能
-	// 正好落在那段窗口里——那时舞台身上没有身份，必须临时补一拍。
-	exitArm      bool
-	exitArmAt    uint64
-	exitMatchKey string
-	exitAction   func()
-	// buildSeq 是 Shell 的构建序号；exitArmAt 记下 arm 发生在哪一趟。
-	buildSeq uint64
 	// frameNow 是这一帧的视图时钟：生产里是系统时钟，Tester 里是它自己的。
 	// 过渡的截止时刻必须和 Router 的进度用同一个时钟——用墙钟的话，测试里
 	// 墙钟先到、动画还在原地，tickRouteTransition 会在半路把过渡抽掉。
@@ -465,20 +453,8 @@ type App struct {
 	// 就永远阻塞。
 	winFullscreen bool
 	// playerReturnRoute / playerReturnSection 是进播放页时记下的「退回哪一页」。
-	// 退出时由它求目标页上的画面归属；不用"从墙进来"这种一次性的代理。
 	playerReturnRoute   string
 	playerReturnSection int
-	// cardRects 是列表卡片的矩形（按房间 key），用于进 / 出播放页的飞行。
-	// 见 surface_cards.go：带页身份、窗口尺寸和构建代次，过期即作废。
-	cardRects map[string]cardRect
-	// gridGen / gridDone 是每一页网格的构建代次：cardRect 只在「目标页
-	// 最近一次构建里仍然被铺出来」时有效。滚出虚拟列表、换分区、换订阅
-	// chip 都会让旧记录自然过期。
-	gridGen  map[string]uint64
-	gridDone map[string]uint64
-	// playerStageBounds 是播放页舞台上一帧的矩形（窗口 DIP）。收起时画面
-	// 从这里起飞——舞台可能被弹幕面板挤窄，按正文区算会先跳大一圈。
-	playerStageBounds ui.Rect
 	// wasFullSize 是上一帧 fullSize() 的值，只用来做边沿触发：进入/离开
 	// 播放页时各做一次收尾（断弹幕、拨看门狗基准、重求呈现尺寸）。
 	// 它不是真相，真相是 fullSize()。
@@ -555,6 +531,14 @@ func NewApp() *App {
 	a.Platform = "bilibili"
 	a.restore()
 	a.bindAuth()
+	// 菜单画在窗口里还是交给系统。
+	//
+	// 默认是系统的（Windows 上是 Win32 弹出菜单，不在这套自绘元素树里）。
+	// 设 ALIVE_DRAWN_MENUS=1 时改成 ui.PopoverMenus：菜单条目变成元素，
+	// 读屏和 automation 都看得见——e2e 要驱动右键菜单（把直播间收进
+	// 观测墙）只能走这一档。见 third_party/mygo/docs/ui/context-menu.md
+	// 的「Drawn in the window」。
+	a.drawnMenus = os.Getenv("ALIVE_DRAWN_MENUS") == "1"
 	return a
 }
 
@@ -649,15 +633,21 @@ func (a *App) currentAuth() live.Authenticator {
 // feTurbulence 平铺、opacity 5%，原生侧暂时省掉（视觉上几乎不可见，
 // 而且每帧重绘一张噪点纹理不划算）。
 func (a *App) Shell(c *ui.Context) {
-	a.buildSeq++
 	a.frameNow = c.Now()
 	a.winFullscreen = a.Win != nil && windowFullScreen(a.Win)
-	// 飞回墙格的第二拍：上一帧的舞台已经带着 Match 身份建完，这一帧换路由。
-	a.tickExitArm()
-	// 一帧只让第一个 spinner 驱动动画时钟，其余的读它的相位
-	// 窗口尺寸的观测点：刚改过尺寸时不挂 Match，避免整墙做尺寸动画。
-	if w, h := c.Size(); w > 0 {
-		a.noteWindowSize(int(w), int(h))
+	// 一帧的边沿观察全放在构建之前：收尾总是先发生，这一帧建出来的界面
+	// 看到的就是收好的状态。写在构建里的话，同一个 build 里先建的元素看到
+	// 旧的、后建的看到新的——那正是「构建值是临时的」这条规矩要挡的东西。
+	a.tickActivity()
+	a.tickLeavePlayer()
+
+	// 菜单的表现形式：系统的（默认），或者画在窗口里。
+	//
+	// 画在窗口里的菜单，条目是元素——读屏和 automation 都看得见。e2e 要
+	// 驱动右键菜单（把直播间收进观测墙）只能走这一档；系统的 Win32 弹出
+	// 菜单不在这套自绘元素树里。
+	if a.drawnMenus {
+		c.SetMenuPresentation(ui.PopoverMenus)
 	}
 
 	// 系统外观要在 SetTheme 之前读：SetTheme 之后 Context 返回的是我们这套
@@ -679,10 +669,9 @@ func (a *App) Shell(c *ui.Context) {
 		}
 	}
 
-	// 表面之间的连续过渡到点收尾：恢复成"不播页面过渡"。
-	a.tickRouteTransition(a.now())
-	// 全尺寸视图出现/消失的边沿：断弹幕、拨看门狗基准、重求呈现尺寸。
-	// 真相由 fullSize() 推导，这里只做一次性收尾。
+	// 表面之间的连续过渡到点收尾已在构建前跑过（tickRouteTransition）。
+	// 这里只剩全尺寸视图出现/消失的边沿：断弹幕、拨看门狗基准、重求呈现
+	// 尺寸。真相由 fullSize() 推导，这里只做一次性收尾。
 	a.tickSurface()
 	// 呈现尺寸每帧从 presentSizeFor 求一次，值没变就不推。墙出现/消失、
 	// 全屏切换、后台收听都走这一条，不再有第二条推送路径。
@@ -699,37 +688,15 @@ func (a *App) Shell(c *ui.Context) {
 		a.SearchOpen = true
 	}
 
-	// 离开播放页先把窗口级和界面级的状态收干净。统一放在这里而不是各个
-	// 返回按钮上：离开播放页的路不止一条（左上返回钮、Esc、顶栏 tab），
-	// 漏一条就是窗口卡死（见 leavePlayer）。
-	//
-	// 注意它不管媒体层：后台收听要的正是「界面收了、声音留着」，
-	// 引擎的开关由焦点的存活决定（setFocus / closeFocus）。
-	// 只在「刚从播放页离开」的那一帧收尾。原来写成「只要不在播放页就每帧调」：
-	// leavePlayer 里无条件 windowFullScreen(a.Win)（一次平台往返），首页/关注页
-	// 静置时每秒白花 ~60 次主线程时间，还和 shellKeys 里的另一次重复。
-	onPlayer := a.Router.Path() == routePlayer
-	if !onPlayer && a.wasOnPlayer {
-		a.leavePlayer()
-		// 离开播放页就清掉房间记号：下次进同一个房间也要重新展开一次。
-		a.infoRoom = ""
-	}
-	a.wasOnPlayer = onPlayer
+	// 离开播放页的窗口级收尾在 tickLeavePlayer 里（构建之前）。
+	// 注意它不管媒体层：后台收听要的正是「界面收了、声音留着」，引擎的
+	// 开关由焦点的存活决定（setFocus / closeFocus / tickActivity）。
 
 	// 播放页的两种全屏下应用外壳整体让位给画面（外壳是 position:fixed
 	// inset:0 z-index:9999，顶栏和灵动岛都被盖住）。
 	// 窗口全屏是我们自己的状态，原生全屏是系统状态，两者都算。
 	fullscreen := a.playerFullscreen()
-	// 应用内全屏切换和窗口 resize 一样会改变外壳的盒子；带 Match 的外壳
-	// 会把这次变化做成尺寸/位置弹簧动画。只在仍停留在播放页时抑制——
-	// 离开播放页那一路的 Match 落点是墙格，不能被这次复位挡掉。
-	if a.Router.Path() == routePlayer && fullscreen != a.wasPlayerFullscreen {
-		a.resizedAt = a.now()
-		// 全屏边沿优先：还没过期的表面过渡窗口不能把 Match 又挂回来，
-		// 否则这次布局变化会被做成 0.5s 弹簧动画。
-		a.routeTransitionUntil = time.Time{}
-		a.Router.Transition = ui.TransitionNone
-	}
+
 	a.wasPlayerFullscreen = fullscreen
 
 	root.Background(theme.BgPrimary).Children(func() {
@@ -769,9 +736,7 @@ func (a *App) Shell(c *ui.Context) {
 			// 地址续期和断流重连会跟着一起停摆。
 			a.kickMediaTick()
 		})
-		// 表面过渡：一块画面正在两个表面之间飞（进 / 出播放页）。必须画在
-		// 岛之前——落点在岛的位置，岛盖住它的最后一段。
-		a.surfaceFlightView(c)
+
 		// 灵动岛浮在内容之上。两种全屏下整块不画：画面上只留返回钮和控制条，
 		// 岛连同它那圈流光和投影压在满屏画面上纯属干扰。
 		if !fullscreen {
@@ -831,8 +796,7 @@ func (a *App) Home(c *ui.Context) {
 		// 跳回顶部；旧的可见范围还会顺手触发一次「加载更多」。MyGo 的
 		// list.md 对这种情况写得很清楚：换一套行就 `ListState{}`。
 		a.HomeList = ui.ListState{}
-		// 正在飞的画面属于上一套行的卡片，换分区即作废。
-		a.surfaceFlight = nil
+
 	}
 	ui.Column(c).Grow(1).Padding(0, pad, 0, pad).Gap(14).Children(func() {
 		// 分区树还没到时给一块同高的占位，避免列表区先铺满、再被分区栏顶下去。
@@ -980,16 +944,7 @@ type gridView struct {
 // 滑到第 3000 张和第 30 张的每帧成本一样——这是「一直往下滑」的前提。
 // 行高由 List 自己测量（我们的卡片高度是算出来的固定值），不用手动喂。
 func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func(), views ...gridView) {
-	// 卡片归属哪一页在开始铺之前就定下来：点击卡片会立刻换路由，
-	// 同一个 build 里后面的卡片不能按新路由记账（见 noteCardRect）。
-	page := ""
-	if a.Router != nil {
-		page = pageKey(a.Platform, a.Router.Path(), a.FollowsSection)
-	}
-	gen := a.beginGridPage(page)
-	// 一页铺完（包括空列表的早退）才把代次记成「已完成」：cardRectFor
-	// 只认上一次完成的构建，点击发生在构建中途时用的是上一帧的矩形。
-	defer a.endGridPage(page, gen)
+
 	view := gridView{
 		loading:       a.ListLoading,
 		loadingMore:   a.ListLoadingMore,
@@ -1047,17 +1002,14 @@ func (a *App) grid(c *ui.Context, list []Streamer, ls *ui.ListState, onMore func
 			for i := r * cols; i < min(len(list), (r+1)*cols); i++ {
 				i := i
 				st := list[i]
-				card := Card(c, st, cardW, a.isFollowed(st), func() {
+				Card(c, st, cardW, a.isFollowed(st), func() {
 					a.openRoom(st)
 				}, func() {
 					a.toggleFollow(st)
 				}, func() {
 					a.watchAdd(st)
 				})
-				// 卡片的位置：进播放页时画面从这里起飞，回列表时缩回这里。
-				// 只对记下它的那一页 / 那个窗口尺寸 / 那一次构建有效
-				// （见 surface_cards.go）。
-				a.noteCardRect(st, card, page, gen)
+
 			}
 			// 最后一行不足 cols 时补空位，卡片宽度才不会被拉宽
 			if r == rows-1 {
@@ -1208,13 +1160,54 @@ const chromeH float32 = 34
 // 三组托盘同一条配方：surface-chrome 底、3px 内边距、无描边。
 // 以前这里有一根 1px 分隔线，那是窗口按钮还没有自己的托盘时留下的；
 // 两边都有托盘之后它就是第二道边。
-func (a *App) Navbar(c *ui.Context) {
-	pad, gap := float32(14), float32(14)
-	if a.narrow(c) {
-		// ≤1240：gap 8、左右 padding 10
-		pad, gap = 10, 8
+// navbarMetrics 是顶栏的几何：两档断点下的内边距、间距、tab 宽、窗口按钮宽。
+//
+// 它存在的唯一理由是**只有一个来源**。顶栏自己按一套数排版，岛的宽度上限
+// 又按另一套数算「中间还有多少可用」，两份抄写迟早会走散——走散的后果是
+// 岛压住 tab 或搜索键，或者中间留着一段没人用的空隙。
+type navbarMetrics struct {
+	pad, gap   float32
+	tabW       float32
+	captionW   float32
+	chromeH    float32
+	groupPad   float32 // 托盘自己的内边距（3）
+	captionGap float32 // 窗口按钮之间的 2
+	rowGap     float32 // 工具胶囊与窗口按钮之间的 10
+}
+
+// navbarMetricsFor 按窗口宽度取这一档的顶栏几何。
+func navbarMetricsFor(winW float32) navbarMetrics {
+	m := navbarMetrics{
+		pad: 14, gap: 14, tabW: 64, captionW: 40,
+		chromeH: chromeH, groupPad: 3, captionGap: 2, rowGap: 10,
 	}
-	bar := ui.Row(c).Height(theme.NavbarHeight).Padding(0, pad, 0, pad).Gap(gap).
+	if winW <= 1240 {
+		// ≤1240：只收列宽；高度跟另外两组托盘一样，否则顶栏里三个托盘高低不齐
+		m.pad, m.gap, m.tabW, m.captionW = 10, 8, 56, 34
+	}
+	return m
+}
+
+// leftReserve 是左侧 tab 轨道占的宽度：托盘内边距 ×2 + 每格等宽 + 外侧一个 gap。
+func (m navbarMetrics) leftReserve(tabs int) float32 {
+	return m.pad + 2*m.groupPad + m.tabW*float32(tabs) + m.gap
+}
+
+// rightReserve 是右侧两组占的宽度：工具胶囊 + 间距 + 窗口按钮托盘 + 外侧一个 gap。
+func (m navbarMetrics) rightReserve(tools int) float32 {
+	capsule := 2*m.groupPad + m.chromeH*float32(tools)
+	if tools > 1 {
+		capsule += 4 * float32(tools-1)
+	}
+	captions := 2*m.groupPad + 3*m.captionW + 2*m.captionGap
+	return m.pad + capsule + m.rowGap + captions + m.gap
+}
+
+// Navbar 是顶栏。
+func (a *App) Navbar(c *ui.Context) {
+	w, _ := c.Size()
+	m := navbarMetricsFor(w)
+	bar := ui.Row(c).Height(theme.NavbarHeight).Padding(0, m.pad, 0, m.pad).Gap(m.gap).
 		AlignItems(ui.Center).Background(theme.BgPrimary)
 	// frameless 窗口靠这里拖动；双击空白处最大化
 	bar.DragWindow()
@@ -1378,12 +1371,6 @@ func (a *App) toastViewport(c *ui.Context, viewport ui.Element, toasts []ui.Toas
 	}
 }
 
-// narrow 报告窗口是否落在 ≤1240 断点里。
-func (a *App) narrow(c *ui.Context) bool {
-	w, _ := c.Size()
-	return w <= 1240
-}
-
 // activeTab 返回顶栏该高亮的 tab。
 //
 // 「关注」不是平台，但和平台同级：在关注页时高亮那颗星星，
@@ -1528,13 +1515,12 @@ func (a *App) platformTabs(c *ui.Context) {
 		tabs = append(tabs, tabItem{id, label})
 	}
 
-	tabW := float32(64)
+	// tab 宽走 navbarMetrics：岛在算自己的宽度上限时用的是同一个数，
+	// 两份抄写迟早会走散。高度跟另外两组托盘一样，否则顶栏里三个托盘
+	// 高低不齐。
+	winW, _ := c.Size()
+	tabW := navbarMetricsFor(winW).tabW
 	tabH := chromeH
-	if a.narrow(c) {
-		// ≤1240：只收列宽；高度跟另外两组托盘一样，否则顶栏里三个托盘高低不齐
-		tabW = 56
-	}
-
 	// 滑块跟着当前页面（关注 / 订阅 / 平台）走。
 	selected := 0
 	active := a.activeTab()
@@ -1682,11 +1668,8 @@ func (a *App) windowControls(c *ui.Context) {
 
 // caption 是一枚窗口按钮。
 func (a *App) caption(c *ui.Context, ico *ui.SVG, label string, danger bool, on func()) {
-	w, h := float32(40), chromeH
-	if a.narrow(c) {
-		// ≤1240：只收宽度
-		w = 34
-	}
+	winW, _ := c.Size()
+	w, h := navbarMetricsFor(winW).captionW, chromeH
 	btn := ui.Box(c).Size(w, h).Radius(theme.RadiusFull).
 		Center().Cursor(ui.CursorPointer).Label(label)
 	hovered := btn.Hovered()

@@ -106,6 +106,20 @@ type roomSession struct {
 	playing bool
 }
 
+// dead 报告这一间是不是一条死路：没有引擎、没在取流，而且已经落了终态
+// （未开播 / 取流失败）。
+//
+// 这是「还有没有 Live Activity」的唯一判据，岛和墙上的绿点都从它推出来。
+// 判据只看状态本身，不看 stream 这类可选字段——很多路径根本不填 stream，
+// 拿它的有无当条件，结果是「没有引擎、没在取流、也没在加载」的焦点留在
+// 岛上，岛显示一条不存在的路。
+func (s *roomSession) dead() bool {
+	if s == nil {
+		return true
+	}
+	return s.player == nil && !s.loading && (s.offline || s.err != "")
+}
+
 type wallMedia struct {
 	sessions map[string]*roomSession
 	// rects 是上一帧墙上的布局，presentSizeForSession 用它给格子设呈现尺寸。
@@ -1367,7 +1381,7 @@ func (a *App) watchRestart(s *roomSession, reason string) {
 // watchOpenPlayer 用，两处各写一遍迟早会漂。
 func (a *App) watchTileDead(key string) bool {
 	s := a.watch.sessions[key]
-	return s != nil && s.player == nil && !s.loading && (s.offline || s.err != "")
+	return s != nil && s.dead()
 }
 
 // watchActivate 是墙上「在墙上听」：切声音焦点，不跳路由。单击格子走的也是它。
@@ -1395,7 +1409,7 @@ func (a *App) watchActivate(room Streamer) {
 	if s == nil {
 		s = a.sessionFor(key, room)
 	}
-	a.setFocus(s)
+	a.setFocus(s, intentListen)
 	if s.player == nil {
 		a.watchOpenSession(s)
 	}

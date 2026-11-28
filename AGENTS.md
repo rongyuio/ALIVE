@@ -12,6 +12,9 @@ ALIVE 是 Windows 上的直播桌面客户端。界面是 MyGo 的原生 UI（D3
   purego 回调、只为用到的功能付费。动任何 UI 代码前先读它。
 - `.agents/skills/mygo-maintenance/SKILL.md` —— MyGo 官方给应用维护者的技能（生命周期、身份、
   线程、测试、验证）。**改代码或写测试前先读它。** 技能随 CLI 版本走，`go tool mygo install-skills .` 更新。
+- [doc/reference/island.md](doc/reference/island.md) —— 灵动岛与直播间 / 观测墙 / 路由的关系
+  （Live Activity 状态表、过渡表、一帧只有一个 `ui.Video`）。**动 `island.go` 或任何
+  `surface_*.go` 之前先读它。**
 - `third_party/mygo/docs/ui/views.md` —— 构建生命周期、事件、Key、跨 goroutine。
 - `third_party/mygo/docs/ui/migration.md` —— Element 值、Handle、FocusBind。
 - `third_party/mygo/docs/ui/testing.md` —— Tester。真窗口 e2e 看 `third_party/mygo/docs/plugins/automation.md`。

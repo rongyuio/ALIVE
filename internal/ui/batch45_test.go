@@ -109,22 +109,21 @@ func TestStateSnapshotCancelsPendingTimer(t *testing.T) {
 	}
 }
 
-// exitArm 等待第二拍时必须自己请求下一帧。
+// 离开播放页不再有「等第二拍」的状态机，所以也没有人要自己请求帧。
 //
-// arm 那一拍只调一次 invalidateWindows（= 一帧）。没有动画在跑时没人再请求
-// 帧，第二拍永远不来——Esc 悬在那里直到用户动鼠标。
-func TestExitArmKeepsRequestingFrames(t *testing.T) {
-	body := funcBody(t, "surface_motion.go", "func (a *App) tickExitArm()")
-	i := containsStrIndex(body, "a.buildSeq < a.exitArmAt+2")
-	if i < 0 {
-		t.Fatal("找不到第二拍的判据")
+// 这条钉住的是**它没有被加回来**：exitArm 那套两拍推迟换路由的写法是
+// 「Match 的起点取自上一帧」这条约束逼出来的补丁，代价是第二次请求被吞、
+// 需要自己 invalidateWindows 续帧。现在舞台的身份常挂（matchable 只挡
+// resize），换路由当场发生，那台机器整条删掉了。
+func TestNoExitArmMachinery(t *testing.T) {
+	src, err := os.ReadFile("surface_motion.go")
+	if err != nil {
+		t.Fatalf("读不到 surface_motion.go：%v", err)
 	}
-	tail := body[i:]
-	if j := containsStrIndex(tail, "\n\t}"); j > 0 {
-		tail = tail[:j]
-	}
-	if !containsStr(tail, "a.invalidateWindows()") {
-		t.Error("等第二拍时没有请求下一帧：没有动画在跑就会永远等下去")
+	for _, gone := range []string{"tickExitArm", "exitArmAt", "exitAction"} {
+		if containsStr(string(src), gone) {
+			t.Errorf("surface_motion.go 里又出现了 %q：两拍推迟那台机器不该回来", gone)
+		}
 	}
 }
 
