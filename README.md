@@ -30,27 +30,25 @@
 
 配置和登录态在 `%APPDATA%\alive`，日志与缓存在 `%LOCALAPPDATA%\alive`。
 
-## 编译
+## 开发
 
-- 前置：Windows x64、Go 1.27+、make；libmpv 的 DLL 不入库，首次 `make deps` 按 sha256 拉到 `third_party/mpv`
+前置：Windows x64、Go 1.27+、make、gcc、golangci-lint。
 
 ```bash
-# 克隆项目
 git clone https://github.com/rongyuio/ALIVE.git
 cd ALIVE
 
-# 开发调试：改 .go 自动重建重启
-make dev
-
-# 打包构建：build/windows-amd64/ 下的便携版和安装包
-make build
-
-# 全部检查：fmt + build + vet（三个构建面）+ mygo vet + lint + 测试 + race
-make check
-
-# e2e自动化插件构建
-make e2e
+make deps      # 取 libmpv，它不入库
+make mock      # 假数据看界面，不联网
+make dev       # 改 .go 自动重建
+make build     # 打包到 build/windows-amd64/
+make check     # 提交前跑
 ```
+
+`make run` 和 `make dev` 跑在 `.mygo\dev-home` 沙箱里，不碰真实的 `%APPDATA%\alive`。
+
+发版：打 `v*` tag，CI 建草稿 release 并上传签名产物；本地 `make build` 需要
+`MYGO_UPDATER_PRIVATE_KEY` 才会产出更新文件。
 
 ## 排障
 
