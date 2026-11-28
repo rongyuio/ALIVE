@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,11 +17,9 @@ import (
 
 // 弹幕默认参数：
 // 字号 20px、滚动穿过屏幕 10s、显示区域为画面上方 50%、不透明 1。
-// 通道高度 = 字号 × 1.5 = 30。
 const (
 	danmuFontSize float32 = 20
 	danmuDuration         = 10 * time.Second
-	danmuChannel  float32 = 30
 	danmuAreaFrac float32 = 0.5
 	// danmuFlyMax 是画面上同时最多飞多少条；danmuLogMax 是右侧面板留多少历史。
 	// 本来就是两个数：Overlay 只处理当帧，面板吃的是 messages
@@ -96,6 +95,53 @@ func emoteSize(e live.Emote, height float32) (float32, float32) {
 		w, h = 1, 1
 	}
 	return height * w / h, height
+}
+
+// danmuLaneH 是一条轨道的高度：字号 × 1.5。
+//
+// 原来这是个常量 30（按默认字号 20 算死）。字号可调，30 就只在默认值下成立；
+// 更要紧的是它只够放一行字——纯图弹幕的高度是字号 × danmuStickerScale（2.8），
+// 默认字号下 56px，压在 30px 的轨道里上下各溢出 13px，正好盖住上下相邻轨道
+// 的文字弹幕。轨道高度跟着字号走、图片按高度占多条轨道（见 danmuLaneSpan），
+// 两件事一起才不会叠。
+func danmuLaneH(font float32) float32 {
+	if font <= 0 {
+		font = danmuFontSize
+	}
+	return font * 1.5
+}
+
+// danmuLaneSpan 是一条弹幕要占几条轨道。
+//
+// 文字弹幕一行高，永远 1 条；纯图弹幕比一行字高得多，向上取整占多条。
+// 分配器按这个数把连续几条轨道一起占掉，相邻轨道就不会被压上。
+func danmuLaneSpan(d danmuLine, font float32) int {
+	h := danmuHeightEstimate(d, font)
+	lane := danmuLaneH(font)
+	if h <= lane {
+		return 1
+	}
+	span := int(math.Ceil(float64(h / lane)))
+	if span < 1 {
+		return 1
+	}
+	return span
+}
+
+// danmuHeightEstimate 是一条弹幕滚动时占的视觉高度。
+//
+// 和 danmuWidthEstimate 一样，入队时没有排版上下文，只能按字号推：
+// 文字一行按字号 × 1.5（和轨道高度同源），纯图按贴纸高度。
+func danmuHeightEstimate(d danmuLine, font float32) float32 {
+	if font <= 0 {
+		font = danmuFontSize
+	}
+	if d.imageOnly() {
+		_, h := emoteSize(d.Emotes[0], font*danmuStickerScale)
+		return h
+	}
+	// 混排里的内联表情比正文小（按字号画），不会把这一行撑得比文字高。
+	return font * 1.5
 }
 
 // danmuColor 是一条弹幕正文该用的颜色。
@@ -275,7 +321,7 @@ type danmuLane struct {
 	w  float32
 }
 
-// takeDanmuTrack 给一条新弹幕分轨道。
+// takeDanmuTrack 给一条新弹幕分轨道，返回它占的第一条轨道的下标。
 //
 // 从上往下找**第一条放得下的轨道**，不是先找空轨：空轨当然放得下，已经飞了
 // 一段、能安全接力的同轨也放得下。跳过能用的轨道硬往下排，屏幕上就会排成
@@ -288,14 +334,21 @@ type danmuLane struct {
 // 第 2 条只在后一条更快（更宽）时才会失败。照着当前速度模型
 // v = (S+w)/D 化简后就是 w2*(D-dt) <= S*dt，不用逐步模拟。
 //
+// span 是这条弹幕要占几条轨道（纯图弹幕比一行字高，见 danmuLaneSpan）。
+// 占多条时必须整段都放得下才用，否则图片会压到相邻轨道上——那正是
+// 「图片弹幕和文字弹幕重叠」这个缺陷。
+//
 // 所有轨道都放不下时才叠，挑最早能空出来的那条：宁叠不丢。
-func (a *App) takeDanmuTrack(now time.Time, w2 float32) int {
+func (a *App) takeDanmuTrack(now time.Time, w2 float32, span int) int {
 	n := a.danmuTracks
 	if n < 1 {
 		n = 14
 	}
 	if len(a.danmuLanes) < n {
 		a.danmuLanes = append(a.danmuLanes, make([]danmuLane, n-len(a.danmuLanes))...)
+	}
+	if span < 1 {
+		span = 1
 	}
 	S := float64(a.danmuStageW)
 	if S <= 0 {
@@ -307,34 +360,56 @@ func (a *App) takeDanmuTrack(now time.Time, w2 float32) int {
 	}
 	dur := time.Duration(D * float64(time.Second))
 
-	for i := 0; i < n; i++ {
+	// fits 报告第 i 条轨道此刻能不能接一条宽 w2 的弹幕。
+	fits := func(i int) bool {
 		l := a.danmuLanes[i]
 		if l.at.IsZero() || !now.Before(l.at.Add(dur)) { // 上一条已经完全离开
-			a.danmuLanes[i] = danmuLane{at: now, w: w2}
-			return i
+			return true
 		}
 		dt := now.Sub(l.at).Seconds()
 		if dt <= 0 {
-			continue
+			return false
 		}
 		v1 := (S + float64(l.w)) / D
 		if dt < float64(l.w)/v1 { // 前一条还没完全进入
-			continue
+			return false
 		}
-		if float64(w2)*(D-dt) <= S*dt { // 不会追尾
-			a.danmuLanes[i] = danmuLane{at: now, w: w2}
+		return float64(w2)*(D-dt) <= S*dt // 不会追尾
+	}
+	// spanFits 要求连续 span 条轨道都放得下。占一条的弹幕走同一条路径，
+	// 只是 span=1，不另写一份。
+	spanFits := func(i int) bool {
+		if i+span > n {
+			return false
+		}
+		for k := i; k < i+span; k++ {
+			if !fits(k) {
+				return false
+			}
+		}
+		return true
+	}
+
+	for i := 0; i+span <= n; i++ {
+		if spanFits(i) {
+			for k := i; k < i+span; k++ {
+				a.danmuLanes[k] = danmuLane{at: now, w: w2}
+			}
 			return i
 		}
 	}
 
-	// 所有轨道都排不下：叠在最早能接力的那条上。
+	// 所有轨道都排不下：叠在最早能接力的那条上。多占的那几条一起占掉，
+	// 不然下一次分配会以为它们是空的、又把东西排进去。
 	best := 0
-	for i := 1; i < n; i++ {
+	for i := 1; i+span <= n; i++ {
 		if a.danmuLanes[i].at.Before(a.danmuLanes[best].at) {
 			best = i
 		}
 	}
-	a.danmuLanes[best] = danmuLane{at: now, w: w2}
+	for k := best; k < best+span && k < n; k++ {
+		a.danmuLanes[k] = danmuLane{at: now, w: w2}
+	}
 	return best
 }
 
@@ -403,7 +478,7 @@ func (a *App) danmuLayer(c *ui.Context) {
 	if stageW <= 0 || stageH <= 0 {
 		return
 	}
-	tracks := int(stageH * a.DanmuArea / danmuChannel)
+	tracks := int(stageH * a.DanmuArea / danmuLaneH(a.DanmuFont))
 	if tracks < 1 {
 		tracks = 1
 	}
@@ -464,7 +539,7 @@ func (a *App) danmuLayer(c *ui.Context) {
 			if track < 0 {
 				track = 0
 			}
-			y := float32(track*int(danmuChannel)) + 16
+			y := float32(track)*danmuLaneH(a.DanmuFont) + 16
 
 			if d.imageOnly() {
 				if bmp, wait, anim := media.Default.EmoteFrame(d.Emotes[0].URL, imgW, c.Now()); bmp != nil {

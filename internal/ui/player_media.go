@@ -1970,7 +1970,10 @@ func (a *App) applyDanmu(seq int, d live.Danmu) {
 		return
 	}
 	// 轨道在真正上屏时才分配：日志不需要，而且分配要看当前窗口的轨道数。
-	line.Track = a.takeDanmuTrack(a.danmuTime(), danmuWidthEstimate(line, a.DanmuFont))
+	// span 是这条要占几条轨道——纯图弹幕比一行字高得多，按一条分就会压到
+	// 上下相邻轨道上，那就是「图片弹幕和文字弹幕重叠」。
+	line.Track = a.takeDanmuTrack(a.danmuTime(),
+		danmuWidthEstimate(line, a.DanmuFont), danmuLaneSpan(line, a.DanmuFont))
 	a.Danmu = append(a.Danmu, line)
 }
 
